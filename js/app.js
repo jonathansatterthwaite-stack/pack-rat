@@ -1147,6 +1147,7 @@ function openEntry(entryUid) {
     commit((s, c) => {
       const x = c.items.find(x => x.uid === e.uid);
       if (id) x.item.icon = id; else delete x.item.icon;
+      delete x.item.iconDoc; delete x.item.iconSvg; // a chosen icon replaces a drawing
     }, "Icon changed");
     openEntry(e.uid);
   };
@@ -1510,6 +1511,7 @@ function openCatalogItem(item) {
     commit(s => {
       const x = s.customItems.find(i => i.id === item.id);
       if (id) x.icon = id; else delete x.icon;
+      delete x.iconDoc; delete x.iconSvg; // a chosen icon replaces a drawing
     }, "Icon changed");
     openCatalogItem(store.state.customItems.find(i => i.id === item.id));
   } : null;
@@ -1843,6 +1845,77 @@ function openItemForm(item, opts = {}) {
   ] });
 }
 
+// ------------------------------------------------------------------ drawing icons (svg-lay-tool)
+
+// The icon editor is a separate library, loaded the first time it's needed.
+function loadSvgLay() {
+  if (window.SvgLayTool) return Promise.resolve();
+  return new Promise((ok, fail) => {
+    const script = h("script", { src: "js/vendor/svg-lay-tool.js" });
+    script.onload = ok;
+    script.onerror = () => fail(new Error("Couldn't load the icon editor"));
+    document.head.append(script);
+  });
+}
+
+// Draw an icon from shapes on layers, in one colour (the app tints it like its other icons).
+// onSave(doc, svg): the editor's document (kept so the drawing can be edited again) and the icon
+// as SVG painted in currentColor; onSave(null) when the drawing was cleared.
+async function openIconDrawer(item, onSave) {
+  try {
+    await loadSvgLay();
+  } catch (e) {
+    return toast(e.message);
+  }
+  const { SvgLayEditor, renderDocumentToString, normalizeDocument } = window.SvgLayTool;
+  const host = h("div", { class: "icon-drawer-host" });
+  let editor;
+  const close = () => {
+    editor?.destroy();
+    overlay.remove();
+    document.body.classList.toggle("modal-open", !!document.getElementById("modal-root").children.length);
+  };
+  const save = () => {
+    const doc = editor.getDocument();
+    if (!doc.layers.length) { onSave(null); close(); return; }
+    const svg = renderDocumentToString(doc, { background: false, colorMode: "monochrome", monoColor: "currentColor", idPrefix: DRAWN_ID_PREFIX });
+    onSave(doc, svg);
+    close();
+  };
+  // No Escape-to-close: the editor uses Escape itself, and closing would lose the drawing.
+  const overlay = h("div", { class: "reader icon-drawer", role: "dialog", "aria-modal": "true", "aria-label": "Draw an icon" },
+    h("div", { class: "reader-bar" },
+      h("div", { class: "reader-title" }, `Draw an icon${item.name ? ` for ${item.name}` : ""}`),
+      h("button", { class: "btn", onclick: close }, "Cancel"),
+      h("button", { class: "btn primary", onclick: save }, icon("check"), "Use this icon")),
+    h("p", { class: "icon-drawer-hint muted small" },
+      "Build the icon from shapes on layers: add shapes from the library, then move, resize and rotate them. A layer can be a mask that cuts the ones below it. It's drawn in one colour; the app colours it like its other icons."),
+    host);
+  document.body.append(overlay);
+  document.body.classList.add("modal-open");
+  try {
+    editor = new SvgLayEditor(host, {
+      document: item.iconDoc ? normalizeDocument(item.iconDoc) : undefined,
+      width: 256, height: 256, background: null,
+      theme: "auto", // follows light / dark like the app (whose colours it takes, see .icon-drawer-host)
+      features: {
+        colorMode: "monochrome", monoColor: itemColor(item),
+        export: false, canvasSize: false, background: false,
+      },
+    });
+    // On phones the editor stacks its panels under the canvas and the canvas ends up tiny: keep it at
+    // least 55% of the screen tall, with the shape library and settings scrolling below it.
+    // (Better fixed in svg-lay-tool itself; this only adds a style inside its own shadow root.)
+    host.shadowRoot?.append(h("style", null,
+      "@media (max-width: 760px) { .slt-root { grid-template-rows: auto minmax(55vh, 1fr) auto auto !important; } }"));
+    // Fit the canvas once the window has its final size.
+    requestAnimationFrame(() => requestAnimationFrame(() => editor?.fitToView()));
+  } catch (e) {
+    close();
+    toast("The icon editor couldn't start: " + e.message);
+  }
+}
+
 // An item's own image, shown in place of its icon (a playing card's face, a portrait…).
 function imageField(f, draft, cls, label) {
   const box = h("div", { class: "inline image-field" });
@@ -1999,20 +2072,27 @@ function fieldInput(f, draft) {
     case "packContents":
       return packContentsField(f, draft);
     case "icon": {
-      // Preview updates with the name/type; "Automatic" follows the item's name.
+      // Preview updates with the name/type; "Automatic" follows the item's name. Or draw one.
       const preview = h("span", { class: "icon-preview" });
       const label2 = h("span", { class: "muted small" });
+      const drawBtn = h("button", { class: "btn", type: "button", onclick: () => openIconDrawer(draft, (doc, svg) => {
+        if (doc) { draft.iconDoc = doc; draft.iconSvg = svg; delete draft.icon; } else { delete draft.iconDoc; delete draft.iconSvg; }
+        draw();
+      }) }, icon("edit"), "");
       const draw = () => {
         setChildren(preview, itemIcon(draft, "big-icon"));
-        label2.textContent = draft.icon ? ICON_BY_ID.get(draft.icon)?.n || "" : "Automatic";
+        label2.textContent = draft.iconSvg ? "Your drawing" : draft.icon ? ICON_BY_ID.get(draft.icon)?.n || "" : "Automatic";
+        drawBtn.lastChild.textContent = draft.iconDoc ? "Edit drawing…" : "Draw…";
       };
       draw();
       return h("div", { class: cls }, label,
-        h("div", { class: "inline" }, preview,
+        h("div", { class: "inline wrap" }, preview,
           h("button", { class: "btn", type: "button", onclick: () => openIconPicker(draft.icon, id => {
             if (id) draft.icon = id; else delete draft.icon;
+            delete draft.iconDoc; delete draft.iconSvg; // a chosen icon replaces a drawing
             draw();
           }, draft) }, "Choose…"),
+          drawBtn,
           label2));
     }
     case "cost": {

@@ -2,6 +2,8 @@
 
     python tools/publish.py [-m MESSAGE]   stage, commit and push (the Pages site redeploys)
     python tools/publish.py --release      ...then build PackRat.exe and PackRat.apk and publish a release
+        [--title TEXT]                     added to the release's title (e.g. "BIG CHANGE: drawn icons")
+        [--notes FILE]                     Markdown shown at the top of the release notes
 
 The public copy lives in ../pack-rat, a clone of the repository. It gets the
 project's files minus private and local ones (the signing keystore, dist/,
@@ -86,7 +88,7 @@ def commit_and_push(message):
     print(f"Pushed. Site: https://{REPO.split('/')[0]}.github.io/{REPO.split('/')[1]}/")
 
 
-def release():
+def release(title_extra=None, notes_file=None):
     # Sign with the same key as local builds so phones can update in place.
     shutil.copytree(os.path.join(ROOT, "android", "keystore"), os.path.join(STAGE, "android", "keystore"), dirs_exist_ok=True)
     run(sys.executable, os.path.join(STAGE, "tools", "build_exe.py"))
@@ -100,7 +102,11 @@ def release():
     notes = ("**Downloads:** `PackRat.exe` for Windows 10/11, `PackRat.apk` for Android 7.0+, "
              f"or use it in the browser at https://{REPO.split('/')[0]}.github.io/{REPO.split('/')[1]}/app/\n\n"
              "Windows may show a SmartScreen warning because the app isn't code-signed: choose *More info → Run anyway*.")
-    run("gh", "release", "create", tag, "--repo", REPO, "--target", "main", "--title", f"Pack Rat {tag}", "--notes", notes,
+    if notes_file:
+        with open(notes_file, encoding="utf8") as f:
+            notes = f.read().strip() + "\n\n---\n\n" + notes
+    title = f"Pack Rat {tag}" + (f" — {title_extra}" if title_extra else "")
+    run("gh", "release", "create", tag, "--repo", REPO, "--target", "main", "--title", title, "--notes", notes,
         os.path.join(STAGE, "dist", "PackRat.exe"), os.path.join(STAGE, "dist", "PackRat.apk"))
     print(f"Released {tag}: https://github.com/{REPO}/releases/tag/{tag}")
 
@@ -110,8 +116,9 @@ def main():
     message = args[args.index("-m") + 1] if "-m" in args else f"Update Pack Rat ({datetime.date.today():%Y-%m-%d})"
     stage()
     commit_and_push(message)
+    opt = lambda name: args[args.index(name) + 1] if name in args else None
     if "--release" in args:
-        release()
+        release(opt("--title"), opt("--notes"))
 
 
 if __name__ == "__main__":

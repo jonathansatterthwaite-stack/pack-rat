@@ -149,8 +149,39 @@ function iconSvg(id, cls = "") {
   return s;
 }
 
-// Icon tinted with the item type's colour, or the item's own image (a playing card's face…).
+// Icons drawn in the icon editor (svg-lay-tool) are stored as SVG, painted in currentColor so
+// they're tinted like the built-in ones. Items can come from other players, so the SVG is cleaned
+// before use; its internal ids (masks, filters) get a fresh prefix per copy on screen.
+const DRAWN_ID_PREFIX = "pr-drawn-";
+const drawnIconCache = new Map();
+let drawnIconSeq = 0;
+function drawnIcon(svgText, cls = "") {
+  let clean = drawnIconCache.get(svgText);
+  if (clean === undefined) {
+    clean = typeof DOMPurify !== "undefined" && typeof svgText === "string"
+      ? DOMPurify.sanitize(svgText, { USE_PROFILES: { svg: true, svgFilters: true } }) : "";
+    drawnIconCache.set(svgText, clean);
+  }
+  if (!clean) return null;
+  const box = document.createElement("div");
+  box.innerHTML = clean.split(DRAWN_ID_PREFIX).join(`pr-d${++drawnIconSeq}-`);
+  const svg = box.querySelector("svg");
+  if (!svg) return null;
+  svg.removeAttribute("width");
+  svg.removeAttribute("height");
+  svg.setAttribute("class", `${cls} drawn-icon`.trim());
+  svg.setAttribute("aria-hidden", "true");
+  return svg;
+}
+
+// Icon tinted with the item type's colour: the item's own image (a playing card's face…), else the
+// icon drawn for it, else its chosen or automatic icon.
 function itemIcon(item, cls = "") {
+  const drawn = item.iconSvg && !item.image ? drawnIcon(item.iconSvg, cls) : null;
+  if (drawn) {
+    drawn.style.color = itemColor(item);
+    return drawn;
+  }
   const el = iconSvg(itemIconId(item), cls);
   el.style.color = itemColor(item);
   if (!item.image) return el;

@@ -226,6 +226,18 @@ input.switch:focus-visible { outline: 3px solid var(--accent-soft); outline-offs
 .read-btns { margin-bottom: 14px; }
 .read-btns .read-btn { width: auto; flex: 1; margin: 0; }
 
+/* Drawn icons (svg-lay-tool): sized like the built-in ones; the icon editor fills the screen, in the app's colours. */
+svg.drawn-icon { overflow: visible; }
+.icon-drawer { background: var(--bg); }
+.icon-drawer-hint { margin: 0; padding: 6px 14px; border-bottom: 1px solid var(--border); }
+@media (max-width: 760px) { .icon-drawer-hint { display: none; } }
+.icon-drawer-host {
+  flex: 1; min-height: 0; position: relative;
+  --slt-bg: var(--bg); --slt-panel: var(--surface); --slt-panel-2: var(--surface-2); --slt-border: var(--border);
+  --slt-text: var(--text); --slt-muted: var(--muted); --slt-accent: var(--accent); --slt-accent-text: var(--accent-text);
+  --slt-input-bg: var(--surface); --slt-selected: var(--accent-soft); --slt-danger: var(--bad); --slt-font: var(--font);
+}
+
 /* An item's own image where its icon would be. */
 img.item-img { object-fit: contain; border-radius: 4px; }
 .detail-minimal img.tile-icon { opacity: .95; }
