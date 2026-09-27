@@ -453,7 +453,8 @@ a.btn { text-decoration: none; }
 .sort-dir.active { color: var(--accent); background: var(--accent-soft); }
 
 /* ------------------------------------------------------------ strapped-outside section */
-.strapped { margin: 8px; border: 1px dashed var(--border); border-radius: 10px; background: color-mix(in srgb, var(--surface-2) 50%, transparent); }
+/* A band across the bottom of its container, full width so its tiles line up with the ones above. */
+.strapped { border-top: 1px dashed var(--border); background: color-mix(in srgb, var(--surface-2) 50%, transparent); }
 .strapped-head { display: flex; align-items: center; gap: 6px; padding: 6px 12px; color: var(--muted); }
 .strapped-head h4 { margin: 0; flex: 1; font-size: .85rem; font-family: var(--font); text-transform: uppercase; letter-spacing: .05em; }
 .strapped-head .icon { width: 15px; height: 15px; }
