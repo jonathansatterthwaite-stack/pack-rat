@@ -1889,7 +1889,7 @@ async function openIconDrawer(item, onSave) {
       h("button", { class: "btn", onclick: close }, "Cancel"),
       h("button", { class: "btn primary", onclick: save }, icon("check"), "Use this icon")),
     h("p", { class: "icon-drawer-hint muted small" },
-      "Build the icon from shapes on layers: add shapes from the library, then move, resize and rotate them. A layer can be a mask that cuts the ones below it. It's drawn in one colour; the app colours it like its other icons."),
+      "Build the icon from shapes on layers: add shapes from the library and pick a layer in the strip beside the canvas. Press and hold a shape to move it; drag its handles to resize or rotate it. A layer can be a mask that cuts the ones below it. It's drawn in one colour; the app colours it like its other icons."),
     host);
   document.body.append(overlay);
   document.body.classList.add("modal-open");
