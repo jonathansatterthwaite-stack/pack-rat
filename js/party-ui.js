@@ -574,8 +574,18 @@ function openTradeBuilder(targetId = null, preselectUid = null) {
     }
     return false;
   };
+  // Each side has a search box; picked items stay listed whatever the search.
+  const queries = new Map();
+  const matches = (char, e, q) => {
+    if (!q) return true;
+    const loc = e.parent ? char.items.find(x => x.uid === e.parent)?.item.name || "" : "";
+    return [e.item.name, e.item.category, e.item.type, loc].some(t => t && t.toLowerCase().includes(q));
+  };
   const drawPicker = (box, char, map) => {
-    const items = [...char.items].sort((a, b) => a.item.name.localeCompare(b.item.name));
+    const q = (queries.get(box) || "").trim().toLowerCase();
+    // Cards in a deck go with the deck, like a container's contents.
+    const all = char.items.filter(e => !inDeck(char, e));
+    const items = all.filter(e => map.has(e.uid) || matches(char, e, q)).sort((a, b) => a.item.name.localeCompare(b.item.name));
     setChildren(box, (items.length ? items.map(e => {
       const included = insideSelected(char, e, map);
       const checked = map.has(e.uid);
@@ -590,8 +600,12 @@ function openTradeBuilder(targetId = null, preselectUid = null) {
         checked && e.qty > 1 && h("input", { type: "number", min: 1, max: e.qty, value: map.get(e.uid), inputmode: "numeric",
           "aria-label": `How many ${e.item.name}`,
           onchange: ev => map.set(e.uid, Math.max(1, Math.min(e.qty, Math.floor(+ev.target.value || 1)))) }));
-    }) : [h("p", { class: "muted small pad" }, "No items.")]));
+    }) : [h("p", { class: "muted small pad" }, all.length ? `Nothing matches “${q}”.` : "No items.")]));
   };
+  const searchBox = (box, getChar, map) => h("label", { class: "search trade-search" }, icon("search"),
+    h("input", { type: "search", placeholder: "Search items…", "aria-label": "Search items",
+      oninput: ev => { queries.set(box, ev.target.value); drawPicker(box, getChar(), map); } }));
+  const askSearch = searchBox(askBox, () => target, ask);
   const coinInputs = (obj, have) => h("div", { class: "coin-grid small" }, COIN_ORDER.map(k =>
     h("label", { class: "field coin-field " + k },
       h("span", null, k.toUpperCase() + (have ? ` (${(have[k] || 0).toLocaleString()})` : "")),
@@ -601,6 +615,8 @@ function openTradeBuilder(targetId = null, preselectUid = null) {
   const drawAsk = () => {
     for (const k of COIN_ORDER) delete askCoins[k];
     ask.clear();
+    queries.delete(askBox);
+    askSearch.querySelector("input").value = "";
     drawPicker(askBox, target, ask);
     askCoinBox.replaceChildren(coinInputs(askCoins, target.coins || {}));
   };
@@ -637,8 +653,8 @@ function openTradeBuilder(targetId = null, preselectUid = null) {
       h("select", { onchange: ev => { target = others.find(c => c.id === ev.target.value); drawAsk(); } },
         others.map(c => h("option", { value: c.id, selected: c === target }, c.name + (c.online ? "" : " (offline)"))))),
     h("div", { class: "trade-grid" },
-      h("div", { class: "trade-col" }, h("h4", null, `${me.name} gives`), giveBox, h("h4", null, "Coins"), coinInputs(giveCoins, me.coins)),
-      h("div", { class: "trade-col" }, h("h4", null, "In return, ask for"), askBox, h("h4", null, "Coins"), askCoinBox)),
+      h("div", { class: "trade-col" }, h("h4", null, `${me.name} gives`), searchBox(giveBox, () => me, give), giveBox, h("h4", null, "Coins"), coinInputs(giveCoins, me.coins)),
+      h("div", { class: "trade-col" }, h("h4", null, "In return, ask for"), askSearch, askBox, h("h4", null, "Coins"), askCoinBox)),
     h("label", { class: "field" }, h("span", null, "Note (optional)"),
       h("input", { type: "text", maxlength: 500, placeholder: "e.g. For the rope you lent me", oninput: ev => { note = ev.target.value; } })),
     h("p", { class: "muted small" }, "Nothing moves until they accept. Giving a container also gives what's in it."));

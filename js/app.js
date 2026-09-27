@@ -243,14 +243,33 @@ const tileWidths = new WeakMap();
 function tileResizer() {
   if (!tileObserver && window.ResizeObserver) {
     tileObserver = new ResizeObserver(entries => {
+      let changed = false;
       for (const e of entries) {
         if (Math.abs(e.contentRect.width - (tileWidths.get(e.target) || 0)) < 1) continue;
         tileWidths.set(e.target, e.contentRect.width);
-        fitTileNames(e.target);
+        changed = true;
       }
+      if (changed) syncTileSize();
     });
   }
   return tileObserver;
+}
+
+// One tile size for the whole view, set by its widest grid, so tiles in narrower grids (strapped
+// outside, nested containers) are the same size, just fewer to a row. Then names are refitted.
+const TILE_MIN = 84, TILE_GAP = 6;
+function syncTileSize(root = document.getElementById("view")) {
+  if (!root) return;
+  const boxes = [...root.querySelectorAll(".tiles")].filter(b => b.offsetParent);
+  const width = Math.max(0, ...boxes.map(b => {
+    const cs = getComputedStyle(b);
+    return b.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  }));
+  if (width > 0) {
+    const n = Math.max(1, Math.floor((width + TILE_GAP) / (TILE_MIN + TILE_GAP)));
+    root.style.setProperty("--tile-size", Math.floor((width - (n - 1) * TILE_GAP) / n * 100) / 100 + "px");
+  }
+  boxes.forEach(fitTileNames);
 }
 
 // Shrink each tile's name until it fits its tile (binary search on the font size).
@@ -300,8 +319,8 @@ function render() {
   const scroll = window.scrollY;
   tileObserver?.disconnect(); // the grids being replaced; new ones observe themselves
   main.replaceChildren(joining ? renderJoin() : VIEWS[ui.view].render());
-  // Tiles are laid out now: shrink names to fit (resizes are handled by each grid's observer).
-  main.querySelectorAll(".tiles").forEach(fitTileNames);
+  // Tiles are laid out now: size them and shrink names to fit (resizes are handled by each grid's observer).
+  syncTileSize(main);
   window.scrollTo(0, scroll);
 }
 
@@ -348,7 +367,7 @@ function renderInventory() {
   const list = h("div", { class: "inv-list" });
   const drawList = () => {
     setChildren(list, inventoryTree(char));
-    list.querySelectorAll(".tiles").forEach(fitTileNames); // no-op until the view is on screen
+    syncTileSize(); // no-op until the view is on screen
   };
   drawList();
 
