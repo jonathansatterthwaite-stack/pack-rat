@@ -1903,11 +1903,6 @@ async function openIconDrawer(item, onSave) {
         export: false, canvasSize: false, background: false,
       },
     });
-    // On phones the editor stacks its panels under the canvas and the canvas ends up tiny: keep it at
-    // least 55% of the screen tall, with the shape library and settings scrolling below it.
-    // (Better fixed in svg-lay-tool itself; this only adds a style inside its own shadow root.)
-    host.shadowRoot?.append(h("style", null,
-      "@media (max-width: 760px) { .slt-root { grid-template-rows: auto minmax(55vh, 1fr) auto auto !important; } }"));
     // Fit the canvas once the window has its final size.
     requestAnimationFrame(() => requestAnimationFrame(() => editor?.fitToView()));
   } catch (e) {
