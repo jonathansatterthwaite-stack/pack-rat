@@ -28,6 +28,7 @@ function setChildren(el, ...kids) {
 }
 
 const ICONS = {
+  undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
   bag: '<path d="M4 10a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/><path d="M8 21v-5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v5"/><path d="M8 10h8"/>',
   book: '<path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>',
   wand: '<path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72"/><path d="m14 7 3 3"/><path d="M5 6v4M19 14v4M10 2v2M7 8H3M21 16h-4M11 3H9"/>',
@@ -903,13 +904,18 @@ function readEntry(entryUid) {
 
 const hasWriting = it => !!(it.body && it.body.trim());
 
-// Read or write, for items that can be written in: the reader once there's something written.
+// Writing or a picture (or neither), for an item.
+function pageKind(it, srcId) {
+  return hasFeature(it, "picture", srcId) ? "picture" : hasFeature(it, "writable", srcId) ? "writing" : null;
+}
+
+// On an item's row: read or view what's there, or write in it / add a picture.
 function writingButton(e, onDone = () => {}, cls = "equip") {
-  const it = e.item;
-  if (!hasFeature(it, "writable", e.srcId)) return null;
-  const read = it.type === "document" || hasWriting(it);
-  return iconBtn(it.imageOnly ? "image" : read ? "book" : "edit", it.imageOnly ? "View" : read ? "Read" : "Write",
-    () => { onDone(); read ? readEntry(e.uid) : writeEntry(e.uid); }, cls);
+  const it = e.item, kind = pageKind(it, e.srcId);
+  if (!kind) return null;
+  const read = hasWriting(it) || (kind === "writing" && it.type === "document");
+  const [ic, label] = kind === "picture" ? ["image", read ? "View" : "Add a picture"] : read ? ["book", "Read"] : ["edit", "Write"];
+  return iconBtn(ic, label, () => { onDone(); read ? readEntry(e.uid) : writeEntry(e.uid); }, cls);
 }
 
 // Write in paper, a book, a letter…: just its text (player mode included). Writing on one sheet
@@ -918,6 +924,7 @@ function writeEntry(entryUid) {
   const e = store.char()?.items.find(x => x.uid === entryUid);
   if (!e) return;
   const draft = clone(e.item);
+  const picture = pageKind(e.item, e.srcId) === "picture";
   let close;
   const save = () => {
     commit((s, c) => {
@@ -931,15 +938,15 @@ function writeEntry(entryUid) {
       }
       for (const k of ["body", "author"]) if (!(draft[k] || "").trim()) delete draft[k];
       target.item = draft;
-    }, `Wrote in ${entryName(e)}`, true);
+    }, picture ? `Updated the picture on ${entryName(e)}` : `Wrote in ${entryName(e)}`, true);
     close();
   };
-  close = openModal(`Write in ${entryName(e)}`, [
-    e.qty > 1 && h("p", { class: "muted small" }, `One of your ${e.qty} is written in; the rest stay blank.`),
+  close = openModal(picture ? `Picture: ${entryName(e)}` : `Write in ${entryName(e)}`, [
+    e.qty > 1 && h("p", { class: "muted small" }, `One of your ${e.qty} changes; the rest stay as they are.`),
     h("div", { class: "form grid" },
-      h("label", { class: "field full" }, h("span", null, "Author / from"),
+      !picture && h("label", { class: "field full" }, h("span", null, "Author / from"),
         h("input", { type: "text", value: draft.author || "", placeholder: "e.g. Captain Varra", oninput: ev => { draft.author = ev.target.value; } })),
-      markdownField({ key: "body", label: "Text" }, draft)),
+      picture ? h("div", { class: "field full" }, pictureEditor({ key: "body" }, draft)) : markdownField({ key: "body", label: "Text" }, draft)),
   ], { wide: true, footer: [
     h("button", { class: "btn", onclick: () => close() }, "Cancel"),
     h("button", { class: "btn primary", onclick: save }, icon("check"), "Save"),
@@ -999,6 +1006,7 @@ function itemDetails(item, onIcon = null, srcId = item.id) {
   }
   if (has("liquid")) add("Liquid", item.liquidPints > 0 && `Holds ${fmtVolume(item.liquidPints)}`);
   add("Writing", has("writable") && item.type !== "document" && (hasWriting(item) ? "Written in" : "Blank — can be written in"));
+  add("Picture", has("picture") && item.type !== "document" && (hasWriting(item) ? "Has a picture" : "No picture yet"));
   add("Poison type", item.poisonType);
   add("Save DC", item.saveDC);
   if (has("charges")) {
@@ -1007,12 +1015,13 @@ function itemDetails(item, onIcon = null, srcId = item.id) {
   }
   add("AC bonus", has("worn") && item.acBonus && fmtMod(item.acBonus));
   add("Trinket table", item.table && `${item.table} (${item.roll})`);
-  add("Deck", has("deck") && item.deckCards?.length && `${plural(item.deckCards.length, "card")}`);
+  add("Set", has("deck") && item.deckCards?.length && plural(item.deckCards.length, pieceNoun(item)));
   // Fields from user templates.
   if (tpl && !tpl.builtin) for (const f of tpl.fields || []) add(f.label, fieldDisplay(f, item[f.key]));
   add("Source", item.source);
 
   return h("div", { class: "details" },
+    item.image && storedImage(item.image, "details-image", img => img.remove()),
     h("div", { class: "details-icon" }, itemIcon(item, "big-icon"),
       onIcon && h("button", { class: "btn", type: "button", onclick: () => openIconPicker(item.icon, onIcon, item) }, "Change icon")),
     h("dl", null, rows.map(([k, v]) => [h("dt", null, k), h("dd", null, v)])),
@@ -1142,16 +1151,18 @@ function openEntry(entryUid) {
     openEntry(e.uid);
   };
   // Things that can be written in: read what's there, and write (more).
-  const writable = hasFeature(it, "writable", e.srcId);
-  const read = writable && (it.type === "document" || hasWriting(it));
-  const readBtn = writable && h("div", { class: "inline wrap read-btns" },
-    read && h("button", { class: "btn primary read-btn", onclick: () => { close(); readEntry(e.uid); } }, icon(it.imageOnly ? "image" : "book"), it.imageOnly ? "View" : "Read"),
-    h("button", { class: "btn" + (read ? "" : " primary") + " read-btn", onclick: () => { close(); writeEntry(e.uid); } }, icon("edit"), read ? "Write" : "Write in it"));
+  const kind = pageKind(it, e.srcId);
+  const read = !!kind && (hasWriting(it) || (kind === "writing" && it.type === "document"));
+  const readBtn = kind && h("div", { class: "inline wrap read-btns" },
+    read && h("button", { class: "btn primary read-btn", onclick: () => { close(); readEntry(e.uid); } },
+      icon(kind === "picture" ? "image" : "book"), kind === "picture" ? "View" : "Read"),
+    h("button", { class: "btn" + (read ? "" : " primary") + " read-btn", onclick: () => { close(); writeEntry(e.uid); } },
+      icon(kind === "picture" ? "image" : "edit"), kind === "picture" ? (read ? "Change picture" : "Add a picture") : read ? "Write" : "Write in it"));
   // Older inventory copies of catalog containers get their capacity from the catalog.
   const shown = { ...it, holds: containerField(e, "holds"), liquidPints: containerField(e, "liquidPints") };
   const reopen = () => { close(); openEntry(entryUid); };
   close = openModal(entryName(e), [e.customName && h("p", { class: "muted small" }, it.name),
-    readBtn, liquidCap(e) > 0 && liquidControls(e), isDeckEntry(e) && deckSection(e, reopen),
+    readBtn, liquidCap(e) > 0 && liquidControls(e), isDeckEntry(e) && deckSection(e, reopen, () => close()),
     cardBackButton(e, () => close()), controls, planner?.el, itemDetails(shown, changeIcon, e.srcId)], { footer, wide: !!planner });
 }
 
@@ -1527,27 +1538,155 @@ function putCardsBack(deckUid, cardUids, msg) {
   }, msg, true);
 }
 
-// A deck's details: its cards, to take out (one, all, or at random) and put back.
-function deckSection(deck, reopen) {
+// A set's details (a deck of cards, a chess set…): its pieces, to take out (one, all, or at random) and put back.
+function deckSection(deck, reopen, closeDetails) {
   const char = store.char();
   const inside = cardsIn(char, deck), out = cardsOut(char, deck);
+  const noun = pieceNoun(deck.item), nouns = noun + "s", name = entryName(deck);
   const act = fn => () => { fn(); reopen(); };
   return h("section", { class: "deck" },
-    h("div", { class: "section-head" }, h("h4", null, `Cards — ${plural(inside.length, "card")} in the ${deck.item.name.toLowerCase()}`)),
+    h("div", { class: "section-head" }, h("h4", null, `${nouns[0].toUpperCase() + nouns.slice(1)} — ${plural(inside.length, noun)} in the ${name.toLowerCase()}`)),
     h("div", { class: "inline wrap deck-actions" },
-      inside.length > 0 && h("button", { class: "btn primary", type: "button", onclick: act(() => {
-        const card = inside[Math.floor(Math.random() * inside.length)];
-        takeCards(deck.uid, [card.uid], `Drew ${card.item.name}`);
-      }) }, icon("dice"), "Draw a card"),
-      inside.length > 1 && h("button", { class: "btn", type: "button", onclick: act(() => takeCards(deck.uid, inside.map(x => x.uid), `Took all the cards out of the ${deck.item.name}`)) }, "Take all out"),
-      out.length > 0 && h("button", { class: "btn", type: "button", onclick: act(() => putCardsBack(deck.uid, out.map(x => x.uid), `Put ${plural(out.length, "card")} back`)) }, `Put ${plural(out.length, "card")} back`)),
-    inside.length ? h("div", { class: "group deck-cards" }, inside.map(card => h("div", { class: "row" },
+      inside.length > 0 && h("button", { class: "btn primary", type: "button", onclick: () => { closeDetails(); openDraw(deck.uid); } },
+        icon("dice"), noun === "card" ? "Draw a card" : "Take one at random"),
+      inside.length > 1 && h("button", { class: "btn", type: "button", onclick: act(() => takeCards(deck.uid, inside.map(x => x.uid), `Took all the ${nouns} out of the ${name}`)) }, "Take all out"),
+      out.length > 0 && h("button", { class: "btn", type: "button", onclick: act(() => putCardsBack(deck.uid, out.map(x => x.uid), `Put ${plural(out.length, noun)} back`)) }, `Put ${plural(out.length, noun)} back`)),
+    inside.length ? h("div", { class: "group deck-cards" }, inside.map(card => h("div", { class: "row" + (card.item.image ? " has-img" : "") },
       itemIcon(card.item, "row-icon"),
       h("div", { class: "row-main static" }, h("div", { class: "row-title" }, card.item.name)),
       h("button", { class: "btn", type: "button", onclick: act(() => takeCards(deck.uid, [card.uid], `Took out ${card.item.name}`)) }, "Take out"))))
-      : h("p", { class: "muted small" }, "The deck is empty."),
-    out.length > 0 && h("p", { class: "muted small" }, `Out of the deck: ${out.map(x => x.item.name).join(", ")}.`),
-    h("p", { class: "muted small" }, "Cards in the deck don't show in your inventory. Taken out, they're ordinary items (their details can put them back)."));
+      : h("p", { class: "muted small" }, `The ${name.toLowerCase()} is empty.`),
+    out.length > 0 && h("p", { class: "muted small" }, `Taken out: ${out.map(x => x.item.name).join(", ")}.`),
+    h("p", { class: "muted small" }, `${nouns[0].toUpperCase() + nouns.slice(1)} in the set don't show in your inventory. Taken out, they're ordinary items (their details can put them back).`));
+}
+
+// ------------------------------------------------------------------ drawing from a set
+
+// Draw from a set into a window of its own: the first piece fills it, and each further draw
+// shrinks them all to share it (1, then 2 side by side or stacked, 2×2, 3×3…, whichever makes
+// them biggest for their shape) until they'd be too small, when it scrolls instead. Drawn pieces
+// are already out of the set, where it is; Keep leaves them there, Put back returns them.
+// The window only shows what drawFromSet did, so a party could later show the same draw to everyone.
+function openDraw(setUid, count = 1) {
+  const char = store.char();
+  const set = char.items.find(e => e.uid === setUid);
+  if (!set) return;
+  const noun = pieceNoun(set.item), name = entryName(set);
+  const drawn = []; // piece uids, in the order drawn
+  const draw = n => {
+    let got = [];
+    commit((s, c) => { got = drawFromSet(c, setUid, n); }, null, false);
+    drawn.push(...got);
+    if (!got.length) toast(`The ${name.toLowerCase()} is empty`);
+    return got;
+  };
+
+  const title = h("div", { class: "reader-title" });
+  const board = drawBoard(noun);
+  const drawBtn = h("button", { class: "btn primary", onclick: () => { if (draw(1).length) refresh(true); } }, icon("dice"), "");
+  const backBtn = h("button", { class: "btn", onclick: () => { putCardsBack(setUid, drawn, `Put ${plural(drawn.length, noun)} back in the ${name}`); close(); } }, icon("undo"), "Put back");
+  const keepBtn = h("button", { class: "btn primary", onclick: () => { toast(`${plural(drawn.length, noun)} to your inventory`); close(); } }, icon("check"), "Keep");
+  const refresh = (added = false) => {
+    const c = store.char();
+    const pieces = drawn.map(u => c.items.find(x => x.uid === u)).filter(Boolean);
+    const left = cardsIn(c, c.items.find(x => x.uid === setUid) || set).length;
+    title.textContent = `${name}: ${plural(pieces.length, noun)} drawn`;
+    drawBtn.lastChild.textContent = `Draw ${noun === "card" ? "another" : "one more"} (${left} left)`;
+    drawBtn.disabled = !left;
+    backBtn.disabled = keepBtn.disabled = !pieces.length;
+    board.show(pieces.map(p => ({ uid: p.uid, item: p.item, name: entryName(p) })), added, uid => {
+      // Put just this one back.
+      putCardsBack(setUid, [uid], null);
+      drawn.splice(drawn.indexOf(uid), 1);
+      if (drawn.length) refresh(); else close();
+    });
+  };
+
+  const overlay = h("div", { class: "reader draw-view", role: "dialog", "aria-modal": "true", "aria-label": `Drawing from ${name}` },
+    h("div", { class: "reader-bar" }, title,
+      iconBtn("x", "Close (keeps what was drawn)", () => close())),
+    board.el,
+    h("div", { class: "draw-actions" }, drawBtn, backBtn, keepBtn));
+  const onKey = e => { if (e.key === "Escape") close(); };
+  const onResize = () => board.layout();
+  function close() {
+    overlay.remove();
+    document.removeEventListener("keydown", onKey);
+    window.removeEventListener("resize", onResize);
+    document.body.classList.toggle("modal-open", !!document.getElementById("modal-root").children.length);
+    render();
+  }
+  document.addEventListener("keydown", onKey);
+  window.addEventListener("resize", onResize);
+  document.body.append(overlay);
+  document.body.classList.add("modal-open");
+  if (draw(count).length) refresh(true); else close();
+}
+
+// The drawn pieces, laid out as big as they fit. Shows pieces given as { uid, item, name }
+// (from this character, or later from a party's shared draw).
+const DRAW_MIN_WIDTH = 110, DRAW_GAP = 12;
+function drawBoard(noun) {
+  const grid = h("div", { class: "draw-grid" });
+  const stage = h("div", { class: "draw-stage" }, grid);
+  let count = 0, aspect = noun === "card" ? 2.5 / 3.5 : 1; // width / height; a picture's own shape once it's loaded
+
+  // Columns that make the pieces biggest; if even that's too small, scroll at a readable size.
+  const layout = () => {
+    const cs = getComputedStyle(stage);
+    const W = stage.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const H = stage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    if (!count || W <= 0 || H <= 0) return;
+    let best = { cols: 1, w: 0 };
+    for (let cols = 1; cols <= count; cols++) {
+      const rows = Math.ceil(count / cols);
+      const w = Math.min((W - DRAW_GAP * (cols - 1)) / cols, (H - DRAW_GAP * (rows - 1)) / rows * aspect);
+      if (w > best.w) best = { cols, w };
+    }
+    let { cols, w } = best;
+    const scrolls = w < DRAW_MIN_WIDTH;
+    if (scrolls) {
+      cols = Math.max(1, Math.floor((W + DRAW_GAP) / (DRAW_MIN_WIDTH + DRAW_GAP)));
+      w = (W - DRAW_GAP * (cols - 1)) / cols;
+    }
+    stage.classList.toggle("scrolls", scrolls);
+    grid.style.gridTemplateColumns = `repeat(${cols}, ${Math.floor(w)}px)`;
+    grid.style.setProperty("--piece-h", Math.floor(w / aspect) + "px");
+  };
+
+  const face = p => {
+    if (p.item.image) {
+      const img = storedImage(p.item.image, "draw-img", el => el.replaceWith(textFace(p)));
+      img.addEventListener("load", () => {
+        // The pieces take the shape of their pictures.
+        if (img.naturalWidth && img.naturalHeight) { aspect = img.naturalWidth / img.naturalHeight; layout(); }
+      }, { once: true });
+      return img;
+    }
+    return textFace(p);
+  };
+  const textFace = p => {
+    const el = h("div", { class: "draw-face" }, itemIcon({ ...p.item, image: undefined }, "draw-icon"), h("span", { class: "draw-name" }, p.name));
+    el.style.setProperty("--type", itemColor(p.item));
+    return el;
+  };
+
+  const show = (pieces, added, onPutBack) => {
+    count = pieces.length;
+    setChildren(grid, pieces.map((p, i) => h("figure", { class: "draw-piece" + (added && i === pieces.length - 1 ? " new" : ""), title: p.name },
+      face(p),
+      h("figcaption", null, p.name),
+      onPutBack && h("button", { type: "button", class: "draw-back", title: `Put ${p.name} back`, "aria-label": `Put ${p.name} back`,
+        onclick: () => onPutBack(p.uid) }, icon("undo")))));
+    layout();
+    requestAnimationFrame(() => {
+      layout();
+      // Scrolling: bring the newest draw into view.
+      if (added && stage.classList.contains("scrolls")) grid.lastElementChild?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+  };
+  if (window.ResizeObserver) new ResizeObserver(layout).observe(stage);
+  return { el: stage, show, layout };
 }
 
 // A card taken out of a deck this character still has: put it back.
@@ -1555,8 +1694,8 @@ function cardBackButton(e, close) {
   if (!e.fromDeck || e.parent === e.fromDeck) return null;
   const deck = store.char().items.find(x => x.uid === e.fromDeck);
   if (!deck) return null;
-  return h("button", { class: "btn primary read-btn", type: "button", onclick: () => { close(); putCardsBack(deck.uid, [e.uid], `Put ${e.item.name} back in the ${deck.item.name}`); } },
-    icon("package"), `Put back in the ${deck.item.name}`);
+  return h("button", { class: "btn primary read-btn", type: "button", onclick: () => { close(); putCardsBack(deck.uid, [e.uid], `Put ${e.item.name} back in the ${entryName(deck)}`); } },
+    icon("package"), `Put back in the ${entryName(deck)}`);
 }
 
 // Unpacking a pack: which items to include, how many, and where each goes (inside its container,
@@ -1651,19 +1790,13 @@ function openItemForm(item, opts = {}) {
   for (const k of FEATURE_FIELD_KEYS) if (draft[k] === undefined && cat?.[k] !== undefined) draft[k] = clone(cat[k]);
   const chosen = {}; // features ticked or unticked here
   const isOn = key => key in chosen ? chosen[key] : hasFeature(draft, key, srcId);
-  const features = h("div", { class: "features full" },
-    h("h4", null, "Features"),
-    h("p", { class: "muted small" }, "What this item can do. Each shows its own settings while ticked."),
-    FEATURES.map(ft => {
-      const box = h("div", { class: "form grid feature-fields" }, ft.fields.map(f => fieldInput(f, draft)));
-      box.hidden = !isOn(ft.key);
-      return h("div", { class: "feature" },
-        h("label", { class: "check" },
-          h("input", { type: "checkbox", checked: isOn(ft.key), onchange: ev => { chosen[ft.key] = ev.target.checked; box.hidden = !ev.target.checked; } }),
-          h("span", null, " ", h("b", null, ft.label), ft.hint && h("span", { class: "muted small" }, ` — ${ft.hint}`))),
-        box);
-    }));
-  const form = h("form", { class: "form grid", onsubmit: e => { e.preventDefault(); save(); } }, fields.map(f => fieldInput(f, draft)), features);
+  const features = featuresPanel(draft, isOn, chosen);
+  // The features go above the description (a document has none: then above the source).
+  const els = fields.map(f => [f.key, fieldInput(f, draft)]);
+  let at = els.findIndex(([k]) => k === "description");
+  if (at < 0) at = els.findIndex(([k]) => k === "source");
+  els.splice(at < 0 ? els.length : at, 0, ["features", features]);
+  const form = h("form", { class: "form grid", onsubmit: e => { e.preventDefault(); save(); } }, els.map(([, el]) => el));
   let close;
 
   function save() {
@@ -1672,9 +1805,11 @@ function openItemForm(item, opts = {}) {
     // Unticked features lose their settings; the item keeps which features it has only where
     // that differs from the default for its kind.
     const on = Object.fromEntries(FEATURES.map(ft => [ft.key, isOn(ft.key)]));
-    for (const ft of FEATURES) if (!on[ft.key]) for (const f of ft.fields) delete draft[f.key];
+    const kept = new Set(FEATURES.filter(ft => on[ft.key]).flatMap(ft => ft.fields.map(f => f.key))); // shared fields (the body)
+    for (const ft of FEATURES) if (!on[ft.key]) for (const f of ft.fields) if (!kept.has(f.key)) delete draft[f.key];
+    for (const ft of FEATURES) if (ft.flag) { if (on[ft.key]) draft[ft.flag] = true; else delete draft[ft.flag]; }
     delete draft.features;
-    const flags = Object.fromEntries(FEATURES.filter(ft => on[ft.key] !== featureDefault(draft, ft.key, srcId)).map(ft => [ft.key, on[ft.key]]));
+    const flags = Object.fromEntries(FEATURES.filter(ft => !ft.flag && on[ft.key] !== featureDefault(draft, ft.key, srcId)).map(ft => [ft.key, on[ft.key]]));
     if (Object.keys(flags).length) draft.features = flags;
     if (on.pack) draft.contents = (draft.contents || []).filter(c => c.name);
     for (const k of Object.keys(draft)) if (draft[k] === "" || draft[k] == null) delete draft[k];
@@ -1706,6 +1841,108 @@ function openItemForm(item, opts = {}) {
     h("button", { class: "btn", onclick: () => close() }, "Cancel"),
     h("button", { class: "btn primary", onclick: save }, icon("check"), "Save"),
   ] });
+}
+
+// An item's own image, shown in place of its icon (a playing card's face, a portrait…).
+function imageField(f, draft, cls, label) {
+  const box = h("div", { class: "inline image-field" });
+  const pick = () => pickImageFiles(false, async ([file]) => {
+    try { draft[f.key] = await addImageFile(file); draw(); } catch (e) { toast(e.message); }
+  });
+  const draw = () => setChildren(box,
+    draft[f.key] ? storedImage(draft[f.key], "pic-thumb") : h("span", { class: "muted small" }, "None"),
+    h("button", { type: "button", class: "btn", onclick: pick }, icon("image"), draft[f.key] ? "Change…" : "Choose…"),
+    draft[f.key] && h("button", { type: "button", class: "btn", onclick: () => { delete draft[f.key]; draw(); } }, "Remove"));
+  draw();
+  return h("div", { class: cls }, label, box);
+}
+
+// A set's pieces: a name each and, optionally, a picture. Pictures can be added in one go (each
+// becomes a piece named after its file, e.g. a folder of card faces), and names pasted as a list.
+function piecesField(f, draft) {
+  const rows = (draft[f.key] || []).map(pieceSpec);
+  const save = () => {
+    const list = rows.filter(r => r.name.trim()).map(r => r.image ? { name: r.name.trim(), image: r.image } : r.name.trim());
+    if (list.length) draft[f.key] = list; else delete draft[f.key];
+  };
+  const list = h("div", { class: "pieces-list" });
+  const count = h("span", { class: "muted small" });
+  const setImage = (r, done) => pickImageFiles(false, async ([file]) => {
+    try { r.image = await addImageFile(file); save(); done(); } catch (e) { toast(e.message); }
+  });
+  const draw = () => {
+    count.textContent = rows.length ? plural(rows.length, "piece") : "No pieces yet";
+    setChildren(list, rows.map((r, i) => h("div", { class: "piece-row" },
+      h("button", { type: "button", class: "piece-img", title: r.image ? "Change picture" : "Add a picture", "aria-label": r.image ? "Change picture" : "Add a picture",
+        onclick: () => setImage(r, draw) }, r.image ? storedImage(r.image) : icon("image")),
+      h("input", { type: "text", value: r.name, placeholder: "Name", "aria-label": `Piece ${i + 1} name`,
+        oninput: e => { r.name = e.target.value; save(); } }),
+      r.image && iconBtn("x", "Remove picture", () => { delete r.image; save(); draw(); }),
+      iconBtn("trash", "Remove piece", () => { rows.splice(i, 1); save(); draw(); }))));
+  };
+  const paste = h("textarea", { rows: 4, placeholder: "One name per line", hidden: true });
+  const addPasted = h("button", { type: "button", class: "btn", hidden: true, onclick: () => {
+    for (const name of paste.value.split("\n").map(x => x.trim()).filter(Boolean)) rows.push({ name });
+    paste.value = ""; paste.hidden = addPasted.hidden = true;
+    save(); draw();
+  } }, "Add these");
+  const addPictures = () => pickImageFiles(true, async files => {
+    toast(`Adding ${plural(files.length, "picture")}…`);
+    for (const file of files) {
+      try {
+        rows.push({ name: file.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim(), image: await addImageFile(file) });
+      } catch (e) { toast(e.message); }
+    }
+    save(); draw();
+  });
+  draw();
+  return h("div", { class: "field full" },
+    h("span", null, f.label, " ", count),
+    list,
+    h("div", { class: "inline wrap" },
+      h("button", { type: "button", class: "btn", onclick: () => { rows.push({ name: "" }); draw(); list.lastElementChild?.querySelector("input")?.focus(); } }, icon("plus"), "Add piece"),
+      h("button", { type: "button", class: "btn", onclick: addPictures }, icon("image"), "Add from pictures…"),
+      h("button", { type: "button", class: "btn", onclick: () => { paste.hidden = addPasted.hidden = false; paste.focus(); } }, icon("edit"), "Paste a list…")),
+    paste, addPasted,
+    h("p", { class: "muted small" }, "“Add from pictures” makes a piece from each picture you pick (named after the file), e.g. all 54 faces of a deck of cards at once."));
+}
+
+// The item form's features: a collapsible panel across the form. Closed, it lists what's ticked.
+function featuresPanel(draft, isOn, chosen) {
+  let open = readPref("packrat-features-open", "") === "1";
+  const summary = h("span", { class: "muted small features-summary" });
+  const drawSummary = () => { summary.textContent = FEATURES.filter(ft => isOn(ft.key)).map(ft => ft.label).join(" · ") || "None"; };
+  const rows = {};
+  const set = (key, v) => {
+    chosen[key] = v;
+    rows[key].input.checked = v;
+    rows[key].box.hidden = !v;
+  };
+  const list = FEATURES.map(ft => {
+    const box = h("div", { class: "form grid feature-fields" }, ft.fields.map(f => fieldInput(f, draft)));
+    box.hidden = !isOn(ft.key) || !ft.fields.length;
+    const input = h("input", { type: "checkbox", checked: isOn(ft.key), onchange: ev => {
+      set(ft.key, ev.target.checked);
+      if (!ft.fields.length) box.hidden = true;
+      if (ev.target.checked && ft.excludes && isOn(ft.excludes)) set(ft.excludes, false); // writing or a picture, not both
+      drawSummary();
+    } });
+    rows[ft.key] = { input, box };
+    return h("div", { class: "feature" },
+      h("label", { class: "check" }, input, h("span", null, h("b", null, ft.label), ft.hint && h("span", { class: "muted" }, " " + ft.hint))),
+      box);
+  });
+  const body = h("div", { class: "features-body" }, list);
+  body.hidden = !open;
+  const toggle = h("button", { type: "button", class: "collapse" + (open ? "" : " closed"), "aria-expanded": String(open), onclick: () => {
+    open = !open;
+    writePref("packrat-features-open", open ? "1" : "");
+    body.hidden = !open;
+    toggle.classList.toggle("closed", !open);
+    toggle.setAttribute("aria-expanded", String(open));
+  } }, icon("chevron"), h("h3", null, "Features"));
+  drawSummary();
+  return h("section", { class: "group features-panel" }, h("div", { class: "group-head" }, toggle, summary), body);
 }
 
 function fieldInput(f, draft) {
@@ -1753,6 +1990,12 @@ function fieldInput(f, draft) {
     }
     case "markdown":
       return markdownField(f, draft);
+    case "picture":
+      return h("div", { class: "field full" }, pictureEditor(f, draft));
+    case "image":
+      return imageField(f, draft, cls, label);
+    case "pieces":
+      return piecesField(f, draft);
     case "packContents":
       return packContentsField(f, draft);
     case "icon": {

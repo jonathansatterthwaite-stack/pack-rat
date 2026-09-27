@@ -264,7 +264,9 @@ function featureDefault(item, key, srcId) {
     case "liquid": return +field("liquidPints") > 0;
     case "pack": return item.type === "pack";
     case "deck": { const list = field("deckCards"); return Array.isArray(list) && list.length > 0; }
-    case "writable": return item.type === "document" || (!item.card && WRITABLE_NAME.test(item.name || ""));
+    case "writable": return !item.imageOnly && (item.type === "document" || (!item.card && WRITABLE_NAME.test(item.name || "")));
+    case "picture": return !!item.imageOnly;
+    case "attunement": return !!item.attunement;
     case "charges": return item.maxCharges > 0;
     case "worn": return !!item.acBonus;
     case "bundle": return item.bundle > 1 || item.type === "ammunition";
@@ -323,14 +325,26 @@ function deckList(item, srcId) {
 
 const isDeckEntry = e => !!deckList(e.item, e.srcId);
 
-function cardItem(name) {
-  return { type: "gear", category: "Card", name, weight: 0, cost: 0, card: true, icon: "cards" };
+// What one piece of a set is called: its own word, else "card" for decks of cards, else "piece".
+function pieceNoun(item) {
+  return (item.pieceName || "").trim().toLowerCase() || (/\b(card|cards|deck|tarot)\b/i.test(item.name || "") ? "card" : "piece");
+}
+
+// A set's pieces are listed as names, or { name, image } for pieces with a picture (a card's face).
+const pieceSpec = p => typeof p === "string" ? { name: p } : { name: p?.name || "", image: p?.image };
+
+function cardItem(name, noun = "card", image = null) {
+  const piece = { type: "gear", category: noun[0].toUpperCase() + noun.slice(1), name, weight: 0, cost: 0, card: true };
+  if (noun === "card") piece.icon = "cards";
+  if (image) piece.image = image;
+  return piece;
 }
 
 // Put a deck's cards in it (a new deck, or one added before decks had cards).
 function fillDeck(char, deck) {
-  for (const name of deckList(deck.item, deck.srcId) || []) {
-    char.items.push({ uid: uid(), srcId: null, item: cardItem(name), qty: 1, equipped: false, attuned: false,
+  const noun = pieceNoun(deck.item);
+  for (const { name, image } of (deckList(deck.item, deck.srcId) || []).map(pieceSpec).filter(p => p.name)) {
+    char.items.push({ uid: uid(), srcId: null, item: cardItem(name, noun, image), qty: 1, equipped: false, attuned: false,
       parent: deck.uid, strapped: false, notes: "", fromDeck: deck.uid });
   }
   deck.deckFilled = true;
@@ -339,6 +353,24 @@ function fillDeck(char, deck) {
 // The cards in a deck, and the ones taken out of it (still carried by this character).
 const cardsIn = (char, deck) => char.items.filter(e => e.parent === deck.uid && e.item.card);
 const cardsOut = (char, deck) => char.items.filter(e => e.fromDeck === deck.uid && e.parent !== deck.uid);
+
+// Draw pieces at random: out of the set to where the set is (they're then ordinary items).
+// Only moves data, so whatever shows the draw (this device's draw window, or later everyone's
+// in a party) can work from the piece uids returned. random: for a host doing the drawing.
+function drawFromSet(char, setUid, count = 1, random = Math.random) {
+  const set = char.items.find(e => e.uid === setUid);
+  if (!set) return [];
+  const drawn = [];
+  for (let i = 0; i < count; i++) {
+    const left = cardsIn(char, set);
+    if (!left.length) break;
+    const piece = left[Math.floor(random() * left.length)];
+    piece.parent = set.parent;
+    piece.strapped = !!set.strapped;
+    drawn.push(piece.uid);
+  }
+  return drawn;
+}
 
 // In a deck: kept out of the inventory lists.
 function inDeck(char, e) {

@@ -13,10 +13,10 @@ const RARITIES = ["", "Common", "Uncommon", "Rare", "Very Rare", "Legendary", "A
 const COMMON_FIELDS = [
   { key: "name", label: "Name", kind: "text", required: true },
   { key: "icon", label: "Icon", kind: "icon" },
+  { key: "image", label: "Image", kind: "image" },
   { key: "cost", label: "Cost", kind: "cost" },
   { key: "weight", label: "Weight (lb)", kind: "number", step: 0.01 },
   { key: "rarity", label: "Rarity", kind: "select", options: RARITIES },
-  { key: "attunement", label: "Requires attunement", kind: "checkbox" },
   { key: "description", label: "Description", kind: "textarea" },
   { key: "source", label: "Source", kind: "text", placeholder: "Homebrew" },
 ];
@@ -120,9 +120,11 @@ const BUILTIN_TEMPLATES = [
 // What an item can do, whatever its type: hold other items, hold liquid, unpack into items, hold
 // cards, be written in… Each is a checkbox when editing an item, and its fields only show while
 // it's ticked. Items say which they have in `features` ({ holds: true, deck: false }); anything
-// not listed follows the default for that kind of item (featureDefault in store.js).
+// not listed follows the default for that kind of item (featureDefault in store.js). A feature with
+// a `flag` is that yes/no field of the item itself (attunement, imageOnly). Two features that
+// `exclude` each other can't both be ticked.
 const FEATURES = [
-  { key: "holds", label: "Holds items", hint: "A container: other items go inside it", fields: [
+  { key: "holds", label: "Container", hint: "Other items go inside it. Set how much it holds, whether gear can be strapped outside, or that it only holds certain things.", fields: [
     { key: "capacity", label: "Capacity (text)", kind: "text", placeholder: "1 cubic foot/30 pounds of gear" },
     { key: "capacityLb", label: "Capacity (lb)", kind: "number" },
     { key: "weightless", label: "Contents don't add weight (e.g. Bag of Holding)", kind: "checkbox" },
@@ -131,27 +133,32 @@ const FEATURES = [
       labels: { "": "Anything, by weight", scrolls: "Paper, parchment, maps & scrolls", arrows: "Arrows", bolts: "Crossbow bolts" } },
     { key: "holdLimit", label: "How many it holds (counted)", kind: "number", placeholder: "20" },
   ] },
-  { key: "liquid", label: "Holds liquid", hint: "Record what's in it and how much", fields: [
+  { key: "liquid", label: "Liquid", hint: "Holds a liquid: record what's in it and how much.", fields: [
     { key: "liquidPints", label: "Liquid capacity (pints)", kind: "number", step: "any" },
   ] },
-  { key: "pack", label: "Equipment pack", hint: "Unpacks into the items listed", fields: [
+  { key: "deck", label: "Set", hint: "Made of pieces kept together, like the cards of a deck or the pieces of a chess set. They don't clutter the inventory; take them out (or draw one at random) and put them back.", fields: [
+    { key: "pieceName", label: "One piece is called", kind: "text", placeholder: "card, piece, tile…" },
+    { key: "deckCards", label: "Pieces", kind: "pieces" },
+  ] },
+  { key: "pack", label: "Pack", hint: "An equipment pack: unpacks into the items listed, packed the way you choose.", fields: [
     { key: "contents", label: "Contents", kind: "packContents" },
   ] },
-  { key: "deck", label: "Deck of cards", hint: "Holds its cards, which can be drawn and put back", fields: [
-    { key: "deckCards", label: "Cards (one per line)", kind: "lines", placeholder: "The Fool\nThe Magician\n…" },
-  ] },
-  { key: "writable", label: "Can be written in", hint: "Paper, books, letters: has text that can be read and written", fields: [
+  { key: "writable", label: "Writing", hint: "Can be written in and read: paper, books, letters, journals.", excludes: "picture", fields: [
     { key: "author", label: "Author / from", kind: "text", placeholder: "e.g. Captain Varra" },
     { key: "body", label: "Text", kind: "markdown" },
   ] },
-  { key: "charges", label: "Has charges", fields: [
+  { key: "picture", label: "Picture", hint: "Just an image (a map, a portrait, a sketch), viewed full screen with zoom.", flag: "imageOnly", excludes: "writable", fields: [
+    { key: "body", label: "Picture", kind: "picture" },
+  ] },
+  { key: "charges", label: "Charges", hint: "Has charges that get used up and recharge.", fields: [
     { key: "maxCharges", label: "Max charges", kind: "number" },
     { key: "recharge", label: "Recharge", kind: "text", placeholder: "1d6+1 at dawn" },
   ] },
-  { key: "worn", label: "Adds to AC while worn", fields: [
+  { key: "attunement", label: "Attunement", hint: "Requires attunement to use (a character can attune to 3 items).", flag: "attunement", fields: [] },
+  { key: "worn", label: "Armor bonus", hint: "Adds to Armor Class while worn.", fields: [
     { key: "acBonus", label: "AC bonus while worn", kind: "number" },
   ] },
-  { key: "bundle", label: "Sold in bundles", hint: "Cost and weight are per bundle (e.g. 20 arrows)", fields: [
+  { key: "bundle", label: "Bundle", hint: "Sold in bundles (like 20 arrows): cost and weight are per bundle.", fields: [
     { key: "bundle", label: "Bundle size", kind: "number", min: 1 },
   ] },
 ];

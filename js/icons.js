@@ -149,10 +149,15 @@ function iconSvg(id, cls = "") {
   return s;
 }
 
-// Icon tinted with the item type's colour.
+// Icon tinted with the item type's colour, or the item's own image (a playing card's face…).
 function itemIcon(item, cls = "") {
   const el = iconSvg(itemIconId(item), cls);
   el.style.color = itemColor(item);
+  if (!item.image) return el;
+  // The icon shows until the image is found (and stays if this device doesn't have it).
+  const img = storedImage(item.image, (cls + " item-img").trim());
+  if (img.src) return img;
+  img.addEventListener("load", () => el.replaceWith(img), { once: true });
   return el;
 }
 

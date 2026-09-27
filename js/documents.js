@@ -148,7 +148,32 @@ function docImageRefs(item) {
   for (const text of [item.body, item.description]) {
     if (typeof text === "string") for (const m of text.matchAll(IMG_REF)) ids.add(m[1]);
   }
+  // An item's own picture, and a set's pieces' pictures (exports and the party host get them too).
+  if (typeof item.image === "string") ids.add(item.image);
+  for (const p of Array.isArray(item.deckCards) ? item.deckCards : []) if (typeof p?.image === "string") ids.add(p.image);
   return ids;
+}
+
+// Pick image files (one, or several at once); onFiles gets the File list.
+function pickImageFiles(multiple, onFiles) {
+  const input = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", multiple, hidden: true,
+    onchange: () => { const files = [...input.files]; input.remove(); if (files.length) onFiles(files); } });
+  document.body.append(input);
+  input.click();
+}
+
+// Stored image srcs already looked up (so re-rendered lists show them straight away).
+const imageSrcCache = new Map();
+
+// An <img> for a stored image, filled in when it's loaded. onMissing: when this device doesn't have it.
+function storedImage(id, cls = "", onMissing = null) {
+  const img = h("img", { class: cls, alt: "", draggable: "false" });
+  const cached = imageSrcCache.get(id);
+  if (cached) img.src = cached;
+  else imageStore.src(id).then(src => {
+    if (src) { imageSrcCache.set(id, src); img.src = src; } else onMissing?.(img);
+  });
+  return img;
 }
 
 // Every image referenced anywhere in some characters / custom items.
@@ -396,20 +421,9 @@ function openPictureReader(item, opts = {}) {
 
 // ------------------------------------------------------------------ editor field
 
-// A document's body: either text (Markdown, with pictures) or just a picture.
+// Text (Markdown, with pictures). Just-a-picture items use pictureEditor (the Picture feature).
 function markdownField(f, draft) {
-  if (draft.type !== "document") return markdownEditor(f, draft);
-  const box = h("div", { class: "field full doc-body-field" });
-  const draw = () => setChildren(box,
-    h("div", { class: "doc-mode" },
-      h("span", null, "Shows as"),
-      h("div", { class: "seg seg-field", role: "radiogroup", "aria-label": "Document shows as" },
-        [[false, "Text & pictures"], [true, "Just a picture"]].map(([v, label]) => h("button", {
-          type: "button", role: "radio", class: !!draft.imageOnly === v ? "active" : "", "aria-checked": String(!!draft.imageOnly === v),
-          onclick: () => { if (v) draft.imageOnly = true; else delete draft.imageOnly; draw(); } }, label)))),
-    draft.imageOnly ? pictureEditor(f, draft) : markdownEditor(f, draft));
-  draw();
-  return box;
+  return markdownEditor(f, draft);
 }
 
 // For "just a picture" documents: add, caption and remove pictures (kept in the body as image references).
