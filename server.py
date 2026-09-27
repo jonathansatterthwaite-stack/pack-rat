@@ -1,0 +1,1140 @@
+#!/usr/bin/env python3
+"""Pack Rat party server.
+
+Serves the app on your local network and keeps every player's character on
+this computer so players can trade with each other.
+
+    python server.py [port]        (default port 8765)
+
+Players on the same Wi-Fi/LAN open the address printed at startup. Only the
+standard library is used, so there is nothing to install.
+
+The desktop app (desktop.py / PackRat.exe) imports this module instead: it
+serves the app privately on 127.0.0.1 and only opens the network-facing
+server while the player chooses to host a party.
+"""
+import base64
+import copy
+import json
+import math
+import os
+import random
+import re
+import socket
+import string
+import sys
+import threading
+import time
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+
+# App files live next to this script, or in PyInstaller's unpack dir inside the exe.
+ROOT = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "party-data")
+DATA_FILE = os.path.join(DATA_DIR, "party.json")
+DEFAULT_LAN_PORT = 8765
+# Only the app itself is served; party-data (which holds player tokens) and tools are not.
+STATIC_PREFIXES = ("/index.html", "/manifest.webmanifest", "/sw.js", "/css/", "/js/", "/icons/")
+NON_STACKING = {"weapon", "armor", "container", "magic", "pack"}
+COINS = ["pp", "gp", "ep", "sp", "cp"]
+MAX_BODY = 8 * 1024 * 1024
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
+IMAGE_TYPES = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif"}
+KEEP_RESOLVED_TRADES = 50
+
+cond = threading.Condition()  # guards everything below
+state = {"characters": {}, "trades": []}
+version = 0                   # bumped on every change; event streams wait on it
+online = {}                   # player token -> number of open event streams
+leaving = set()               # tokens whose player chose Leave party: their streams close now
+
+# Desktop mode (see desktop.py)
+DESKTOP = False
+app_server = None             # the app window's private server on 127.0.0.1
+lan_server = None             # the server other players join; None when not hosting
+lan_port = None
+presence = {"count": 0, "seen": False, "changed": time.time()}  # open app windows
+
+
+def configure(data_dir, desktop, local_dir=None):
+    global DATA_DIR, DATA_FILE, DESKTOP, LOCAL_DIR
+    DATA_DIR = data_dir
+    DATA_FILE = os.path.join(data_dir, "party.json")
+    DESKTOP = desktop
+    LOCAL_DIR = local_dir
+    load()
+    load_local()
+
+
+# ------------------------------------------------------------------ this PC's own data (desktop app)
+#
+# Everything the app would otherwise keep in browser storage (characters,
+# custom items, settings, party identity) plus document images, stored in
+# files so every Pack Rat window or browser tab on this PC shares them.
+
+LOCAL_DIR = None
+local = {"rev": 0, "data": {}}  # key -> string value, like localStorage
+
+
+def local_file():
+    return os.path.join(LOCAL_DIR, "app-data.json")
+
+
+def load_local():
+    if LOCAL_DIR and os.path.exists(local_file()):
+        with open(local_file(), encoding="utf8") as f:
+            local["data"] = json.load(f).get("data", {})
+
+
+def save_local():
+    os.makedirs(LOCAL_DIR, exist_ok=True)
+    tmp = local_file() + ".tmp"
+    with open(tmp, "w", encoding="utf8") as f:
+        json.dump({"data": local["data"]}, f, ensure_ascii=False)
+    os.replace(tmp, local_file())
+
+
+def party_enabled():
+    return not DESKTOP or lan_server is not None
+
+
+# ------------------------------------------------------------------ persistence
+
+def load():
+    global state
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, encoding="utf8") as f:
+            state = json.load(f)
+        state.setdefault("characters", {})
+        state.setdefault("trades", [])
+    state.setdefault("shops", [])
+    if not state.get("partyId"):
+        # Lets devices recognise this party even if the host's address changes.
+        state["partyId"] = new_id("p")
+        save()
+
+
+def save():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    tmp = DATA_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf8") as f:
+        json.dump(state, f, ensure_ascii=False)
+    os.replace(tmp, DATA_FILE)
+
+
+def changed(persist=True):
+    """Call with `cond` held after mutating state."""
+    global version
+    version += 1
+    if persist:
+        save()
+    cond.notify_all()
+
+
+def new_id(prefix=""):
+    rnd = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    return prefix + format(int(time.time() * 1000), "x") + rnd
+
+
+# ------------------------------------------------------------------ views
+
+def public_char(c, token):
+    out = {k: v for k, v in c.items() if k != "owner"}
+    out["mine"] = c["owner"] == token
+    out["online"] = online.get(c["owner"], 0) > 0
+    return out
+
+
+def snapshot(token):
+    chars = state["characters"]
+    mine = {cid for cid, c in chars.items() if c["owner"] == token}
+    trades = [dict(t, fromMine=t["from"] in mine, toMine=t["to"] in mine)
+              for t in state["trades"] if t["from"] in mine or t["to"] in mine]
+    return {"characters": [public_char(c, token) for c in chars.values()], "trades": trades,
+            "shops": [public_shop(sh) for sh in state.get("shops", []) if sh.get("open")]}
+
+
+_own_ips = {"at": 0, "ips": set()}
+
+
+def own_ips():
+    """This computer's addresses (cached briefly): requests from them come from this PC."""
+    if time.time() - _own_ips["at"] > 30:
+        _own_ips["ips"] = set(lan_addresses()) | {"127.0.0.1", "::1"}
+        _own_ips["at"] = time.time()
+    return _own_ips["ips"]
+
+
+def lan_addresses():
+    addrs = set()
+    try:  # the address the OS would use to reach the internet; UDP connect sends nothing
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("10.255.255.255", 1))
+        addrs.add(s.getsockname()[0])
+        s.close()
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            addrs.add(info[4][0])
+    except OSError:
+        pass
+    return sorted(a for a in addrs if not a.startswith("127."))
+
+
+# ------------------------------------------------------------------ trades
+
+class TradeError(Exception):
+    pass
+
+
+def find_entry(char, uid):
+    return next((e for e in char["items"] if e["uid"] == uid), None)
+
+
+def descendants(char, uid):
+    out, frontier = [], [uid]
+    while frontier:
+        kids = [e for e in char["items"] if e.get("parent") in frontier]
+        out += kids
+        frontier = [e["uid"] for e in kids]
+    return out
+
+
+def clean_side(char, side):
+    """Normalise one side of an offer and attach item names for display."""
+    side = side or {}
+    items = []
+    for it in side.get("items") or []:
+        qty = int(it.get("qty") or 0)
+        e = find_entry(char, it.get("uid"))
+        if qty <= 0 or not e:
+            raise TradeError("An item in the offer no longer exists.")
+        items.append({"uid": e["uid"], "qty": qty, "name": e["item"]["name"]})
+    uids = {i["uid"] for i in items}
+    for i in items:  # giving a container already gives everything in it
+        if any(d["uid"] in uids for d in descendants(char, i["uid"])):
+            raise TradeError(f"Don't list items that are inside {i['name']} - they go with it.")
+    coins = {k: int((side.get("coins") or {}).get(k) or 0) for k in COINS}
+    if any(v < 0 for v in coins.values()):
+        raise TradeError("Coin amounts can't be negative.")
+    return {"items": items, "coins": {k: v for k, v in coins.items() if v}}
+
+
+def check_side(char, side):
+    for it in side["items"]:
+        e = find_entry(char, it["uid"])
+        if not e or e["qty"] < it["qty"]:
+            raise TradeError(f"{char['name']} no longer has {it['qty']} x {it['name']}.")
+    for k, v in side["coins"].items():
+        if (char.get("coins") or {}).get(k, 0) < v:
+            raise TradeError(f"{char['name']} doesn't have {v} {k}.")
+
+
+# ------------------------------------------------------------------ shops
+
+COIN_VALUES = {"pp": 1000, "gp": 100, "ep": 50, "sp": 10, "cp": 1}
+
+
+PAYOUT_COINS = ["gp", "sp", "cp"]
+
+
+def coins_for(amount, allowed):
+    """Greedy split of copper into the allowed denominations."""
+    out = {}
+    for k in allowed:
+        out[k], amount = divmod(amount, COIN_VALUES[k])
+    return out
+
+
+def payout(amount, margin=0, top="gp"):
+    """Coins a shop hands over (same as payout() in store.js). Mostly the largest
+    coins (up to `top`), but `margin` % of it in the next smaller coin, the way a
+    shopkeeper gives some small change."""
+    allowed = PAYOUT_COINS[PAYOUT_COINS.index(top):]
+    small = amount * margin // 100
+    main = coins_for(amount - small, allowed)
+    largest = next((k for k in allowed if main.get(k)), allowed[-1])
+    smaller = PAYOUT_COINS[PAYOUT_COINS.index(largest) + 1:] or [largest]
+    extra = coins_for(small, smaller)
+    return {k: main.get(k, 0) + extra.get(k, 0) for k in PAYOUT_COINS}
+
+
+def pay_coins(coins, cost, margin=0):
+    """Same as payCoins() in store.js: spend big coins first without overpaying,
+    then break the smallest coin that covers the rest. None if unaffordable.
+    Change comes as payout(margin) in coins smaller than the one broken."""
+    c = {k: int((coins or {}).get(k) or 0) for k in COINS}
+    if sum(c[k] * COIN_VALUES[k] for k in COINS) < cost:
+        return None
+    remaining = cost
+    for d in COINS:
+        n = min(c[d], remaining // COIN_VALUES[d])
+        c[d] -= n
+        remaining -= n * COIN_VALUES[d]
+    if remaining > 0:
+        d = next(k for k in reversed(COINS) if c[k] > 0 and COIN_VALUES[k] > remaining)
+        c[d] -= 1
+        top = next(k for k in PAYOUT_COINS if COIN_VALUES[k] < COIN_VALUES[d])
+        for k, n in payout(COIN_VALUES[d] - remaining, margin, top).items():
+            c[k] += n
+    return c
+
+
+def listing_price(shop, listing):
+    """Price of one lot (a bundle, for ammunition) after the shop's markup, in copper."""
+    base = listing["price"] if listing.get("price") is not None else int(listing["item"].get("cost") or 0)
+    # Round halves up like Math.round() in the app, so the price shown is the price charged.
+    return max(0, math.floor(base * (100 + int(shop.get("markup") or 0)) / 100 + 0.5))
+
+
+def clean_shop(raw):
+    if not isinstance(raw, dict):
+        raise ApiError(400, "Invalid shop")
+    try:
+        items = []
+        for li in (raw.get("items") or [])[:500]:
+            it = li.get("item") if isinstance(li, dict) else None
+            if not isinstance(it, dict) or not it.get("name") or not it.get("type"):
+                continue
+            price, stock = li.get("price"), li.get("stock")
+            items.append({
+                "lid": str(li.get("lid") or new_id("l"))[:40], "srcId": (str(li.get("srcId") or "")[:80] or None),
+                "item": it, "price": None if price in (None, "") else max(0, int(price)),
+                "stock": None if stock in (None, "") else max(0, int(stock)),
+            })
+        type_rates = {}
+        for k, v in list((raw.get("typeRates") or {}).items())[:40]:
+            if v not in (None, ""):
+                type_rates[str(k)[:20]] = max(0, min(1000, int(v)))
+        sell_items = []
+        for r in (raw.get("sellItems") or [])[:300]:
+            if not isinstance(r, dict) or not r.get("srcId"):
+                continue
+            mode = "fixed" if r.get("mode") == "fixed" else "percent"
+            sell_items.append({"srcId": str(r["srcId"])[:80], "name": str(r.get("name") or "")[:120],
+                               "icon": (str(r.get("icon") or "")[:40] or None), "type": str(r.get("type") or "")[:20],
+                               "mode": mode, "value": max(0, min(100000000 if mode == "fixed" else 1000, int(r.get("value") or 0)))})
+        return {
+            "name": str(raw.get("name") or "Shop")[:80], "keeper": str(raw.get("keeper") or "")[:80],
+            "description": str(raw.get("description") or "")[:2000], "icon": (str(raw.get("icon") or "")[:40] or None),
+            "open": bool(raw.get("open")), "markup": max(-90, min(500, int(raw.get("markup") or 0))), "items": items,
+            # Buying from players
+            "buys": bool(raw.get("buys")), "sellRate": max(0, min(1000, int(raw.get("sellRate") if raw.get("sellRate") not in (None, "") else 50))),
+            "typeRates": type_rates, "sellItems": sell_items,
+            # Money: one universal pot in copper; None = unlimited. Margin = % of payouts in smaller coins.
+            "funds": None if raw.get("funds") in (None, "") else max(0, int(raw.get("funds"))),
+            "changeMargin": max(0, min(50, int(raw.get("changeMargin") if raw.get("changeMargin") not in (None, "") else 10))),
+        }
+    except (TypeError, ValueError, AttributeError):
+        raise ApiError(400, "Invalid shop")
+
+
+def sell_offer(shop, entry, qty):
+    """What a shop pays for `qty` of an inventory entry, in copper (same as sellOffer() in shops.js).
+    Most specific rule wins: this item's own rule, then its type's %, then the shop's default %."""
+    if not shop.get("buys"):
+        return 0
+    item = entry.get("item") or {}
+    bundle = max(1, int(item.get("bundle") or 1))
+    rule = next((r for r in shop.get("sellItems") or [] if r["srcId"] == entry.get("srcId")), None)
+    if rule and rule["mode"] == "fixed":
+        return rule["value"] * qty // bundle  # fixed price per item (per bundle for ammunition)
+    pct = rule["value"] if rule else (shop.get("typeRates") or {}).get(item.get("type"), shop.get("sellRate", 50))
+    return int(item.get("cost") or 0) * qty * pct // (bundle * 100)
+
+
+def receive_coins(coins, amount, margin=0):
+    """Same as receiveCoins() in store.js: add copper as gp/sp/cp (see payout)."""
+    c = {k: int((coins or {}).get(k) or 0) for k in COINS}
+    for k, n in payout(amount, margin).items():
+        c[k] += n
+    return c
+
+
+def public_shop(shop):
+    """A shop as players see it: the stockroom is the host's business."""
+    return {k: v for k, v in shop.items() if k != "backroom"}
+
+
+def add_to_backroom(shop, entry, qty):
+    """Items bought from players go to the stockroom, stacking identical ones."""
+    item = copy.deepcopy(entry.get("item") or {})
+    room = shop.setdefault("backroom", [])
+    for b in room:
+        if b.get("srcId") == entry.get("srcId") and b["item"] == item:
+            b["qty"] += qty
+            return
+    room.append({"bid": new_id("b"), "srcId": entry.get("srcId"), "item": item, "qty": qty})
+
+
+def shop_entry(listing, lots):
+    """A new inventory entry for `lots` purchases of a listing."""
+    item = copy.deepcopy(listing["item"])
+    entry = {"uid": new_id(), "srcId": listing.get("srcId"), "item": item, "qty": int(item.get("bundle") or 1) * lots,
+             "equipped": False, "attuned": False, "parent": None, "strapped": False, "notes": ""}
+    if item.get("maxCharges"):
+        entry["charges"] = item["maxCharges"]
+    return entry
+
+
+def merge_into(dst, entry):
+    it = entry["item"]
+    if it.get("type") not in NON_STACKING and not it.get("deckCards"):  # decks each keep their own cards
+        for x in dst["items"]:
+            if (x.get("parent") is None and not x.get("strapped") and x.get("srcId") == entry.get("srcId")
+                    and x["item"] == it):
+                x["qty"] += entry["qty"]
+                return
+    dst["items"].append(entry)
+
+
+def transfer(src, dst, uid, qty):
+    e = find_entry(src, uid)
+    loose = {"parent": None, "strapped": False, "equipped": False, "attuned": False}
+    if qty >= e["qty"]:
+        kids = descendants(src, uid)
+        moving = {uid} | {k["uid"] for k in kids}
+        src["items"] = [x for x in src["items"] if x["uid"] not in moving]
+        e.update(loose)
+        for k in kids:
+            k["equipped"] = k["attuned"] = False
+        if kids:
+            dst["items"].append(e)
+        else:
+            merge_into(dst, e)
+        dst["items"] += kids
+    else:
+        e["qty"] -= qty
+        part = copy.deepcopy(e)
+        part.update(loose, uid=new_id(), qty=qty)
+        merge_into(dst, part)
+
+
+def move_coins(src, dst, coins):
+    src.setdefault("coins", {})
+    dst.setdefault("coins", {})
+    for k, v in coins.items():
+        src["coins"][k] = src["coins"].get(k, 0) - v
+        dst["coins"][k] = dst["coins"].get(k, 0) + v
+
+
+def execute(trade):
+    chars = state["characters"]
+    a, b = chars.get(trade["from"]), chars.get(trade["to"])
+    if not a or not b:
+        raise TradeError("One of the characters has left the party.")
+    check_side(a, trade["give"])
+    check_side(b, trade["ask"])
+    for it in trade["give"]["items"]:
+        transfer(a, b, it["uid"], it["qty"])
+    for it in trade["ask"]["items"]:
+        transfer(b, a, it["uid"], it["qty"])
+    move_coins(a, b, trade["give"]["coins"])
+    move_coins(b, a, trade["ask"]["coins"])
+    a["rev"] += 1
+    b["rev"] += 1
+
+
+def resolve(trade, status, reason=None):
+    trade["status"] = status
+    trade["resolved"] = time.time()
+    if reason:
+        trade["reason"] = reason
+    pending = [t for t in state["trades"] if t["status"] == "pending"]
+    done = [t for t in state["trades"] if t["status"] != "pending"]
+    state["trades"] = pending + done[-KEEP_RESOLVED_TRADES:]
+
+
+# ------------------------------------------------------------------ listeners
+
+class QuietServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        pass  # dropped connections (e.g. a phone going to sleep) aren't worth a traceback
+
+
+def serve_in_background(srv):
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+
+# ------------------------------------------------------------------ hosting (desktop mode)
+
+def start_lan(port):
+    global lan_server, lan_port
+    if lan_server:
+        return
+    srv = QuietServer(("0.0.0.0", port), Handler)  # OSError if the port is taken
+    serve_in_background(srv)
+    with cond:
+        lan_server, lan_port = srv, port
+        changed(persist=False)
+
+
+def stop_lan():
+    global lan_server
+    with cond:
+        srv, lan_server = lan_server, None
+        changed(persist=False)  # wakes event streams so they notice and close
+    if srv:
+        srv.shutdown()
+        srv.server_close()
+
+
+def make_app_server(port):
+    global app_server
+    srv = QuietServer(("127.0.0.1", port), Handler)
+    app_server = srv
+    return srv
+
+
+def image_bytes_match(raw, mime):
+    """The data really is the image type it claims (checks the file signature)."""
+    return {
+        "image/png": raw.startswith(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg": raw.startswith(b"\xff\xd8\xff"),
+        "image/gif": raw[:6] in (b"GIF87a", b"GIF89a"),
+        "image/webp": raw[:4] == b"RIFF" and raw[8:12] == b"WEBP",
+    }.get(mime, False)
+
+
+# ------------------------------------------------------------------ HTTP
+
+class ApiError(Exception):
+    def __init__(self, status, message, **extra):
+        super().__init__(message)
+        self.status, self.message, self.extra = status, message, extra
+
+
+class Handler(SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=ROOT, **kwargs)
+
+    def log_message(self, fmt, *args):
+        pass  # keep the console for the address and party events
+
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-cache")
+        origin = self.cors_origin()
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+        super().end_headers()
+
+    # The apps (Windows and Android) join a party from their own page, on another address, so
+    # the party API answers pages from this device or the home network (never public websites).
+    # The apps' private endpoints (their saved data, hosting, quitting) never do.
+    APP_ONLY = ("/api/local", "/api/presence", "/api/host", "/api/quit")
+
+    def cors_origin(self):
+        path = urlparse(self.path).path
+        if path == "/api/info":
+            return "*"
+        if not path.startswith("/api/") or path.startswith(self.APP_ONLY):
+            return None
+        origin = self.headers.get("Origin") or ""
+        if origin == "null":  # a page opened from a file
+            return origin
+        host = urlparse(origin).hostname or ""
+        local = host in ("localhost", "::1") or host.endswith(".local") or re.match(
+            r"^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)", host)
+        return origin if local else None
+
+    def do_OPTIONS(self):
+        """CORS preflight for the party API."""
+        self.send_response(204)
+        if self.cors_origin():
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Player")
+            self.send_header("Access-Control-Max-Age", "600")
+            if self.headers.get("Access-Control-Request-Private-Network"):
+                self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    # -------------------------------------------------------------- plumbing
+    def token(self):
+        return self.headers.get("X-Player") or parse_qs(urlparse(self.path).query).get("player", [""])[0]
+
+    def body(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_BODY:
+            raise ApiError(413, "Request too large")
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            return json.loads(raw or b"{}")
+        except json.JSONDecodeError:
+            raise ApiError(400, "Invalid JSON")
+
+    def reply(self, status, data):
+        raw = json.dumps(data, ensure_ascii=False).encode("utf8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def api(self, method):
+        path = urlparse(self.path).path
+        try:
+            token = self.token()
+            # Document images load via <img>, which can't send the player header.
+            open_paths = ("/api/info", "/api/presence", "/api/host", "/api/quit")
+            if not token and path not in open_paths and not path.startswith(("/api/local", "/api/shops")) \
+                    and not (method == "GET" and path.startswith("/api/images/")):
+                raise ApiError(401, "Missing player token")
+            parts = path.strip("/").split("/")[1:]
+            result = self.route(method, parts, token)
+            if result is not None:
+                self.reply(200, result)
+        except ApiError as e:
+            self.reply(e.status, {"error": e.message, **e.extra})
+        except TradeError as e:
+            self.reply(409, {"error": str(e)})
+
+    def do_GET(self):
+        path = urlparse(self.path).path
+        if path.startswith("/api/"):
+            return self.api("GET")
+        if path == "/" or path.startswith(STATIC_PREFIXES):
+            return super().do_GET()
+        self.send_error(404)
+
+    def do_HEAD(self):
+        self.do_GET()
+
+    def do_POST(self):
+        self.api("POST")
+
+    def do_PUT(self):
+        self.api("PUT")
+
+    def do_DELETE(self):
+        self.api("DELETE")
+
+    def is_host_pc(self):
+        """Request from the computer running this server (the host curates shops)."""
+        return self.client_address[0] in own_ips()
+
+    def is_app(self):
+        """Request from this PC (the app's window, or a browser on it) rather than another player's device."""
+        return DESKTOP and self.client_address[0] in own_ips()
+
+    # -------------------------------------------------------------- routes
+    def route(self, method, parts, token):
+        chars = state["characters"]
+        if method == "GET" and parts == ["info"]:
+            return {"party": party_enabled(), "partyId": state.get("partyId"), "desktop": DESKTOP, "isHost": self.is_app(),
+                    "localStore": bool(LOCAL_DIR) and self.is_app(),
+                    "canManageShops": self.is_host_pc(),
+                    "localDir": LOCAL_DIR if self.is_app() else None,
+                    "appPort": app_server.server_address[1] if app_server and self.is_app() else None,
+                    "hosting": lan_server is not None, "addresses": lan_addresses(),
+                    "port": lan_port if DESKTOP else PORT,
+                    "defaultPort": lan_port or DEFAULT_LAN_PORT}
+        if parts[:1] == ["shops"]:
+            return self.shops_api(method, parts[1:], token)
+        if parts[:1] == ["local"]:
+            if not (self.is_app() and LOCAL_DIR):
+                raise ApiError(403, "Only Pack Rat on this PC can do that")
+            return self.local_api(method, parts[1:])
+        if parts[:1] in (["presence"], ["host"], ["quit"]):
+            if not self.is_app():
+                raise ApiError(403, "Only the desktop app can do that")
+            if method == "GET" and parts == ["presence"]:
+                return self.presence_stream()
+            if method == "POST" and parts == ["host"]:
+                body = self.body()
+                if body.get("enable"):
+                    port = int(body.get("port") or DEFAULT_LAN_PORT)
+                    if not 1024 <= port <= 65535:
+                        raise ApiError(400, "Pick a port between 1024 and 65535")
+                    try:
+                        start_lan(port)
+                    except OSError:
+                        raise ApiError(409, f"Port {port} is already in use - try another one")
+                else:
+                    stop_lan()
+                return {"hosting": lan_server is not None}
+            if method == "POST" and parts == ["quit"]:
+                threading.Thread(target=shutdown_all, daemon=True).start()
+                return {"ok": True}
+        if not party_enabled():
+            raise ApiError(404, "No party is being hosted")
+        if parts[:1] == ["images"]:
+            return self.images(method, parts, os.path.join(DATA_DIR, "images"))
+        if method == "GET" and parts == ["events"]:
+            return self.events(token)
+        if method == "GET" and parts == ["state"]:
+            with cond:
+                return snapshot(token)
+        if method == "POST" and parts == ["leave"]:
+            # Leave party: close this player's live connection now, so they show as away at once.
+            with cond:
+                if online.get(token, 0) > 0:
+                    leaving.add(token)
+                    cond.notify_all()
+            return {"ok": True}
+
+        if parts[:1] == ["characters"]:
+            body = self.body() if method in ("POST", "PUT") else {}
+            with cond:
+                if method == "POST" and len(parts) == 1:
+                    c = body.get("character") or {}
+                    if not isinstance(c.get("items"), list) or not c.get("name"):
+                        raise ApiError(400, "Invalid character")
+                    cid = c.get("id")
+                    if not cid or cid in chars:
+                        cid = new_id("c")
+                    c.update(id=cid, owner=token, rev=1)
+                    chars[cid] = c
+                    changed()
+                    print(f"  + {c['name']} joined the party")
+                    return {"id": cid, "rev": 1}
+                c = chars.get(parts[1]) if len(parts) > 1 else None
+                if not c:
+                    raise ApiError(404, "No such character")
+                if method == "POST" and parts[2:] == ["claim"]:
+                    if c["owner"] != token and online.get(c["owner"], 0) > 0:
+                        raise ApiError(409, f"{c['name']} is being played on another device right now.")
+                    c["owner"] = token
+                    c["rev"] += 1
+                    changed()
+                    print(f"  ~ {c['name']} was taken over by another device")
+                    return {"rev": c["rev"]}
+                if method == "POST" and parts[2:] == ["remove"]:
+                    # The host clears out a player who has left: only while they're not connected.
+                    if not self.is_host_pc():
+                        raise ApiError(403, "Only the host can remove players")
+                    if online.get(c["owner"], 0) > 0:
+                        raise ApiError(409, f"{c['name']} is connected right now. Players can only be removed while they're away.")
+                    del chars[c["id"]]
+                    for t in state["trades"]:
+                        if t["status"] == "pending" and c["id"] in (t["from"], t["to"]):
+                            resolve(t, "cancelled", f"{c['name']} was removed from the party.")
+                    changed()
+                    print(f"  - {c['name']} was removed from the party by the host")
+                    return {"ok": True}
+                if c["owner"] != token:
+                    raise ApiError(403, "That character belongs to someone else.")
+                if method == "PUT" and len(parts) == 2:
+                    if body.get("baseRev") != c["rev"]:
+                        raise ApiError(409, "Out of date", character=public_char(c, token))
+                    new = body.get("character") or {}
+                    if not isinstance(new.get("items"), list):
+                        raise ApiError(400, "Invalid character")
+                    new.update(id=c["id"], owner=token, rev=c["rev"] + 1)
+                    chars[c["id"]] = new
+                    changed()
+                    return {"rev": new["rev"]}
+                if method == "DELETE" and len(parts) == 2:
+                    del chars[c["id"]]
+                    for t in state["trades"]:
+                        if t["status"] == "pending" and c["id"] in (t["from"], t["to"]):
+                            resolve(t, "cancelled", f"{c['name']} left the party.")
+                    changed()
+                    print(f"  - {c['name']} left the party")
+                    return {"ok": True}
+
+        if parts[:1] == ["trades"]:
+            body = self.body() if method == "POST" else {}
+            with cond:
+                if method == "POST" and len(parts) == 1:
+                    a, b = chars.get(body.get("from")), chars.get(body.get("to"))
+                    if not a or a["owner"] != token:
+                        raise ApiError(403, "You can only trade from your own character.")
+                    if not b or b is a:
+                        raise ApiError(400, "Pick someone else to trade with.")
+                    give, ask = clean_side(a, body.get("give")), clean_side(b, body.get("ask"))
+                    if not (give["items"] or give["coins"] or ask["items"] or ask["coins"]):
+                        raise ApiError(400, "The offer is empty.")
+                    check_side(a, give)
+                    trade = {"id": new_id("t"), "from": a["id"], "to": b["id"], "fromName": a["name"],
+                             "toName": b["name"], "give": give, "ask": ask,
+                             "note": str(body.get("note") or "")[:500], "status": "pending", "created": time.time()}
+                    state["trades"].insert(0, trade)
+                    changed()
+                    print(f"  ? {a['name']} offered a trade to {b['name']}")
+                    return {"id": trade["id"]}
+                trade = next((t for t in state["trades"] if len(parts) == 3 and t["id"] == parts[1]), None)
+                if not trade or method != "POST":
+                    raise ApiError(404, "No such trade")
+                if trade["status"] != "pending":
+                    raise ApiError(409, "That trade is already closed.")
+                action = parts[2]
+                side = "from" if action == "cancel" else "to"
+                owner = chars.get(trade[side], {}).get("owner")
+                if owner != token or action not in ("accept", "decline", "cancel"):
+                    raise ApiError(403, "Not your trade to " + action)
+                if action == "accept":
+                    try:
+                        execute(trade)
+                    except TradeError as e:
+                        resolve(trade, "failed", str(e))
+                        changed()
+                        raise
+                    resolve(trade, "accepted")
+                    print(f"  $ {trade['toName']} accepted a trade from {trade['fromName']}")
+                else:
+                    resolve(trade, "declined" if action == "decline" else "cancelled")
+                changed()
+                return {"ok": True}
+
+        raise ApiError(404, "Unknown endpoint")
+
+    # -------------------------------------------------------------- live updates (Server-Sent Events)
+    def events(self, token):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        self.close_connection = True
+        with cond:
+            online[token] = online.get(token, 0) + 1
+            changed(persist=False)
+        last = -1
+        try:
+            while True:
+                with cond:
+                    if not party_enabled() or token in leaving:
+                        break  # the host stopped the party, or this player left it
+                    if version == last:
+                        cond.wait(timeout=15)
+                    if token in leaving:
+                        break
+                    data = None
+                    if version != last:
+                        last = version
+                        data = json.dumps(snapshot(token), ensure_ascii=False)
+                self.wfile.write(f"event: state\ndata: {data}\n\n".encode("utf8") if data else b": ping\n\n")
+                self.wfile.flush()
+        except OSError:
+            pass
+        finally:
+            with cond:
+                online[token] -= 1
+                if not online[token]:
+                    leaving.discard(token)
+                changed(persist=False)
+
+
+    # -------------------------------------------------------------- document images
+    def shops_api(self, method, parts, token):
+        """Shops: the host curates them (even when not hosting); party players buy from open ones.
+
+        GET    /api/shops                     host: all shops; others: open ones
+        POST   /api/shops {shop}              host: create
+        PUT    /api/shops/<id> {shop, baseRev} host: edit (409 if someone bought meanwhile)
+        DELETE /api/shops/<id>                host
+        POST   /api/shops/<id>/buy {character, lid, qty}  party player: pay and receive
+        POST   /api/shops/<id>/take {lid, qty}            host buying for a solo character: reserve stock
+        POST   /api/shops/<id>/sell {character, uid, qty} party player: sell an inventory item (goes to the stockroom)
+        POST   /api/shops/<id>/backroom {bid, action: shelve|discard, qty, price}  host: manage the stockroom
+        POST   /api/shops/<id>/receive {srcId, item, qty}  host selling a solo character's item
+        """
+        host = self.is_host_pc()
+        body = self.body() if method in ("POST", "PUT") else {}
+        with cond:
+            shops = state.setdefault("shops", [])
+            if method == "GET" and not parts:
+                return {"shops": shops if host else [public_shop(sh) for sh in shops if sh.get("open")]}
+            if method == "POST" and not parts:
+                if not host:
+                    raise ApiError(403, "Only the host can set up shops")
+                shop = clean_shop(body.get("shop"))
+                shop.update(id=new_id("s"), rev=1, backroom=[])
+                shops.append(shop)
+                changed()
+                return {"id": shop["id"], "rev": 1}
+            shop = next((sh for sh in shops if parts and sh["id"] == parts[0]), None)
+            if not shop:
+                raise ApiError(404, "No such shop")
+            action = parts[1] if len(parts) > 1 else None
+            if method == "PUT" and action is None:
+                if not host:
+                    raise ApiError(403, "Only the host can set up shops")
+                if body.get("baseRev") != shop["rev"]:
+                    raise ApiError(409, "The shop changed (someone may have bought something)", shop=shop)
+                new = clean_shop(body.get("shop"))
+                # The stockroom only changes through sales and the backroom actions below.
+                new.update(id=shop["id"], rev=shop["rev"] + 1, backroom=shop.get("backroom", []))
+                shops[shops.index(shop)] = new
+                changed()
+                return {"rev": new["rev"]}
+            if method == "DELETE" and action is None:
+                if not host:
+                    raise ApiError(403, "Only the host can set up shops")
+                shops.remove(shop)
+                changed()
+                return {"ok": True}
+            if method == "POST" and action == "sell":
+                if not party_enabled():
+                    raise ApiError(404, "No party is being hosted")
+                if not shop.get("open"):
+                    raise ApiError(409, f"{shop['name']} is closed")
+                if not shop.get("buys"):
+                    raise ApiError(409, f"{shop['name']} doesn't buy items")
+                c = state["characters"].get(body.get("character"))
+                if not c or c["owner"] != token:
+                    raise ApiError(403, "You can only sell your own character's items")
+                entry = find_entry(c, body.get("uid"))
+                try:
+                    qty = int(body.get("qty") or 1)
+                except (TypeError, ValueError):
+                    qty = 0
+                if not entry or not 1 <= qty <= entry["qty"]:
+                    raise ApiError(409, f"{c['name']} doesn't have that many")
+                # A deck sells with the cards still in it; anything else has to be emptied first.
+                if any(e.get("parent") == entry["uid"] and not e["item"].get("card") for e in c["items"]):
+                    raise ApiError(409, f"Empty the {entry['item'].get('name', 'container')} before selling it")
+                paid = sell_offer(shop, entry, qty)
+                if paid <= 0:
+                    raise ApiError(409, f"{shop['name']} won't buy {entry['item'].get('name', 'that')}")
+                if shop.get("funds") is not None and shop["funds"] < paid:
+                    raise ApiError(409, f"{shop['name']} can't afford that right now")
+                entry["qty"] -= qty
+                if entry["qty"] <= 0:
+                    c["items"] = [e for e in c["items"] if e["uid"] != entry["uid"] and e.get("parent") != entry["uid"]]
+                add_to_backroom(shop, entry, qty)
+                if shop.get("funds") is not None:
+                    shop["funds"] -= paid
+                shop["rev"] += 1
+                c["coins"] = receive_coins(c.get("coins"), paid, shop.get("changeMargin", 10))
+                c["rev"] += 1
+                changed()
+                print(f"  $ {c['name']} sold {qty} x {entry['item'].get('name')} to {shop['name']}")
+                return {"ok": True, "paid": paid}
+            if method == "POST" and action in ("buy", "take"):
+                if action == "take" and not host:
+                    raise ApiError(403, "Only the host can do that")
+                listing = next((li for li in shop["items"] if li["lid"] == body.get("lid")), None)
+                try:
+                    lots = int(body.get("qty") or 1)
+                except (TypeError, ValueError):
+                    lots = 0
+                if not listing or not 1 <= lots <= 999:
+                    raise ApiError(400, "That item isn't sold here")
+                if listing.get("stock") is not None and listing["stock"] < lots:
+                    raise ApiError(409, "Sold out" if listing["stock"] == 0 else f"Only {listing['stock']} left")
+                if action == "take":  # the host's own solo character pays on their side
+                    if not host:
+                        raise ApiError(403, "Only the host can do that")
+                else:
+                    if not party_enabled():
+                        raise ApiError(404, "No party is being hosted")
+                    if not shop.get("open"):
+                        raise ApiError(409, f"{shop['name']} is closed")
+                    c = state["characters"].get(body.get("character"))
+                    if not c or c["owner"] != token:
+                        raise ApiError(403, "You can only buy for your own character")
+                    total = listing_price(shop, listing) * lots
+                    purse = pay_coins(c.get("coins"), total, shop.get("changeMargin", 10))
+                    if purse is None:
+                        raise ApiError(409, f"{c['name']} can't afford that")
+                    c["coins"] = purse
+                    merge_into(c, shop_entry(listing, lots))
+                    c["rev"] += 1
+                    print(f"  $ {c['name']} bought {lots} x {listing['item']['name']} at {shop['name']}")
+                if listing.get("stock") is not None:
+                    listing["stock"] -= lots
+                if shop.get("funds") is not None:
+                    shop["funds"] += listing_price(shop, listing) * lots
+                shop["rev"] += 1
+                changed()
+                return {"ok": True, "shopRev": shop["rev"]}
+            if method == "POST" and action == "receive":
+                # Host selling their own solo character's item: the shop pays and stocks it here;
+                # the character's side happens on the host's device. The price is worked out here.
+                if not host:
+                    raise ApiError(403, "Only the host can do that")
+                item = body.get("item")
+                try:
+                    qty = int(body.get("qty") or 0)
+                except (TypeError, ValueError):
+                    qty = 0
+                if not isinstance(item, dict) or not item.get("name") or not item.get("type") or not 1 <= qty <= 100000:
+                    raise ApiError(400, "Invalid item")
+                entry = {"srcId": (str(body.get("srcId") or "")[:80] or None), "item": item}
+                paid = sell_offer(shop, entry, qty)
+                if paid <= 0:
+                    raise ApiError(409, f"{shop['name']} won't buy {item['name']}")
+                if shop.get("funds") is not None and shop["funds"] < paid:
+                    raise ApiError(409, f"{shop['name']} can't afford that right now")
+                add_to_backroom(shop, entry, qty)
+                if shop.get("funds") is not None:
+                    shop["funds"] -= paid
+                shop["rev"] += 1
+                changed()
+                return {"ok": True, "paid": paid}
+            if method == "POST" and action == "backroom":
+                # Host: put stockroom items on the shelves, or throw them out.
+                if not host:
+                    raise ApiError(403, "Only the host can do that")
+                b = next((x for x in shop.get("backroom", []) if x["bid"] == body.get("bid")), None)
+                if not b:
+                    raise ApiError(404, "That item isn't in the stockroom")
+                bundle = max(1, int(b["item"].get("bundle") or 1))
+                try:
+                    qty = int(body.get("qty") or 0)
+                    price = body.get("price")
+                    price = None if price in (None, "") else max(0, int(price))
+                except (TypeError, ValueError):
+                    raise ApiError(400, "Invalid amount")
+                if body.get("action") == "shelve":
+                    # qty counts shelf lots (bundles of 20 arrows, say)
+                    if qty < 1 or qty * bundle > b["qty"]:
+                        raise ApiError(409, "Not that many in the stockroom")
+                    same = next((li for li in shop["items"] if li.get("srcId") == b.get("srcId") and li["item"] == b["item"]), None)
+                    if same:
+                        if same.get("stock") is not None:
+                            same["stock"] += qty
+                    else:
+                        shop["items"].append({"lid": new_id("l"), "srcId": b.get("srcId"), "item": copy.deepcopy(b["item"]),
+                                              "price": price, "stock": qty})
+                    b["qty"] -= qty * bundle
+                elif body.get("action") == "discard":
+                    if qty < 1 or qty > b["qty"]:
+                        raise ApiError(409, "Not that many in the stockroom")
+                    b["qty"] -= qty
+                else:
+                    raise ApiError(400, "Unknown stockroom action")
+                if b["qty"] <= 0:
+                    shop["backroom"].remove(b)
+                shop["rev"] += 1
+                changed()
+                return {"ok": True, "shopRev": shop["rev"]}
+        raise ApiError(404, "Unknown endpoint")
+
+    def local_api(self, method, parts):
+        """GET  /api/local            -> {rev, data}
+        PUT  /api/local {set: {key: value or null}, client}  (per-key, last write wins)
+        GET/POST /api/local/images... -> this PC's document images"""
+        if parts[:1] == ["images"]:
+            return self.images(method, parts, os.path.join(LOCAL_DIR, "images"))
+        if method == "GET" and not parts:
+            with cond:
+                return {"rev": local["rev"], "data": local["data"]}
+        if method == "PUT" and not parts:
+            body = self.body()
+            changes = body.get("set") or {}
+            if not isinstance(changes, dict) or not all(isinstance(v, (str, type(None))) for v in changes.values()):
+                raise ApiError(400, "Bad data")
+            with cond:
+                for k, v in changes.items():
+                    if v is None:
+                        local["data"].pop(str(k), None)
+                    else:
+                        local["data"][str(k)] = v
+                local["rev"] += 1
+                local["by"] = str(body.get("client") or "")
+                save_local()
+                cond.notify_all()  # other windows on this PC reload
+                return {"rev": local["rev"]}
+        raise ApiError(404, "Unknown endpoint")
+
+    def images(self, method, parts, folder):
+        """Document images: the party's (party-data/images) or this PC's own (my-data/images)."""
+        if method == "POST" and len(parts) == 1:
+            body = self.body()
+            image_id, data = str(body.get("id") or ""), str(body.get("data") or "")
+            m = re.match(r"^data:(image/[a-z]+);base64,(.+)$", data, re.S)
+            if not re.fullmatch(r"[a-z0-9]{6,40}", image_id) or not m or m.group(1) not in IMAGE_TYPES:
+                raise ApiError(400, "Not a supported image")
+            try:
+                raw = base64.b64decode(m.group(2), validate=True)
+            except ValueError:
+                raise ApiError(400, "Not a supported image")
+            if len(raw) > MAX_IMAGE_BYTES:
+                raise ApiError(413, "Image is too large")
+            if not image_bytes_match(raw, m.group(1)):
+                raise ApiError(400, "Not a supported image")
+            os.makedirs(folder, exist_ok=True)
+            with cond:  # first upload wins; ids are random per image
+                if not any(f.startswith(image_id + ".") for f in os.listdir(folder)):
+                    with open(os.path.join(folder, f"{image_id}.{IMAGE_TYPES[m.group(1)]}"), "wb") as f:
+                        f.write(raw)
+            return {"ok": True}
+        if method == "GET" and len(parts) == 2 and re.fullmatch(r"[a-z0-9]{6,40}", parts[1]):
+            for mime, ext in IMAGE_TYPES.items():
+                path = os.path.join(folder, f"{parts[1]}.{ext}")
+                if os.path.exists(path):
+                    with open(path, "rb") as f:
+                        raw = f.read()
+                    self.send_response(200)
+                    self.send_header("Content-Type", mime)
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.end_headers()
+                    self.wfile.write(raw)
+                    return None
+            raise ApiError(404, "No such image")
+        raise ApiError(404, "Unknown endpoint")
+
+    def presence_stream(self):
+        """Held open by each desktop app window; the app quits when none are left."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        self.close_connection = True
+        with cond:
+            presence["count"] += 1
+            presence["seen"] = True
+            presence["changed"] = time.time()
+            seen_rev = local["rev"]
+        try:
+            # Also tells this window when another window on the PC changed the shared data.
+            while True:
+                with cond:
+                    if local["rev"] == seen_rev:
+                        cond.wait(timeout=2)
+                    msg = b": ping\n\n"
+                    if local["rev"] != seen_rev:
+                        seen_rev = local["rev"]
+                        msg = f"event: local\ndata: {json.dumps({'rev': seen_rev, 'by': local.get('by', '')})}\n\n".encode()
+                self.wfile.write(msg)
+                self.wfile.flush()
+        except OSError:
+            pass
+        finally:
+            with cond:
+                presence["count"] -= 1
+                presence["changed"] = time.time()
+
+
+def shutdown_all():
+    stop_lan()
+    if app_server:
+        app_server.shutdown()
+
+
+PORT = None  # standalone mode's plain-HTTP port
+
+
+def main():
+    global PORT
+    PORT = port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
+    load()
+    try:
+        server = QuietServer(("0.0.0.0", port), Handler)
+    except OSError as e:
+        sys.exit(f"Couldn't start on port {port} ({e}). Is it already running? Try: python server.py {port + 1}")
+    print("\n  Pack Rat party server is running!\n")
+    print(f"  On this computer:   http://localhost:{port}")
+    addrs = lan_addresses()
+    if addrs:
+        print("  Players on your network join at:")
+        for a in addrs:
+            print(f"      http://{a}:{port}")
+    else:
+        print("  (Couldn't find a network address - are you connected to Wi-Fi/LAN?)")
+    print(f"\n  Party data is saved in {DATA_FILE}")
+    print("  Press Ctrl+C to stop.\n")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n  Server stopped.")
+
+
+if __name__ == "__main__":
+    main()
