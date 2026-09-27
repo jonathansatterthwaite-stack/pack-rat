@@ -324,12 +324,12 @@ button.tile:hover, .tile:has(.tile-hit:hover) { border-color: var(--muted); bord
 
 /* Tiles: the colour, the icon, and the name over it — square tiles as small as they go. */
 /* --tile-size is set per view from its widest grid (syncTileSize), so every grid's tiles match. */
-.tiles.detail-minimal { grid-template-columns: repeat(auto-fill, var(--tile-size, minmax(84px, 1fr))); gap: 6px; }
-.detail-minimal .tile { aspect-ratio: 1; min-height: 0; padding: 0; overflow: hidden; background-color: color-mix(in srgb, var(--type) 13%, var(--surface)); }
+.tiles.detail-minimal { grid-template-columns: repeat(auto-fill, var(--tile-size, minmax(66px, 1fr))); gap: 14px 6px; padding-top: 12px; padding-bottom: 12px; }
+.detail-minimal .tile { aspect-ratio: 1; min-height: 0; padding: 0; background-color: color-mix(in srgb, var(--type) 13%, var(--surface)); }
 .detail-minimal .tile.equipped { background-color: color-mix(in srgb, var(--type) 13%, var(--accent-soft)); }
 .detail-minimal .tile-icon { position: absolute; left: 14%; top: 14%; width: 72%; height: 72%; margin: 0; opacity: .5; pointer-events: none; }
 .detail-minimal .tile-name {
-  position: absolute; inset: 16px 5px 15px; /* clear of the corner labels */ display: flex; align-items: center; justify-content: center; text-align: center; padding: 0 !important;
+  position: absolute; inset: 7px 4px; /* clear of the labels on the edges */ display: flex; align-items: center; justify-content: center; text-align: center; padding: 0 !important;
   overflow: hidden; overflow-wrap: normal; line-height: 1.15; font-size: .8rem; pointer-events: none;
   text-shadow: 0 0 3px var(--surface), 0 0 3px var(--surface), 0 0 6px var(--surface);
 }
@@ -339,9 +339,11 @@ button.tile:hover, .tile:has(.tile-hit:hover) { border-color: var(--muted); bord
   font-size: .56rem; font-weight: 700; line-height: 1.35; padding: 0 4px; border-radius: 99px;
   background: var(--text); color: var(--bg); pointer-events: none;
 }
-.tile-worth { top: 4px; left: 4px; max-width: calc(50% - 4px); }
-.tile-wt { top: 4px; right: 4px; max-width: calc(50% - 4px); }
-.tile-bottom { bottom: 4px; left: 50%; transform: translateX(-50%); max-width: 90%; }
+/* The labels sit across the tile's top and bottom edges (the grid's row gap leaves room for them). */
+.tile-top { position: absolute; z-index: 1; top: -9px; left: 2px; right: 2px; display: flex; gap: 2px; pointer-events: none; }
+.tile-top .tile-mini { position: static; flex: 0 1 auto; min-width: 0; max-width: none; }
+.tile-top .tile-wt { margin-left: auto; }
+.tile-bottom { bottom: -7px; left: 50%; transform: translateX(-50%); max-width: 94%; }
 .hide-worth .tile-worth, .hide-weight .tile-wt { display: none; }
 .tile-toggles button { width: 38px; }
 .tile-name.tight { overflow-wrap: anywhere; }
@@ -457,7 +459,7 @@ a.btn { text-decoration: none; }
 .strapped-head .icon { width: 15px; height: 15px; }
 .strapped .row { background: none; }
 .strapped .row:first-of-type { border-top: 1px solid var(--border); }
-.strapped > .tiles { padding-top: 0; }
+.strapped > .tiles:not(.detail-minimal) { padding-top: 0; }
 
 .seg-field { width: fit-content; }
 .seg-field button { width: auto; padding: 0 16px; font-weight: 600; }

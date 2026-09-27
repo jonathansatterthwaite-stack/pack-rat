@@ -257,7 +257,7 @@ function tileResizer() {
 
 // One tile size for the whole view, set by its widest grid, so tiles in narrower grids (strapped
 // outside, nested containers) are the same size, just fewer to a row. Then names are refitted.
-const TILE_MIN = 84, TILE_GAP = 6;
+const TILE_MIN = 66, TILE_GAP = 6;
 function syncTileSize(root = document.getElementById("view")) {
   if (!root) return;
   const boxes = [...root.querySelectorAll(".tiles")].filter(b => b.offsetParent);
@@ -773,8 +773,10 @@ function containerLoad(char, e) {
 function minimalCorners(worthCp, weightLb, bottom) {
   return [
     // No space before the unit: two labels share the top of a small tile.
-    worthCp > 0 && h("span", { class: "tile-mini tile-worth", title: "Worth" }, fmtCostShort(worthCp).replace(/^([\d.]+) /, "$1")),
-    weightLb > 0 && h("span", { class: "tile-mini tile-wt", title: "Weight" }, +weightLb.toFixed(1) + "lb"),
+    // Worth and weight share the top edge: whichever is shorter leaves the other more room.
+    (worthCp > 0 || weightLb > 0) && h("span", { class: "tile-top" },
+      worthCp > 0 && h("span", { class: "tile-mini tile-worth", title: "Worth" }, fmtCostShort(worthCp).replace(/^([\d.]+k?) /, "$1")),
+      weightLb > 0 && h("span", { class: "tile-mini tile-wt", title: "Weight" }, +weightLb.toFixed(1) + "lb")),
     bottom && h("span", { class: "tile-mini tile-bottom" }, bottom),
   ];
 }
