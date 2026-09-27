@@ -8,4 +8,5 @@ my-data/
 __pycache__/
 tools/.cache/
 tools/.build/
+android/.build/
 .claude/
