@@ -153,6 +153,8 @@ function confirmDialog(message, okLabel, onOk) {
 
 // ------------------------------------------------------------------ UI state
 
+const PREF_VIEWS = ["inventory", "catalog"]; // tabs with their own display options (see loadViewPrefs)
+
 const ui = {
   view: "inventory",
   invSearch: "",
@@ -164,13 +166,24 @@ const ui = {
   catSub: null,
   catLimit: 150,
   trinketTable: TRINKET_TABLES[0]?.id,
-  layout: readPref("packrat-layout", "list"),
+  views: loadViewPrefs(),
   sort: readPref("packrat-sort", "smart"),
   sortReverse: readPref("packrat-sort-rev", "") === "1",
   combatOpen: readPref("packrat-combat", "1") === "1",
-  tileWorth: readPref("packrat-tile-worth", "1") === "1",
-  tileWeight: readPref("packrat-tile-weight", "1") === "1",
+  statsOpen: readPref("packrat-stats", "1") === "1",
+  playerMode: readPref("packrat-player-mode", "") === "1",
 };
+
+// Display options are per tab (list or tiles, the tiles' labels): the inventory's don't change the
+// catalog's. The old shared settings are the starting point for both.
+function loadViewPrefs() {
+  return Object.fromEntries(PREF_VIEWS.map(v => [v, {
+    layout: readPref(`packrat-layout-${v}`, readPref("packrat-layout", "list")),
+    tileWorth: readPref(`packrat-tile-worth-${v}`, readPref("packrat-tile-worth", "1")) === "1",
+    tileWeight: readPref(`packrat-tile-weight-${v}`, readPref("packrat-tile-weight", "1")) === "1",
+  }]));
+}
+const viewPrefs = () => ui.views[PREF_VIEWS.includes(ui.view) ? ui.view : "inventory"];
 
 function writePref(key, value) {
   kv.set(key, value);
@@ -182,12 +195,12 @@ function readPref(key, fallback) {
 }
 
 function applyPrefs() {
-  ui.layout = readPref("packrat-layout", "list");
+  ui.views = loadViewPrefs();
   ui.sort = readPref("packrat-sort", "smart");
   ui.sortReverse = readPref("packrat-sort-rev", "") === "1";
   ui.combatOpen = readPref("packrat-combat", "1") === "1";
-  ui.tileWorth = readPref("packrat-tile-worth", "1") === "1";
-  ui.tileWeight = readPref("packrat-tile-weight", "1") === "1";
+  ui.statsOpen = readPref("packrat-stats", "1") === "1";
+  ui.playerMode = readPref("packrat-player-mode", "") === "1";
 }
 
 // Another Pack Rat window on this PC saved changes: show them here too.
@@ -204,24 +217,26 @@ function reloadSharedData() {
 }
 
 function layoutToggle() {
+  const prefs = viewPrefs();
   const set = v => {
-    ui.layout = v;
-    writePref("packrat-layout", v);
+    prefs.layout = v;
+    writePref(`packrat-layout-${ui.view}`, v);
     render();
   };
   return h("div", { class: "seg", role: "group", "aria-label": "Layout" },
     [["list", "list", "List view"], ["tiles", "grid", "Tile view"]].map(([v, ic, label]) =>
-      h("button", { type: "button", class: ui.layout === v ? "active" : "", title: label, "aria-label": label,
-        "aria-pressed": String(ui.layout === v), onclick: () => set(v) }, icon(ic))));
+      h("button", { type: "button", class: prefs.layout === v ? "active" : "", title: label, "aria-label": label,
+        "aria-pressed": String(prefs.layout === v), onclick: () => set(v) }, icon(ic))));
 }
 
 // Tile view: show or hide the worth and weight labels in the tiles' top corners.
 function tileLabelToggles() {
-  if (ui.layout !== "tiles") return null;
+  const prefs = viewPrefs();
+  if (prefs.layout !== "tiles") return null;
   const toggle = (key, pref, label, ic) => h("button", {
-    type: "button", class: ui[key] ? "active" : "", title: `${ui[key] ? "Hide" : "Show"} ${label.toLowerCase()} on tiles`,
-    "aria-label": `${label} on tiles`, "aria-pressed": String(ui[key]),
-    onclick: () => { ui[key] = !ui[key]; writePref(pref, ui[key] ? "1" : "0"); render(); },
+    type: "button", class: prefs[key] ? "active" : "", title: `${prefs[key] ? "Hide" : "Show"} ${label.toLowerCase()} on tiles`,
+    "aria-label": `${label} on tiles`, "aria-pressed": String(prefs[key]),
+    onclick: () => { prefs[key] = !prefs[key]; writePref(`${pref}-${ui.view}`, prefs[key] ? "1" : "0"); render(); },
   }, icon(ic));
   return h("div", { class: "seg tile-toggles", role: "group", "aria-label": "Tile labels" },
     toggle("tileWorth", "packrat-tile-worth", "Worth", "coins"),
@@ -230,7 +245,8 @@ function tileLabelToggles() {
 
 // A grid of tiles; names shrink to fit (the worth / weight labels can be hidden).
 function tilesBox(extraClass = "") {
-  const cls = ["tiles", "detail-minimal", !ui.tileWorth && "hide-worth", !ui.tileWeight && "hide-weight", extraClass];
+  const prefs = viewPrefs();
+  const cls = ["tiles", "detail-minimal", !prefs.tileWorth && "hide-worth", !prefs.tileWeight && "hide-weight", extraClass];
   const box = h("div", { class: cls.filter(Boolean).join(" ") });
   tileResizer()?.observe(box);
   return box;
@@ -294,8 +310,8 @@ function fitTileNames(box) {
 
 const VIEWS = {
   inventory: { label: "Inventory", icon: "bag", render: renderInventory },
-  catalog: { label: "Catalog", icon: "book", render: renderCatalog },
-  custom: { label: "Custom", icon: "wand", render: renderCustom },
+  catalog: { label: "Catalog", icon: "book", render: renderCatalog, builder: true },
+  custom: { label: "Custom", icon: "wand", render: renderCustom, builder: true },
   shops: { label: "Shops", icon: "cart", render: renderShops },
   party: { label: "Party", icon: "users", render: renderParty, partyOnly: true },
   settings: { label: "Settings", icon: "sliders", render: renderSettings },
@@ -306,12 +322,13 @@ function render() {
   // In a party with none of this device's characters playing yet: choose one first.
   const joining = party.active && !party.linked().length;
   if (VIEWS[ui.view].partyOnly && !party.active) ui.view = "inventory";
+  if (VIEWS[ui.view].builder && ui.playerMode) ui.view = "inventory"; // player mode: no catalog or custom items
   document.getElementById("char-name").textContent = joining ? "Join the party" : char ? char.name : "";
   document.getElementById("nav").hidden = joining;
   const offers = party.active ? party.incoming().length : 0;
   document.querySelectorAll("[data-view]").forEach(b => {
     b.classList.toggle("active", b.dataset.view === ui.view);
-    if (VIEWS[b.dataset.view].partyOnly) b.hidden = !party.active;
+    b.hidden = (VIEWS[b.dataset.view].partyOnly && !party.active) || (VIEWS[b.dataset.view].builder && ui.playerMode);
     const badge = b.querySelector(".badge");
     if (badge) { badge.textContent = offers; badge.hidden = !offers; }
   });
@@ -342,7 +359,7 @@ function renderInventory() {
   const attuned = char.items.filter(e => e.attuned).length;
   const pct = Math.min(100, (enc.weight / enc.capacity) * 100);
 
-  const stats = h("section", { class: "stats" },
+  const statsGrid = h("div", { class: "stats" },
     h("div", { class: "stat", title: ac.breakdown },
       h("div", { class: "stat-label" }, icon("shield"), "Armor Class"),
       h("div", { class: "stat-value" }, ac.ac),
@@ -364,6 +381,19 @@ function renderInventory() {
         abilityInput("STR", "str"), abilityInput("DEX", "dex")),
       h("div", { class: "stat-sub" }, `Attuned ${attuned} / 3`)));
 
+  // Collapsible; closed, it still shows the coins (a button to the coin purse) and the weight carried.
+  const open = ui.statsOpen;
+  const toggleStats = () => { ui.statsOpen = !open; writePref("packrat-stats", ui.statsOpen ? "1" : "0"); render(); };
+  const stats = h("section", { class: "group char-panel" + (open ? "" : " closed") },
+    h("div", { class: "group-head" },
+      h("button", { class: "collapse" + (open ? "" : " closed"), onclick: toggleStats, "aria-expanded": String(open) }, icon("chevron"),
+        h("h3", null, open ? "Character" : "")),
+      !open && h("button", { class: "purse-btn", type: "button", title: "Open the coin purse", "aria-label": "Coins: open the coin purse", onclick: openCoins },
+        icon("coins"), h("span", { class: "coins" }, COIN_ORDER.map(k => h("span", { class: "coin " + k }, h("b", null, (char.coins[k] || 0).toLocaleString()), " ", k)))),
+      !open && !enc.off && h("span", { class: "carried-mini" + (enc.status !== "ok" ? " warn-text" : ""), title: enc.label },
+        icon("weight"), `${+enc.weight.toFixed(1)} / ${enc.capacity} lb`)),
+    open && statsGrid);
+
   const list = h("div", { class: "inv-list" });
   const drawList = () => {
     setChildren(list, inventoryTree(char));
@@ -375,8 +405,6 @@ function renderInventory() {
     h("label", { class: "search" }, icon("search"),
       h("input", { type: "search", placeholder: "Search inventory", value: ui.invSearch,
         oninput: e => { ui.invSearch = e.target.value; drawList(); } })),
-    h("button", { class: "btn primary", onclick: () => go("catalog") }, icon("plus"), h("span", null, "Add items")),
-    h("button", { class: "btn", onclick: () => openItemForm(null, { forInventory: true }) }, icon("wand"), h("span", { class: "hide-sm" }, "Quick custom")),
     sortControl(),
     layoutToggle(),
     tileLabelToggles());
@@ -420,7 +448,7 @@ function combatPanel(char) {
       !ready.length && weapons.length > 0 && h("p", { class: "muted small pad" }, "Equip weapons (the sword button on an item) to keep just those here."),
       others.length > 0 && h("div", { class: "combat-others muted small" }, "Also carried: ",
         others.map((e, i) => [i > 0 && ", ", h("button", { class: "link", title: "Equip", onclick: () => toggleEquip(e.uid) },
-          e.item.name + (e.qty > 1 ? ` ×${e.qty}` : ""))])),
+          entryName(e) + (e.qty > 1 ? ` ×${e.qty}` : ""))])),
     ]);
 }
 
@@ -434,7 +462,7 @@ function attackCard(char, e) {
     h("div", { class: "attack-head" },
       itemIcon(it, "attack-icon"),
       h("button", { class: "attack-name", onclick: () => openEntry(e.uid), title: "Details" },
-        it.name, e.qty > 1 && h("span", { class: "tag" }, "×" + e.qty)),
+        entryName(e), e.qty > 1 && h("span", { class: "tag" }, "×" + e.qty)),
       h("div", { class: "to-hit", title: hitWhy }, h("b", null, fmtMod(a.toHit)), h("small", null, "to hit"))),
     h("div", { class: "attack-dmg" }, h("b", null, a.damage), a.type && " " + a.type,
       a.twoHanded && h("span", { class: "muted" }, ` · two hands ${a.twoHanded}`)),
@@ -609,7 +637,7 @@ function inventoryTree(char) {
     return [h("div", { class: "empty" },
       icon("bag", "big"),
       h("p", null, "Your pack is empty."),
-      h("button", { class: "btn primary", onclick: () => go("catalog") }, "Browse the catalog"),
+      !ui.playerMode && h("button", { class: "btn primary", onclick: () => go("catalog") }, "Browse the catalog"),
       !party.active && isFreshData() && h("p", { class: "muted small" }, "Moving from another device? ",
         h("button", { class: "link", onclick: pickBackup }, "Import a backup"), " exported from Pack Rat's Settings."))];
   }
@@ -618,7 +646,7 @@ function inventoryTree(char) {
     // Filtered: one flat list, with each item tagged by the container it's in.
     const sub = activeInvSub(char, type);
     const hits = listed(char).filter(e => invTypeMatches(e, type, sub) &&
-      (matchesSearch(e.item, q) || e.notes.toLowerCase().includes(q.toLowerCase())));
+      (matchesSearch(e.item, q) || [e.notes, e.customName].some(t => (t || "").toLowerCase().includes(q.toLowerCase()))));
     if (!hits.length) return [h("p", { class: "muted pad" }, "Nothing matches.")];
     const weight = hits.reduce((sum, e) => sum + entryOwnWeight(e), 0);
     return [h("div", { class: "group" },
@@ -676,13 +704,13 @@ function containerGroup(char, c, depth, siblings = [c], index = 0) {
   return dropZone(c.uid, h("div", { class: "group container-group", style: { marginLeft: depth ? "12px" : null } },
     withFill(h("div", { class: "group-head" },
       h("button", { class: "collapse" + (collapsed ? " closed" : ""), onclick: toggle, "aria-expanded": String(!collapsed) }, icon("chevron"),
-        h("h3", null, c.item.name, c.qty > 1 ? ` ×${c.qty}` : "")),
+        h("h3", null, entryName(c), c.qty > 1 ? ` ×${c.qty}` : "")),
       h("span", { class: "muted" + (fill?.over ? " warn-text" : ""), title: spec ? `Holds ${spec.label.toLowerCase()}` : null },
         load, c.item.weightless ? " (weightless)" : ""),
       siblings.length > 1 && h("span", { class: "reorder" },
-        h("button", { class: "icon-btn", type: "button", title: `Move ${c.item.name} up`, "aria-label": `Move ${c.item.name} up`,
+        h("button", { class: "icon-btn", type: "button", title: `Move ${entryName(c)} up`, "aria-label": `Move ${entryName(c)} up`,
           disabled: index === 0, onclick: () => moveContainer(siblings, index, -1) }, icon("up")),
-        h("button", { class: "icon-btn", type: "button", title: `Move ${c.item.name} down`, "aria-label": `Move ${c.item.name} down`,
+        h("button", { class: "icon-btn", type: "button", title: `Move ${entryName(c)} down`, "aria-label": `Move ${entryName(c)} down`,
           disabled: index === siblings.length - 1, onclick: () => moveContainer(siblings, index, 1) }, icon("down"))),
       iconBtn("more", "Container details", () => openEntry(c.uid))), fill),
     !collapsed && [
@@ -725,7 +753,7 @@ function moveEntry(id, parentUid, strapped = false) {
   if (!entry || entry.uid === parentUid || (entry.parent === parentUid && !!entry.strapped === strapped)) return;
   if (parentUid && isDescendant(char, parentUid, id)) return toast("Can't put a container inside itself");
   const holder = parentUid && char.items.find(x => x.uid === parentUid);
-  const name = holder ? holder.item.name : null;
+  const name = holder ? entryName(holder) : null;
   const dest = !name ? "on person" : strapped ? `the outside of ${name}` : name;
   // Cases and quivers take only their own kind of thing, and only as many as fit.
   const spec = holder && !strapped && holderSpec(holder);
@@ -753,7 +781,8 @@ function moveEntry(id, parentUid, strapped = false) {
 // "in Backpack" / "on Backpack" for filtered lists.
 function locationLabel(char, e) {
   if (!e.parent) return null;
-  const name = char.items.find(x => x.uid === e.parent)?.item.name;
+  const holder = char.items.find(x => x.uid === e.parent);
+  const name = holder && entryName(holder);
   return name && (e.strapped ? "on " : "in ") + name;
 }
 
@@ -814,7 +843,7 @@ function withFill(el, fill) {
 // Rows or a tile grid, depending on the layout preference.
 function entryList(char, entries, showPath = false) {
   if (!entries.length) return null;
-  if (ui.layout !== "tiles") return entries.map(e => entryRow(char, e, showPath));
+  if (viewPrefs().layout !== "tiles") return entries.map(e => entryRow(char, e, showPath));
   const box = tilesBox();
   box.append(...entries.map(e => entryTile(char, e, showPath)));
   return box;
@@ -824,12 +853,12 @@ function entryTile(char, e, showPath) {
   const it = e.item;
   const path = showPath ? locationLabel(char, e) : null;
   const el = h("button", { class: "tile" + (e.equipped ? " equipped" : ""), draggable: "true",
-    title: [it.name, liquidLabel(e) || containerLoad(char, e) || itemSummary(it), e.equipped && (it.type === "armor" || it.acBonus ? "worn" : "equipped"),
+    title: [entryName(e), liquidLabel(e) || containerLoad(char, e) || itemSummary(it), e.equipped && (it.type === "armor" || it.acBonus ? "worn" : "equipped"),
       e.attuned && "attuned", e.charges != null && `${e.charges}/${it.maxCharges} charges`, path].filter(Boolean).join(" · "),
     onclick: () => openEntry(e.uid),
     ondragstart: ev => { ev.dataTransfer.setData("text/entry", e.uid); ev.dataTransfer.effectAllowed = "move"; } },
     itemIcon(it, "tile-icon"),
-    h("span", { class: "tile-name" }, it.name),
+    h("span", { class: "tile-name" }, entryName(e)),
     minimalCorners(entryTotalValue(char, e), entryTotalWeight(char, e), containerCapacity(char, e) || (e.qty !== 1 ? "×" + e.qty.toLocaleString() : null)));
   el.style.setProperty("--type", itemColor(it));
   return withFill(el, fillLevel(char, e));
@@ -848,14 +877,14 @@ function entryRow(char, e, showPath = false) {
     ondragstart: ev => { ev.dataTransfer.setData("text/entry", e.uid); ev.dataTransfer.effectAllowed = "move"; } },
     itemIcon(it, "row-icon"),
     h("button", { class: "row-main", onclick: () => openEntry(e.uid) },
-      h("div", { class: "row-title" }, it.name,
+      h("div", { class: "row-title" }, entryName(e),
         e.equipped && h("span", { class: "tag on" }, it.type === "armor" || it.acBonus ? "worn" : "equipped"),
         e.attuned && h("span", { class: "tag attuned" }, "attuned"),
         e.charges != null && h("span", { class: "tag" }, `${e.charges}/${it.maxCharges} charges`),
         path && h("span", { class: "tag" }, path)),
       h("div", { class: "row-sub" }, [liquidLabel(e) || containerLoad(char, e) || itemSummary(it), e.notes].filter(Boolean).join(" — "))),
     h("div", { class: "row-weight muted" }, fmtWeight(entryOwnWeight(e))),
-    it.type === "document" && iconBtn(it.imageOnly ? "image" : "book", it.imageOnly ? "View" : "Read", () => readEntry(e.uid), "equip"),
+    writingButton(e),
     equipable && iconBtn(it.type === "weapon" ? "sword" : "shield", e.equipped ? "Unequip" : "Equip",
       () => toggleEquip(e.uid), "equip" + (e.equipped ? " on" : "")),
     h("div", { class: "qty" },
@@ -865,11 +894,56 @@ function entryRow(char, e, showPath = false) {
       iconBtn("plus", "Increase", () => setQty(e.qty + 1)))), fillLevel(char, e));
 }
 
-// Open an inventory document in the reader; its owner can edit it from there.
+// Open an inventory document (or written-in paper, a book…) in the reader; it can be written in from there.
 function readEntry(entryUid) {
   const e = store.char()?.items.find(x => x.uid === entryUid);
   if (!e) return;
-  openReader(e.item, { onEdit: () => openItemForm(e.item, { entryUid }) });
+  openReader({ ...e.item, name: entryName(e) }, { onEdit: () => writeEntry(entryUid) });
+}
+
+const hasWriting = it => !!(it.body && it.body.trim());
+
+// Read or write, for items that can be written in: the reader once there's something written.
+function writingButton(e, onDone = () => {}, cls = "equip") {
+  const it = e.item;
+  if (!hasFeature(it, "writable", e.srcId)) return null;
+  const read = it.type === "document" || hasWriting(it);
+  return iconBtn(it.imageOnly ? "image" : read ? "book" : "edit", it.imageOnly ? "View" : read ? "Read" : "Write",
+    () => { onDone(); read ? readEntry(e.uid) : writeEntry(e.uid); }, cls);
+}
+
+// Write in paper, a book, a letter…: just its text (player mode included). Writing on one sheet
+// of a stack takes that sheet off the stack.
+function writeEntry(entryUid) {
+  const e = store.char()?.items.find(x => x.uid === entryUid);
+  if (!e) return;
+  const draft = clone(e.item);
+  let close;
+  const save = () => {
+    commit((s, c) => {
+      const x = c.items.find(x => x.uid === entryUid);
+      if (!x) return;
+      let target = x;
+      if (x.qty > 1 && JSON.stringify(draft) !== JSON.stringify(x.item)) {
+        x.qty -= 1;
+        target = { ...clone(x), uid: uid(), qty: 1, equipped: false };
+        c.items.push(target);
+      }
+      for (const k of ["body", "author"]) if (!(draft[k] || "").trim()) delete draft[k];
+      target.item = draft;
+    }, `Wrote in ${entryName(e)}`, true);
+    close();
+  };
+  close = openModal(`Write in ${entryName(e)}`, [
+    e.qty > 1 && h("p", { class: "muted small" }, `One of your ${e.qty} is written in; the rest stay blank.`),
+    h("div", { class: "form grid" },
+      h("label", { class: "field full" }, h("span", null, "Author / from"),
+        h("input", { type: "text", value: draft.author || "", placeholder: "e.g. Captain Varra", oninput: ev => { draft.author = ev.target.value; } })),
+      markdownField({ key: "body", label: "Text" }, draft)),
+  ], { wide: true, footer: [
+    h("button", { class: "btn", onclick: () => close() }, "Cancel"),
+    h("button", { class: "btn primary", onclick: save }, icon("check"), "Save"),
+  ] });
 }
 
 function toggleEquip(entryUid) {
@@ -889,7 +963,9 @@ function toggleEquip(entryUid) {
 // ------------------------------------------------------------------ entry details
 
 // onIcon(id): when given, the item's icon can be changed from its details.
-function itemDetails(item, onIcon = null) {
+// srcId: the catalog item an inventory copy came from (older copies take missing fields from it).
+function itemDetails(item, onIcon = null, srcId = item.id) {
+  const has = key => hasFeature(item, key, srcId);
   const rows = [];
   const add = (k, v) => { if (v !== undefined && v !== null && v !== "" && v !== false) rows.push([k, v]); };
   add("Type", TYPE_LABELS[item.type] + (item.type !== "weapon" && item.category ? ` — ${item.category}` : ""));
@@ -913,22 +989,25 @@ function itemDetails(item, onIcon = null) {
     add("Strength", item.strength && `Str ${item.strength}`);
     add("Stealth", item.stealthDisadvantage && "Disadvantage");
   }
-  if (item.type === "container") {
+  if (has("holds")) {
     add("Capacity", item.capacity || (item.capacityLb && item.capacityLb + " lb"));
     add("Weightless", item.weightless && "Contents don't count toward carried weight");
     add("Straps", item.straps && "Gear can be strapped to the outside");
     const spec = HOLDERS[item.holds];
     add("Holds", spec && `Only ${spec.label.toLowerCase()} — up to ${item.holdLimit || spec.limit} ${spec.unit}s` +
       (item.holds === "scrolls" ? " (parchment takes 2)" : ""));
-    add("Liquid", item.liquidPints > 0 && `Holds ${fmtVolume(item.liquidPints)}`);
   }
+  if (has("liquid")) add("Liquid", item.liquidPints > 0 && `Holds ${fmtVolume(item.liquidPints)}`);
+  add("Writing", has("writable") && item.type !== "document" && (hasWriting(item) ? "Written in" : "Blank — can be written in"));
   add("Poison type", item.poisonType);
   add("Save DC", item.saveDC);
-  add("Max charges", item.maxCharges);
-  add("Recharge", item.recharge);
-  add("AC bonus", item.acBonus && fmtMod(item.acBonus));
+  if (has("charges")) {
+    add("Max charges", item.maxCharges);
+    add("Recharge", item.recharge);
+  }
+  add("AC bonus", has("worn") && item.acBonus && fmtMod(item.acBonus));
   add("Trinket table", item.table && `${item.table} (${item.roll})`);
-  add("Deck", item.deckCards?.length && `${plural(item.deckCards.length, "card")}`);
+  add("Deck", has("deck") && item.deckCards?.length && `${plural(item.deckCards.length, "card")}`);
   // Fields from user templates.
   if (tpl && !tpl.builtin) for (const f of tpl.fields || []) add(f.label, fieldDisplay(f, item[f.key]));
   add("Source", item.source);
@@ -946,7 +1025,7 @@ function itemDetails(item, onIcon = null) {
     item.activities?.length && h("table", { class: "mini" },
       h("thead", null, h("tr", null, h("th", null, "Activity"), h("th", null, "DC"))),
       h("tbody", null, item.activities.map(a => h("tr", null, h("td", null, a.activity), h("td", null, a.dc))))),
-    item.contents?.length && h("div", null, h("h4", null, "Contents"),
+    has("pack") && item.contents?.length && h("div", null, h("h4", null, "Contents"),
       h("ul", { class: "contents" }, packPlan(item).map(r => h("li", null, r.qty > 1 ? `${r.qty} × ` : "", r.name,
         h("span", { class: "muted" }, { holder: " — holds the rest", strap: " — strapped outside", loose: " — on person", in: "" }[r.place]))))));
 }
@@ -964,7 +1043,7 @@ function containerOptions(char, exclude) {
   return [h("option", { value: "" }, "On person"),
     ...char.items.filter(c => holdsItems(char, c) && c.uid !== exclude && !(exclude && isDescendant(char, c.uid, exclude)))
       .flatMap(c => {
-        const name = c.item.name + (c.parent ? " (nested)" : "");
+        const name = entryName(c) + (c.parent ? " (nested)" : "");
         // Counted containers are only offered for what they take, with how full they are.
         const spec = holderSpec(c);
         const fits = !spec || !entry || spec.size(entry.item) > 0 || entry.parent === c.uid;
@@ -997,6 +1076,14 @@ function openEntry(entryUid) {
   moveSel.value = e.parent ? e.parent + (e.strapped ? ":out" : "") : "";
 
   const controls = h("div", { class: "entry-controls" },
+    // A name of the player's own for this copy, shown instead of the item's name.
+    h("label", { class: "field full" }, h("span", null, "Display name"),
+      h("input", { type: "text", maxlength: 80, value: e.customName || "", placeholder: it.name,
+        onchange: ev => commit((s, c) => {
+          const x = c.items.find(x => x.uid === e.uid);
+          const v = ev.target.value.trim();
+          if (v && v !== it.name) x.customName = v; else delete x.customName;
+        }) })),
     h("label", { class: "field" }, h("span", null, "Location"), moveSel),
     h("label", { class: "field" }, h("span", null, "Quantity"),
       h("input", { type: "number", min: 0, value: e.qty, inputmode: "numeric",
@@ -1006,7 +1093,7 @@ function openEntry(entryUid) {
         e.qty > 1 && h("button", { class: "btn", type: "button", onclick: () => { close(); openSplit(e.uid); } }, icon("copy"), "Split stack"),
         sameStacks(char, e).length > 0 && h("button", { class: "btn", type: "button", onclick: () => { close(); combineStacks(e.uid); } },
           icon("plus"), `Combine (${sameStacks(char, e).length + 1} stacks here)`))),
-    it.maxCharges && h("label", { class: "field" }, h("span", null, `Charges (max ${it.maxCharges})`),
+    hasFeature(it, "charges", e.srcId) && it.maxCharges && h("label", { class: "field" }, h("span", null, `Charges (max ${it.maxCharges})`),
       h("input", { type: "number", min: 0, max: it.maxCharges, value: e.charges ?? it.maxCharges,
         onchange: ev => commit((s, c) => { c.items.find(x => x.uid === e.uid).charges = Math.max(0, Math.min(it.maxCharges, +ev.target.value)); }) })),
     (["weapon", "armor", "magic"].includes(it.type) || it.acBonus) && h("label", { class: "check" },
@@ -1022,7 +1109,7 @@ function openEntry(entryUid) {
         onchange: ev => commit((s, c) => { c.items.find(x => x.uid === e.uid).notes = ev.target.value; }) })));
 
   // A pack carried as one item can be unpacked here, where it is (one pack from the stack).
-  const planner = it.type === "pack" && it.contents?.length ? packPlanner(it, char) : null;
+  const planner = hasFeature(it, "pack", e.srcId) && it.contents?.length ? packPlanner(it, char) : null;
   const unpack = () => {
     const plan = planner.plan();
     close();
@@ -1038,8 +1125,9 @@ function openEntry(entryUid) {
     h("button", { class: "btn danger", onclick: () => { close(); commit((s, c) => removeEntry(c, e.uid), `Removed ${it.name}`, true); } }, icon("trash"), "Remove"),
     planner && h("button", { class: "btn primary", onclick: unpack }, icon("package"), "Unpack"),
     h("button", { class: "btn", onclick: () => { close(); openSell(e.uid); } }, icon("coins"), "Sell"),
-    h("button", { class: "btn", onclick: () => { close(); openItemForm(it, { entryUid: e.uid }); } }, icon("edit"), "Edit"),
-    h("button", { class: "btn", title: "Save a copy of this item as a reusable custom item", onclick: () => {
+    // Player mode: no editing items (a copy can still be renamed with its display name).
+    !ui.playerMode && h("button", { class: "btn", onclick: () => { close(); openItemForm(it, { entryUid: e.uid }); } }, icon("edit"), "Edit"),
+    !ui.playerMode && h("button", { class: "btn", title: "Save a copy of this item as a reusable custom item", onclick: () => {
       commit(s => s.customItems.unshift({ ...clone(it), id: "custom-" + uid(), source: it.source || "Homebrew" }), `Saved “${it.name}” to custom items`);
     } }, icon("copy"), "Save as custom"),
     party.active && party.others().length > 0 &&
@@ -1053,12 +1141,18 @@ function openEntry(entryUid) {
     }, "Icon changed");
     openEntry(e.uid);
   };
-  const readBtn = it.type === "document" && h("button", { class: "btn primary read-btn", onclick: () => { close(); readEntry(e.uid); } }, icon(it.imageOnly ? "image" : "book"), it.imageOnly ? "View" : "Read");
+  // Things that can be written in: read what's there, and write (more).
+  const writable = hasFeature(it, "writable", e.srcId);
+  const read = writable && (it.type === "document" || hasWriting(it));
+  const readBtn = writable && h("div", { class: "inline wrap read-btns" },
+    read && h("button", { class: "btn primary read-btn", onclick: () => { close(); readEntry(e.uid); } }, icon(it.imageOnly ? "image" : "book"), it.imageOnly ? "View" : "Read"),
+    h("button", { class: "btn" + (read ? "" : " primary") + " read-btn", onclick: () => { close(); writeEntry(e.uid); } }, icon("edit"), read ? "Write" : "Write in it"));
   // Older inventory copies of catalog containers get their capacity from the catalog.
-  const shown = it.type === "container" ? { ...it, holds: containerField(e, "holds"), liquidPints: containerField(e, "liquidPints") } : it;
+  const shown = { ...it, holds: containerField(e, "holds"), liquidPints: containerField(e, "liquidPints") };
   const reopen = () => { close(); openEntry(entryUid); };
-  close = openModal(it.name, [readBtn, liquidCap(e) > 0 && liquidControls(e), isDeckEntry(e) && deckSection(e, reopen),
-    cardBackButton(e, () => close()), controls, planner?.el, itemDetails(shown, changeIcon)], { footer, wide: !!planner });
+  close = openModal(entryName(e), [e.customName && h("p", { class: "muted small" }, it.name),
+    readBtn, liquidCap(e) > 0 && liquidControls(e), isDeckEntry(e) && deckSection(e, reopen),
+    cardBackButton(e, () => close()), controls, planner?.el, itemDetails(shown, changeIcon, e.srcId)], { footer, wide: !!planner });
 }
 
 const LIQUIDS = ["Water", "Wine", "Ale", "Beer", "Mead", "Cider", "Milk", "Juice", "Tea", "Brandy", "Rum", "Whiskey",
@@ -1277,7 +1371,7 @@ function catalogFiltered(sub = ui.catSub) {
 }
 
 function renderCatalog() {
-  const tiles = ui.layout === "tiles";
+  const tiles = viewPrefs().layout === "tiles";
   const list = tiles ? tilesBox("cat-tiles") : h("div", { class: "cat-list" });
   const count = h("span", { class: "muted small" });
   const draw = () => {
@@ -1310,7 +1404,7 @@ function renderCatalog() {
 }
 
 function quickAdd(item) {
-  if (item.type === "pack") return openCatalogItem(item);
+  if (hasFeature(item, "pack", item.id)) return openCatalogItem(item);
   commit((s, c) => addToInventory(c, item), `Added ${item.name}${item.bundle > 1 ? ` ×${item.bundle}` : ""}`, true);
 }
 
@@ -1340,20 +1434,21 @@ function catalogRow(item) {
 function openCatalogItem(item) {
   const char = store.char();
   const isCustom = item.id.startsWith("custom-");
+  const isPack = hasFeature(item, "pack", item.id);
   let qty = item.bundle || 1, parent = null, strapped = false, close;
   const unit = (item.cost || 0) / (item.bundle || 1);
   const priceEl = h("span", { class: "muted" });
   const updPrice = () => { priceEl.textContent = item.cost ? `Total ${fmtCost(Math.round(unit * qty))}` : ""; };
   updPrice();
   const controls = h("div", { class: "entry-controls" },
-    item.type !== "pack" && h("label", { class: "field" }, h("span", null, item.bundle > 1 ? `Quantity (bundle of ${item.bundle})` : "Quantity"),
+    !isPack && h("label", { class: "field" }, h("span", null, item.bundle > 1 ? `Quantity (bundle of ${item.bundle})` : "Quantity"),
       h("input", { type: "number", min: 1, value: qty, inputmode: "numeric", oninput: e => { qty = Math.max(1, Math.floor(+e.target.value || 1)); updPrice(); } })),
     h("label", { class: "field" }, h("span", null, "Put in"),
       h("select", { onchange: e => { ({ parent, strapped } = parseLocation(e.target.value)); } }, containerOptions(char))),
     h("div", { class: "field" }, h("span", null, `Purse: ${fmtCost(coinTotalCp(char.coins))}`), priceEl),
-    item.type === "pack" && item.cost && h("label", { class: "check" },
+    isPack && item.cost && h("label", { class: "check" },
       h("input", { type: "checkbox", onchange: e => { payForPack = e.target.checked; } }), ` Pay ${fmtCost(item.cost)} from purse`));
-  const planner = item.type === "pack" ? packPlanner(item, char) : null;
+  const planner = isPack ? packPlanner(item, char) : null;
   let payForPack = false;
   // Returns the purse after paying for a pack (or unchanged), or null if unaffordable.
   const packPurse = () => {
@@ -1381,7 +1476,7 @@ function openCatalogItem(item) {
     isCustom && h("button", { class: "btn danger", onclick: () => { close(); deleteCustom(item); } }, icon("trash"), "Delete"),
     h("button", { class: "btn", onclick: () => { close(); openItemForm(isCustom ? item : { ...item, id: null, source: item.source }, { copyOf: !isCustom }); } },
       icon(isCustom ? "edit" : "copy"), isCustom ? "Edit" : "Customize"),
-    item.type === "pack" ? [
+    isPack ? [
       h("button", { class: "btn", onclick: () => {
         const purse = packPurse(); if (!purse) return;
         close();
@@ -1550,12 +1645,38 @@ function openItemForm(item, opts = {}) {
   const draft = clone(item);
   const tpl = (draft.template && store.template(draft.template)) || store.template(draft.type) || store.template("gear");
   const fields = templateFields(tpl);
-  const form = h("form", { class: "form grid", onsubmit: e => { e.preventDefault(); save(); } }, fields.map(f => fieldInput(f, draft)));
+  // The catalog item this is (or is a copy of): older copies take missing feature fields from it.
+  const srcId = opts.entryUid ? store.char()?.items.find(x => x.uid === opts.entryUid)?.srcId : item.id;
+  const cat = srcId && SRD_BY_ID.get(srcId);
+  for (const k of FEATURE_FIELD_KEYS) if (draft[k] === undefined && cat?.[k] !== undefined) draft[k] = clone(cat[k]);
+  const chosen = {}; // features ticked or unticked here
+  const isOn = key => key in chosen ? chosen[key] : hasFeature(draft, key, srcId);
+  const features = h("div", { class: "features full" },
+    h("h4", null, "Features"),
+    h("p", { class: "muted small" }, "What this item can do. Each shows its own settings while ticked."),
+    FEATURES.map(ft => {
+      const box = h("div", { class: "form grid feature-fields" }, ft.fields.map(f => fieldInput(f, draft)));
+      box.hidden = !isOn(ft.key);
+      return h("div", { class: "feature" },
+        h("label", { class: "check" },
+          h("input", { type: "checkbox", checked: isOn(ft.key), onchange: ev => { chosen[ft.key] = ev.target.checked; box.hidden = !ev.target.checked; } }),
+          h("span", null, " ", h("b", null, ft.label), ft.hint && h("span", { class: "muted small" }, ` — ${ft.hint}`))),
+        box);
+    }));
+  const form = h("form", { class: "form grid", onsubmit: e => { e.preventDefault(); save(); } }, fields.map(f => fieldInput(f, draft)), features);
   let close;
 
   function save() {
     if (!draft.name?.trim()) return toast("Give the item a name");
     draft.name = draft.name.trim();
+    // Unticked features lose their settings; the item keeps which features it has only where
+    // that differs from the default for its kind.
+    const on = Object.fromEntries(FEATURES.map(ft => [ft.key, isOn(ft.key)]));
+    for (const ft of FEATURES) if (!on[ft.key]) for (const f of ft.fields) delete draft[f.key];
+    delete draft.features;
+    const flags = Object.fromEntries(FEATURES.filter(ft => on[ft.key] !== featureDefault(draft, ft.key, srcId)).map(ft => [ft.key, on[ft.key]]));
+    if (Object.keys(flags).length) draft.features = flags;
+    if (on.pack) draft.contents = (draft.contents || []).filter(c => c.name);
     for (const k of Object.keys(draft)) if (draft[k] === "" || draft[k] == null) delete draft[k];
     if (opts.entryUid) {
       const { id, ...snap } = draft;
@@ -1934,7 +2055,20 @@ function renderSettings() {
   const setSetting = (k, v) => commit(st => { st.settings[k] = v; });
   const fileInput = h("input", { type: "file", accept: "application/json,.json", hidden: true,
     onchange: e => { if (e.target.files[0]) importFile(e.target.files[0]); e.target.value = ""; } });
+  // Player mode: just play. The catalog and custom items are hidden, and items can't be edited
+  // (a copy can still get its own display name). Per device.
+  const setPlayerMode = on => {
+    ui.playerMode = on;
+    writePref("packrat-player-mode", on ? "1" : "");
+    render();
+    toast(on ? "Player mode on: the catalog and custom items are hidden" : "Player mode off");
+  };
   return h("div", { class: "view-settings" },
+    h("section", null,
+      h("label", { class: "switch-row" },
+        h("span", null, h("b", null, "Player mode"),
+          h("span", { class: "muted small" }, "Hides the Catalog and Custom tabs and item editing, for players whose gear comes from the DM, shops and trades. Items can still be renamed (Display name) and written in.")),
+        h("input", { type: "checkbox", role: "switch", class: "switch", checked: ui.playerMode, onchange: ev => setPlayerMode(ev.target.checked) }))),
     partySettings(),
     h("section", null,
       h("div", { class: "section-head" }, h("h2", null, "Characters"),
@@ -1980,6 +2114,8 @@ function renderSettings() {
         !party.active && h("button", { class: "btn danger", onclick: () => confirmDialog("Erase all characters, custom items and templates?", "Erase everything",
           () => commit(st => Object.assign(st, defaultState()), "All data reset", true)) }, icon("trash"), "Reset"))),
     h("section", { class: "credits muted small" },
+      h("p", null, "Includes material from the System Reference Document 5.1 by Wizards of the Coast LLC, licensed under ",
+        h("a", { href: "https://creativecommons.org/licenses/by/4.0/legalcode", target: "_blank", rel: "noopener" }, "CC BY 4.0"), "."),
       h("p", null, "Item data from ", h("a", { href: "https://dnd5e.wikidot.com/", target: "_blank", rel: "noopener" }, "dnd5e.wikidot.com"),
         " (CC BY-SA 3.0). Item icons from ", h("a", { href: "https://game-icons.net", target: "_blank", rel: "noopener" }, "game-icons.net"),
         " by " + ICON_CREDITS.join(", ") + " (CC BY 3.0). Dungeons & Dragons is a trademark of Wizards of the Coast; this tool is unofficial.")),

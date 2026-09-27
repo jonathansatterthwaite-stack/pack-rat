@@ -513,7 +513,7 @@ function openSellToShop(shop) {
       return h("div", { class: "row" + (why ? " sold-out" : "") },
         itemIcon(e.item, "row-icon"),
         h("div", { class: "row-main static" },
-          h("div", { class: "row-title" }, e.item.name, e.qty > 1 && h("span", { class: "tag" }, "×" + e.qty.toLocaleString()), e.equipped && h("span", { class: "tag on" }, "equipped")),
+          h("div", { class: "row-title" }, entryName(e), e.qty > 1 && h("span", { class: "tag" }, "×" + e.qty.toLocaleString()), e.equipped && h("span", { class: "tag on" }, "equipped")),
           h("div", { class: "row-sub" }, why || `Offer: ${fmtCost(unit)}${perLabel}`)),
         h("button", { class: "btn", disabled: !!why, onclick: () => sellDialog(shop, e, draw) }, "Sell"));
     }), !entries.length && h("p", { class: "muted pad" }, "Nothing to sell."));
@@ -542,9 +542,9 @@ function sellDialog(shop, entry, redraw) {
     if (await sellToShop(shop, entry, qty)) { close(); redraw(); } else draw();
   };
   draw();
-  close = openModal(`Sell ${entry.item.name}`, h("div", { class: "form" },
+  close = openModal(`Sell ${entryName(entry)}`, h("div", { class: "form" },
     h("div", { class: "buy-head" }, itemIcon(entry.item, "big-icon"),
-      h("div", null, h("b", null, entry.item.name), h("div", { class: "muted small" }, `${char.name} has ${entry.qty.toLocaleString()}`))),
+      h("div", null, h("b", null, entryName(entry)), h("div", { class: "muted small" }, `${char.name} has ${entry.qty.toLocaleString()}`))),
     entry.qty > 1 && h("label", { class: "field" }, h("span", null, "How many"),
       h("input", { type: "number", min: 1, max: entry.qty, value: qty, inputmode: "numeric",
         oninput: e => { qty = Math.max(1, Math.min(entry.qty, Math.floor(+e.target.value || 1))); draw(); } })),
@@ -556,7 +556,7 @@ function sellDialog(shop, entry, redraw) {
 async function sellToShop(shop, entry, qty) {
   const char = store.char();
   const paid = sellOffer(shop, entry, qty);
-  const label = `${qty > 1 ? qty + " × " : ""}${entry.item.name}`;
+  const label = `${qty > 1 ? qty + " × " : ""}${entryName(entry)}`;
   try {
     if (party.active) {
       if (!requireLinked(char)) return false;

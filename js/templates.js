@@ -50,7 +50,6 @@ const BUILTIN_TEMPLATES = [
   {
     id: "ammunition", type: "ammunition", name: "Ammunition", color: "#c7925a", builtin: true,
     fields: [
-      { key: "bundle", label: "Bundle size (cost & weight are per bundle)", kind: "number", min: 1 },
       { key: "bonus", label: "Magic bonus (+N)", kind: "number" },
     ],
   },
@@ -59,28 +58,17 @@ const BUILTIN_TEMPLATES = [
     fields: [
       { key: "category", label: "Category", kind: "select",
         options: ["Common", "Usable", "Clothes", "Arcane Focus", "Druidic Focus", "Holy Symbol", "Other"] },
-      { key: "deckCards", label: "Cards (one per line) — makes this a deck", kind: "lines", placeholder: "The Fool\nThe Magician\n…" },
     ],
   },
   {
     id: "container", type: "container", name: "Container", color: "#b98a4a", builtin: true,
-    fields: [
-      { key: "capacity", label: "Capacity (text)", kind: "text", placeholder: "1 cubic foot/30 pounds of gear" },
-      { key: "capacityLb", label: "Capacity (lb)", kind: "number" },
-      { key: "weightless", label: "Contents don't add weight (e.g. Bag of Holding)", kind: "checkbox" },
-      { key: "straps", label: "Gear can be strapped to the outside", kind: "checkbox" },
-      { key: "holds", label: "Only holds (counted)", kind: "select", options: ["", "scrolls", "arrows", "bolts"],
-        labels: { "": "Anything, by weight", scrolls: "Paper, parchment, maps & scrolls", arrows: "Arrows", bolts: "Crossbow bolts" } },
-      { key: "holdLimit", label: "How many it holds (counted)", kind: "number", placeholder: "20" },
-      { key: "liquidPints", label: "Liquid capacity (pints)", kind: "number", step: "any" },
-    ],
+    fields: [],
   },
   {
     id: "tool", type: "tool", name: "Tool", color: "#6fb3a8", builtin: true,
     fields: [
       { key: "category", label: "Category", kind: "select",
         options: ["Artisan's Tools", "Gaming Set", "Musical Instrument", "Other"] },
-      { key: "deckCards", label: "Cards (one per line) — makes this a deck", kind: "lines", placeholder: "The Fool\nThe Magician\n…" },
     ],
   },
   {
@@ -103,10 +91,6 @@ const BUILTIN_TEMPLATES = [
     fields: [
       { key: "category", label: "Category", kind: "select",
         options: ["Wondrous Item", "Ring", "Rod", "Staff", "Wand", "Other"] },
-      { key: "maxCharges", label: "Max charges", kind: "number" },
-      { key: "recharge", label: "Recharge", kind: "text", placeholder: "1d6+1 at dawn" },
-      { key: "acBonus", label: "AC bonus while worn", kind: "number" },
-      { key: "deckCards", label: "Cards (one per line) — makes this a deck", kind: "lines", placeholder: "The Fool\nThe Magician\n…" },
     ],
   },
   {
@@ -124,17 +108,54 @@ const BUILTIN_TEMPLATES = [
     defaults: { weight: 0 },
     fields: [
       { key: "category", label: "Kind", kind: "select", options: ["Letter", "Note", "Book", "Journal", "Scroll", "Map", "Other"] },
-      { key: "author", label: "Author / from", kind: "text", placeholder: "e.g. Captain Varra" },
-      { key: "body", label: "Text", kind: "markdown" },
     ],
   },
   {
     id: "pack", type: "pack", name: "Equipment Pack", color: "#7a8c99", builtin: true,
-    fields: [
-      { key: "contents", label: "Contents", kind: "packContents" },
-    ],
+    fields: [],
   },
 ];
+
+// ------------------------------------------------------------------ features
+// What an item can do, whatever its type: hold other items, hold liquid, unpack into items, hold
+// cards, be written in… Each is a checkbox when editing an item, and its fields only show while
+// it's ticked. Items say which they have in `features` ({ holds: true, deck: false }); anything
+// not listed follows the default for that kind of item (featureDefault in store.js).
+const FEATURES = [
+  { key: "holds", label: "Holds items", hint: "A container: other items go inside it", fields: [
+    { key: "capacity", label: "Capacity (text)", kind: "text", placeholder: "1 cubic foot/30 pounds of gear" },
+    { key: "capacityLb", label: "Capacity (lb)", kind: "number" },
+    { key: "weightless", label: "Contents don't add weight (e.g. Bag of Holding)", kind: "checkbox" },
+    { key: "straps", label: "Gear can be strapped to the outside", kind: "checkbox" },
+    { key: "holds", label: "Only holds (counted)", kind: "select", options: ["", "scrolls", "arrows", "bolts"],
+      labels: { "": "Anything, by weight", scrolls: "Paper, parchment, maps & scrolls", arrows: "Arrows", bolts: "Crossbow bolts" } },
+    { key: "holdLimit", label: "How many it holds (counted)", kind: "number", placeholder: "20" },
+  ] },
+  { key: "liquid", label: "Holds liquid", hint: "Record what's in it and how much", fields: [
+    { key: "liquidPints", label: "Liquid capacity (pints)", kind: "number", step: "any" },
+  ] },
+  { key: "pack", label: "Equipment pack", hint: "Unpacks into the items listed", fields: [
+    { key: "contents", label: "Contents", kind: "packContents" },
+  ] },
+  { key: "deck", label: "Deck of cards", hint: "Holds its cards, which can be drawn and put back", fields: [
+    { key: "deckCards", label: "Cards (one per line)", kind: "lines", placeholder: "The Fool\nThe Magician\n…" },
+  ] },
+  { key: "writable", label: "Can be written in", hint: "Paper, books, letters: has text that can be read and written", fields: [
+    { key: "author", label: "Author / from", kind: "text", placeholder: "e.g. Captain Varra" },
+    { key: "body", label: "Text", kind: "markdown" },
+  ] },
+  { key: "charges", label: "Has charges", fields: [
+    { key: "maxCharges", label: "Max charges", kind: "number" },
+    { key: "recharge", label: "Recharge", kind: "text", placeholder: "1d6+1 at dawn" },
+  ] },
+  { key: "worn", label: "Adds to AC while worn", fields: [
+    { key: "acBonus", label: "AC bonus while worn", kind: "number" },
+  ] },
+  { key: "bundle", label: "Sold in bundles", hint: "Cost and weight are per bundle (e.g. 20 arrows)", fields: [
+    { key: "bundle", label: "Bundle size", kind: "number", min: 1 },
+  ] },
+];
+const FEATURE_FIELD_KEYS = new Set(FEATURES.flatMap(f => f.fields.map(x => x.key)));
 
 const TYPE_LABELS = Object.fromEntries(BUILTIN_TEMPLATES.map(t => [t.id, t.name]));
 // For lists and filters ("Tools", not "Tool").
@@ -279,5 +300,6 @@ function templateFields(tpl) {
   let [head, tail] = [COMMON_FIELDS.slice(0, 4), COMMON_FIELDS.slice(4)];
   // A document's text is its body; a separate description would just be confusing.
   if (tpl.type === "document") tail = tail.filter(f => f.key !== "description");
-  return [...head, ...base.fields, ...extra, ...tail].filter(f => !seen.has(f.key) && seen.add(f.key));
+  // Fields that belong to a feature are shown with it instead (see FEATURES).
+  return [...head, ...base.fields, ...extra, ...tail].filter(f => !FEATURE_FIELD_KEYS.has(f.key) && !seen.has(f.key) && seen.add(f.key));
 }

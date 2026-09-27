@@ -226,7 +226,7 @@ function memberCard(c) {
       party.info?.canManageShops && !c.online && iconBtn("trash", `Remove ${c.name} from the party`, () => removeMember(c), "danger-hover")),
     open && (c.items.length
       ? h("ul", { class: "member-items" }, [...c.items].sort((a, b) => a.item.name.localeCompare(b.item.name)).map(e =>
-        h("li", null, itemIcon(e.item, "row-icon small"), e.qty > 1 ? `${e.qty} × ` : "", e.item.name, h("span", { class: "muted" }, where(e)))))
+        h("li", null, itemIcon(e.item, "row-icon small"), e.qty > 1 ? `${e.qty} × ` : "", entryName(e), h("span", { class: "muted" }, where(e)))))
       : h("p", { class: "muted pad" }, "Nothing carried.")));
 }
 
@@ -579,7 +579,7 @@ function openTradeBuilder(targetId = null, preselectUid = null) {
   const matches = (char, e, q) => {
     if (!q) return true;
     const loc = e.parent ? char.items.find(x => x.uid === e.parent)?.item.name || "" : "";
-    return [e.item.name, e.item.category, e.item.type, loc].some(t => t && t.toLowerCase().includes(q));
+    return [entryName(e), e.item.name, e.item.category, e.item.type, loc].some(t => t && t.toLowerCase().includes(q));
   };
   const drawPicker = (box, char, map) => {
     const q = (queries.get(box) || "").trim().toLowerCase();
@@ -595,10 +595,10 @@ function openTradeBuilder(targetId = null, preselectUid = null) {
           itemIcon(e.item, "row-icon small"),
           h("input", { type: "checkbox", checked: checked || included, disabled: included,
             onchange: ev => { ev.target.checked ? map.set(e.uid, e.qty > 1 ? 1 : e.qty) : map.delete(e.uid); drawPicker(box, char, map); } }),
-          h("span", null, e.item.name,
+          h("span", null, entryName(e),
             h("small", { class: "muted" }, e.qty > 1 ? ` ×${e.qty}` : "", included ? " — included with its container" : loc ? ` — ${e.strapped ? "on" : "in"} ${loc}` : ""))),
         checked && e.qty > 1 && h("input", { type: "number", min: 1, max: e.qty, value: map.get(e.uid), inputmode: "numeric",
-          "aria-label": `How many ${e.item.name}`,
+          "aria-label": `How many ${entryName(e)}`,
           onchange: ev => map.set(e.uid, Math.max(1, Math.min(e.qty, Math.floor(+ev.target.value || 1)))) }));
     }) : [h("p", { class: "muted small pad" }, all.length ? `Nothing matches “${q}”.` : "No items.")]));
   };

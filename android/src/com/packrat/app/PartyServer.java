@@ -911,11 +911,14 @@ public class PartyServer {
     private static void mergeInto(JSONObject dst, JSONObject entry) throws JSONException {
         JSONObject item = entry.getJSONObject("item");
         JSONArray items = dst.getJSONArray("items");
-        if (!NON_STACKING.contains(item.optString("type")) && item.optJSONArray("deckCards") == null) { // decks each keep their own cards
+        JSONObject features = item.optJSONObject("features");
+        boolean separate = features != null && (features.optBoolean("holds") || features.optBoolean("pack"));
+        // Decks keep their own cards; anything made a container or pack stays separate too.
+        if (!NON_STACKING.contains(item.optString("type")) && item.optJSONArray("deckCards") == null && !separate) {
             for (int i = 0; i < items.length(); i++) {
                 JSONObject x = items.getJSONObject(i);
                 if (x.isNull("parent") && !x.optBoolean("strapped") && x.optString("srcId").equals(entry.optString("srcId"))
-                        && jsonEquals(x.getJSONObject("item"), item)) {
+                        && jsonEquals(x.getJSONObject("item"), item) && x.optString("customName").equals(entry.optString("customName"))) {
                     x.put("qty", x.optInt("qty") + entry.optInt("qty"));
                     return;
                 }

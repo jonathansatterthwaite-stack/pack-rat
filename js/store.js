@@ -250,6 +250,34 @@ function reclassify(item, srcId) {
 }
 const SRD_BY_NAME = new Map(SRD_ITEMS.map(i => [i.name, i]));
 
+// ------------------------------------------------------------------ features
+// See FEATURES in templates.js. An item's own `features` flags win; otherwise the default for
+// its kind: containers hold items (or liquid), packs unpack, paper and books can be written in…
+const WRITABLE_NAME = /\b(paper|parchment|book|spellbook|journal|diary|notebook|ledger)\b/i;
+
+function featureDefault(item, key, srcId) {
+  const cat = srcId ? SRD_BY_ID.get(srcId) : null;
+  const field = k => item[k] !== undefined ? item[k] : cat?.[k]; // older copies: the catalog's fields
+  switch (key) {
+    case "holds": return item.type === "container" &&
+      (field("capacityLb") > 0 || !!item.weightless || !!item.straps || !!field("holds") || srcId === "container-backpack");
+    case "liquid": return +field("liquidPints") > 0;
+    case "pack": return item.type === "pack";
+    case "deck": { const list = field("deckCards"); return Array.isArray(list) && list.length > 0; }
+    case "writable": return item.type === "document" || (!item.card && WRITABLE_NAME.test(item.name || ""));
+    case "charges": return item.maxCharges > 0;
+    case "worn": return !!item.acBonus;
+    case "bundle": return item.bundle > 1 || item.type === "ammunition";
+  }
+  return false;
+}
+
+function hasFeature(item, key, srcId) {
+  if (!item) return false;
+  if (item.features && key in item.features) return !!item.features[key];
+  return featureDefault(item, key, srcId);
+}
+
 // ------------------------------------------------------------------ inventory
 
 // Inventory entries keep a snapshot of the item so each copy can be edited
@@ -265,8 +293,9 @@ function addToInventory(char, item, qty = null, parent = null, strapped = false)
     for (let i = 0; i < qty; i++) last = addToInventory(char, item, 1, parent, strapped);
     return last;
   }
-  const stackable = !["weapon", "armor", "container", "magic", "pack"].includes(item.type) && !deckList(item, id);
-  const existing = stackable && char.items.find(e => e.srcId === id && e.parent === parent &&
+  const stackable = !["weapon", "armor", "container", "magic", "pack"].includes(item.type) && !deckList(item, id)
+    && !hasFeature(item, "holds", id) && !hasFeature(item, "pack", id);
+  const existing = stackable && char.items.find(e => e.srcId === id && e.parent === parent && !e.customName &&
     !!e.strapped === strapped && JSON.stringify(e.item) === JSON.stringify(snapshot));
   if (existing) {
     existing.qty += qty;
@@ -287,6 +316,7 @@ function addToInventory(char, item, qty = null, parent = null, strapped = false)
 
 // The deck's card names: from the item, or for older inventory copies, from the catalog.
 function deckList(item, srcId) {
+  if (item.features?.deck === false) return null;
   const list = item.deckCards || (srcId && SRD_BY_ID.get(srcId)?.deckCards);
   return Array.isArray(list) && list.length ? list : null;
 }
@@ -337,7 +367,7 @@ function packPlan(pack) {
     item: findItemByName(c.name), include: true }));
   let holder = rows.find(r => r.place === "holder");
   if (!holder) {
-    holder = rows.find(r => !r.place && r.item?.type === "container" && (r.item.capacityLb > 0 || r.item.weightless));
+    holder = rows.find(r => !r.place && hasFeature(r.item, "holds", r.item?.id) && (r.item.capacityLb > 0 || r.item.weightless));
     if (holder) holder.place = "holder";
   }
   const straps = !!holder && (holder.item?.straps || /backpack/i.test(holder.name));
@@ -369,6 +399,9 @@ function unpackPack(char, rows, { into = null, parent = null, strapped = false }
   }
 }
 
+// What an inventory copy is called: the player's own name for it, else the item's.
+const entryName = e => (e.customName || "").trim() || e.item.name;
+
 function removeEntry(char, entryUid) {
   // Contents of a removed container fall out to wherever it was; a deck's cards go with it.
   const entry = char.items.find(e => e.uid === entryUid);
@@ -378,10 +411,10 @@ function removeEntry(char, entryUid) {
   char.items = char.items.filter(e => e.uid !== entryUid);
 }
 
-// Containers that hold gear (not waterskins, vials, etc.) or already hold something.
+// Items that hold gear (containers, not waterskins or vials; or anything given the "holds" feature),
+// or that still have something in them.
 function holdsItems(char, e) {
-  return e.item.type === "container" &&
-    (e.item.capacityLb > 0 || e.item.weightless || canStrap(e) || !!holderSpec(e) || char.items.some(x => x.parent === e.uid));
+  return hasFeature(e.item, "holds", e.srcId) || char.items.some(x => x.parent === e.uid && !x.item.card);
 }
 
 // Containers that take only certain things, counted rather than weighed: a map case holds ten
@@ -390,7 +423,7 @@ function holdsItems(char, e) {
 const ROLLED_DOCS = ["Letter", "Note", "Scroll", "Map"];
 const HOLDERS = {
   scrolls: { label: "Paper, parchment, maps & scrolls", limit: 10, unit: "sheet",
-    size: it => it.type === "container" ? 0
+    size: it => hasFeature(it, "holds") ? 0
       : /parchment/i.test(it.name) ? 2
       : (it.type === "document" && ROLLED_DOCS.includes(it.category)) || (it.type === "consumable" && it.category === "Scroll")
         || /\b(paper|map|chart|scroll|letter|deed|sheet)s?\b/i.test(it.name) ? 1 : 0 },
@@ -404,7 +437,7 @@ function containerField(e, key) {
 }
 
 function holderSpec(e) {
-  if (e.item.type !== "container") return null;
+  if (!hasFeature(e.item, "holds", e.srcId)) return null;
   const key = containerField(e, "holds");
   const spec = HOLDERS[key];
   return spec ? { ...spec, key, limit: e.item.holdLimit || spec.limit } : null;
@@ -417,7 +450,7 @@ function holderUsed(char, e, spec = holderSpec(e)) {
 
 // Liquid capacity in pints (0 = not a liquid container).
 function liquidCap(e) {
-  return e.item.type === "container" ? +containerField(e, "liquidPints") || 0 : 0;
+  return hasFeature(e.item, "liquid", e.srcId) ? +containerField(e, "liquidPints") || 0 : 0;
 }
 
 function fmtVolume(pints) {
@@ -438,13 +471,12 @@ function liquidLabel(e) {
 
 // How full a container is, for the tint behind it: { ratio, over, kind } or null.
 function fillLevel(char, e) {
-  if (e.item.type !== "container") return null;
   const spec = holderSpec(e);
   if (spec) {
     const used = holderUsed(char, e, spec);
     return { ratio: used / spec.limit, over: used > spec.limit, kind: "gear", used, limit: spec.limit, unit: spec.unit };
   }
-  if (e.item.capacityLb > 0) {
+  if (e.item.capacityLb > 0 && hasFeature(e.item, "holds", e.srcId)) {
     const w = contentsWeight(char, e);
     return { ratio: w / e.item.capacityLb, over: w > e.item.capacityLb, kind: "gear" };
   }
@@ -456,7 +488,7 @@ function fillLevel(char, e) {
 // Backpacks (and custom containers with the option) can have gear strapped to the outside.
 // Older inventory copies of the backpack predate the `straps` flag, hence the srcId check.
 function canStrap(e) {
-  return e.item.type === "container" && !!(e.item.straps || e.srcId === "container-backpack");
+  return hasFeature(e.item, "holds", e.srcId) && !!(e.item.straps || e.srcId === "container-backpack");
 }
 
 function childrenOf(char, parentUid) { return char.items.filter(e => e.parent === parentUid); }
@@ -488,10 +520,8 @@ function entryTotalValue(char, e) {
 // Weightless containers only exempt what's inside; strapped-on gear always counts.
 function entryTotalWeight(char, e) {
   let w = entryOwnWeight(e);
-  if (e.item.type === "container") {
-    for (const c of childrenOf(char, e.uid)) {
-      if (c.strapped || !e.item.weightless) w += entryTotalWeight(char, c);
-    }
+  for (const c of childrenOf(char, e.uid)) {
+    if (c.strapped || !e.item.weightless) w += entryTotalWeight(char, c);
   }
   return w;
 }

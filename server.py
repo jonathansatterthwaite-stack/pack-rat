@@ -380,10 +380,12 @@ def shop_entry(listing, lots):
 
 def merge_into(dst, entry):
     it = entry["item"]
-    if it.get("type") not in NON_STACKING and not it.get("deckCards"):  # decks each keep their own cards
+    features = it.get("features") or {}
+    # Decks keep their own cards; anything made a container or pack stays separate too.
+    if it.get("type") not in NON_STACKING and not it.get("deckCards") and not features.get("holds") and not features.get("pack"):
         for x in dst["items"]:
             if (x.get("parent") is None and not x.get("strapped") and x.get("srcId") == entry.get("srcId")
-                    and x["item"] == it):
+                    and x["item"] == it and x.get("customName") == entry.get("customName")):
                 x["qty"] += entry["qty"]
                 return
     dst["items"].append(entry)
