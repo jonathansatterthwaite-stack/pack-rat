@@ -139,6 +139,7 @@ async function moveBrowserDataToPc() {
         addById(base.characters, (mine.characters || []).filter(c => !isBlankCharacter(c)));
         addById(base.customItems = base.customItems || [], mine.customItems);
         addById(base.templates = base.templates || [], mine.templates);
+        addById(base.iconLibrary = base.iconLibrary || [], mine.iconLibrary);
         // A blank starter character is no longer needed once real ones arrive.
         if (base.characters.length > 1) base.characters = base.characters.filter(c => !isBlankCharacter(c));
         if (!base.characters.some(c => c.id === base.activeId)) base.activeId = base.characters[0]?.id;
@@ -168,6 +169,7 @@ function defaultState() {
     characters: [c],
     activeId: c.id,
     customItems: [],
+    iconLibrary: [], // drawn icons: { id, name, doc, svg, updated } (see the Drawings section of the Custom tab)
     templates: STARTER_TEMPLATES.map(t => ({ ...t })),
     settings: { encumbrance: "standard", coinWeight: true },
   };
@@ -186,6 +188,7 @@ const store = {
       this.state = defaultState();
     }
     if (!this.state.characters.length) this.state.characters.push(newCharacter());
+    if (!Array.isArray(this.state.iconLibrary)) this.state.iconLibrary = [];
     if (!this.char()) this.state.activeId = this.state.characters[0].id;
 
     // The characters are always this device's own. In a party, the linked ones are also kept

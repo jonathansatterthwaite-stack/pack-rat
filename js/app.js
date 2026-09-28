@@ -1023,7 +1023,8 @@ function itemDetails(item, onIcon = null, srcId = item.id) {
   return h("div", { class: "details" },
     item.image && storedImage(item.image, "details-image", img => img.remove()),
     h("div", { class: "details-icon" }, itemIcon(item, "big-icon"),
-      onIcon && h("button", { class: "btn", type: "button", onclick: () => openIconPicker(item.icon, onIcon, item) }, "Change icon")),
+      onIcon && h("button", { class: "btn", type: "button", onclick: () => openIconPicker(item.icon, onIcon, item,
+        { drawings: drawingLibrary(), onDrawing: d => onIcon(undefined, d) }) }, "Change icon")),
     h("dl", null, rows.map(([k, v]) => [h("dt", null, k), h("dd", null, v)])),
     item.properties?.length && h("div", { class: "props" }, item.properties.map(p => {
       const key = Object.keys(WEAPON_PROPERTIES).find(k => p.toLowerCase().startsWith(k.toLowerCase()));
@@ -1142,12 +1143,13 @@ function openEntry(entryUid) {
     party.active && party.others().length > 0 &&
       h("button", { class: "btn", onclick: () => { close(); openTradeBuilder(null, e.uid); } }, icon("move"), "Trade"),
   ];
-  const changeIcon = id => {
+  const changeIcon = (id, drawing) => {
     close();
     commit((s, c) => {
       const x = c.items.find(x => x.uid === e.uid);
+      if (drawing) return setItemDrawing(x.item, drawing);
       if (id) x.item.icon = id; else delete x.item.icon;
-      delete x.item.iconDoc; delete x.item.iconSvg; // a chosen icon replaces a drawing
+      setItemDrawing(x.item, null); // a chosen icon replaces a drawing
     }, "Icon changed");
     openEntry(e.uid);
   };
@@ -1506,12 +1508,13 @@ function openCatalogItem(item) {
     ],
   ];
   // Custom items can change their icon right here; catalog items via "Customize".
-  const changeIcon = isCustom ? id => {
+  const changeIcon = isCustom ? (id, drawing) => {
     close();
     commit(s => {
       const x = s.customItems.find(i => i.id === item.id);
+      if (drawing) return setItemDrawing(x, drawing);
       if (id) x.icon = id; else delete x.icon;
-      delete x.iconDoc; delete x.iconSvg; // a chosen icon replaces a drawing
+      setItemDrawing(x, null); // a chosen icon replaces a drawing
     }, "Icon changed");
     openCatalogItem(store.state.customItems.find(i => i.id === item.id));
   } : null;
@@ -1789,6 +1792,10 @@ function openItemForm(item, opts = {}) {
   // The catalog item this is (or is a copy of): older copies take missing feature fields from it.
   const srcId = opts.entryUid ? store.char()?.items.find(x => x.uid === opts.entryUid)?.srcId : item.id;
   const cat = srcId && SRD_BY_ID.get(srcId);
+  // The saved item this form edits (not saved with it): lets a drawing tell "this item" from others.
+  Object.defineProperty(draft, "_self", { enumerable: false, value: opts.entryUid
+    ? store.char()?.items.find(x => x.uid === opts.entryUid)?.item
+    : store.state.customItems.find(i => i.id === draft.id) });
   for (const k of FEATURE_FIELD_KEYS) if (draft[k] === undefined && cat?.[k] !== undefined) draft[k] = clone(cat[k]);
   const chosen = {}; // features ticked or unticked here
   const isOn = key => key in chosen ? chosen[key] : hasFeature(draft, key, srcId);
@@ -1859,15 +1866,16 @@ function loadSvgLay() {
 }
 
 // Draw an icon from shapes on layers, in one colour (the app tints it like its other icons).
-// onSave(doc, svg): the editor's document (kept so the drawing can be edited again) and the icon
-// as SVG painted in currentColor; onSave(null) when the drawing was cleared.
-async function openIconDrawer(item, onSave) {
+// opts: doc (to edit), name (for the title), color (to draw in), templates (offer "Start from…" a
+// library drawing). onSave(doc, svg): the editor's document and the icon as SVG painted in
+// currentColor; onSave(null) when every shape was removed.
+async function openIconDrawer(opts, onSave) {
   try {
     await loadSvgLay();
   } catch (e) {
     return toast(e.message);
   }
-  const { SvgLayEditor, renderDocumentToString, normalizeDocument } = window.SvgLayTool;
+  const { SvgLayEditor, normalizeDocument } = window.SvgLayTool;
   const host = h("div", { class: "icon-drawer-host" });
   let editor;
   const close = () => {
@@ -1878,28 +1886,31 @@ async function openIconDrawer(item, onSave) {
   const save = () => {
     const doc = editor.getDocument();
     if (!doc.layers.length) { onSave(null); close(); return; }
-    const svg = renderDocumentToString(doc, { background: false, colorMode: "monochrome", monoColor: "currentColor", idPrefix: DRAWN_ID_PREFIX });
-    onSave(doc, svg);
+    onSave(doc, drawingSvg(doc));
     close();
   };
+  // Start from a copy of a library drawing (a template); undo brings the old canvas back.
+  const startFrom = opts.templates && (store.state.iconLibrary || []).length > 0 &&
+    h("button", { class: "btn", onclick: () => pickDrawing("Start from a drawing", d => editor?.loadDocument(clone(d.doc))) }, icon("copy"), h("span", { class: "hide-sm" }, "Start from…"));
   // No Escape-to-close: the editor uses Escape itself, and closing would lose the drawing.
   const overlay = h("div", { class: "reader icon-drawer", role: "dialog", "aria-modal": "true", "aria-label": "Draw an icon" },
     h("div", { class: "reader-bar" },
-      h("div", { class: "reader-title" }, `Draw an icon${item.name ? ` for ${item.name}` : ""}`),
+      h("div", { class: "reader-title" }, opts.title || `Draw an icon${opts.name ? ` for ${opts.name}` : ""}`),
+      startFrom,
       h("button", { class: "btn", onclick: close }, "Cancel"),
-      h("button", { class: "btn primary", onclick: save }, icon("check"), "Use this icon")),
+      h("button", { class: "btn primary", onclick: save }, icon("check"), opts.saveLabel || "Use this icon")),
     h("p", { class: "icon-drawer-hint muted small" },
-      "Build the icon from shapes on layers: add shapes from the library and pick a layer in the strip beside the canvas. Press and hold a shape to move it; drag its handles to resize or rotate it. A layer can be a mask that cuts the ones below it. It's drawn in one colour; the app colours it like its other icons."),
+      "Build the icon from shapes on layers: add shapes from the library and pick a layer in the strip beside the canvas. Press and hold a shape to move it; drag its handles to resize or rotate it. Modifiers add outlines, effects and masks (a layer that cuts the ones below it). It's drawn in one colour; the app colours it like its other icons."),
     host);
   document.body.append(overlay);
   document.body.classList.add("modal-open");
   try {
     editor = new SvgLayEditor(host, {
-      document: item.iconDoc ? normalizeDocument(item.iconDoc) : undefined,
+      document: opts.doc ? normalizeDocument(opts.doc) : undefined,
       width: 256, height: 256, background: null,
       theme: "auto", // follows light / dark like the app (whose colours it takes, see .icon-drawer-host)
       features: {
-        colorMode: "monochrome", monoColor: itemColor(item),
+        colorMode: "monochrome", monoColor: opts.color || "#888",
         export: false, canvasSize: false, background: false,
       },
     });
@@ -1909,6 +1920,136 @@ async function openIconDrawer(item, onSave) {
     close();
     toast("The icon editor couldn't start: " + e.message);
   }
+}
+
+// A drawing as the SVG the app shows: one colour (currentColor, so it's tinted like the other
+// icons), no background, ids that drawnIcon() makes unique per copy. Needs the editor loaded.
+function drawingSvg(doc) {
+  return window.SvgLayTool.renderDocumentToString(doc, { background: false, colorMode: "monochrome", monoColor: "currentColor", idPrefix: DRAWN_ID_PREFIX });
+}
+
+// ------------------------------------------------------------------ the drawings library
+// Every drawn icon is kept in the library (store.state.iconLibrary) to use again, edit, or start
+// new ones from. Items keep their own copy (iconDoc, iconSvg, so they travel with trades and
+// exports) and iconLib, the library drawing it came from: editing that drawing can update them.
+
+const drawingLibrary = () => store.state.iconLibrary || [];
+const findDrawing = id => id && drawingLibrary().find(d => d.id === id);
+
+function setItemDrawing(it, d) {
+  if (d) { it.iconDoc = clone(d.doc); it.iconSvg = d.svg; it.iconLib = d.id; delete it.icon; }
+  else { delete it.iconDoc; delete it.iconSvg; delete it.iconLib; }
+}
+
+// Custom items and every inventory copy (all characters) that use a library drawing.
+function drawingUsers(s, id) {
+  return [...s.customItems, ...s.characters.flatMap(c => c.items.map(e => e.item))].filter(it => it.iconLib === id);
+}
+
+function addDrawing(name, doc, svg) {
+  const d = { id: "d" + uid(), name: (name || "").trim() || `Drawing ${drawingLibrary().length + 1}`, doc, svg, updated: Date.now() };
+  commit(s => { (s.iconLibrary ||= []).unshift(d); }, null);
+  return findDrawing(d.id);
+}
+
+// Change a library drawing, and every item using it. Returns how many items changed.
+function updateDrawing(id, doc, svg) {
+  let n = 0;
+  commit(s => {
+    const d = s.iconLibrary.find(x => x.id === id);
+    if (!d) return;
+    Object.assign(d, { doc, svg, updated: Date.now() });
+    for (const it of drawingUsers(s, id)) { setItemDrawing(it, d); n++; }
+  }, null);
+  return n;
+}
+
+// A small list to pick a library drawing from.
+function pickDrawing(title, onPick) {
+  let close;
+  close = openModal(title, h("div", { class: "icon-grid" }, drawingLibrary().map(d =>
+    h("button", { type: "button", class: "icon-tile drawing", title: d.name, onclick: () => { close(); onPick(d); } },
+      drawnIcon(d.svg) || icon("image"), h("span", null, d.name)))), { wide: true });
+}
+
+// Edit an item's drawing (in a form: `it` is the draft). One used by other items too asks
+// whether to change it everywhere or make this a drawing of its own.
+function editItemDrawing(it, done) {
+  const d = findDrawing(it.iconLib);
+  openIconDrawer({ doc: d?.doc || it.iconDoc, name: it.name, color: itemColor(it) }, (doc, svg) => {
+    if (!doc) { setItemDrawing(it, null); return done(); }
+    const others = d ? drawingUsers(store.state, d.id).filter(u => u !== it._self).length : 0;
+    const asNew = () => { setItemDrawing(it, addDrawing(it.name, doc, svg)); done(); };
+    const everywhere = () => {
+      const n = updateDrawing(d.id, doc, svg);
+      setItemDrawing(it, findDrawing(d.id));
+      if (n) toast(`Updated “${d.name}” on ${plural(n, "other item")}`);
+      done();
+    };
+    if (!d) return asNew();
+    if (!others) return everywhere();
+    let close;
+    close = openModal("Change the drawing everywhere?", h("p", null,
+      `“${d.name}” is also the icon of ${plural(others, "other item")}. Change it on all of them, or keep this as a new drawing just for this item?`), { footer: [
+      h("button", { class: "btn", onclick: () => { close(); asNew(); } }, "Just this item"),
+      h("button", { class: "btn primary", onclick: () => { close(); everywhere(); } }, "Change everywhere"),
+    ] });
+  });
+}
+
+// Drawings made before the library existed: add the ones on custom items to it.
+function adoptItemDrawings() {
+  const loose = store.state.customItems.filter(it => it.iconSvg && it.iconDoc && !findDrawing(it.iconLib));
+  if (!loose.length) return;
+  commit(s => {
+    for (const it of loose) {
+      const d = { id: "d" + uid(), name: it.name, doc: it.iconDoc, svg: it.iconSvg, updated: Date.now() };
+      (s.iconLibrary ||= []).push(d);
+      it.iconLib = d.id;
+    }
+  }, null);
+}
+
+// The library, in the Custom tab: draw new ones, edit (updating the items that use them), rename,
+// start a new drawing from a copy, delete (items keep their copies).
+function drawingsSection() {
+  const lib = drawingLibrary();
+  const used = id => drawingUsers(store.state, id).length;
+  const edit = d => openIconDrawer({ doc: d.doc, title: `Edit “${d.name}”`, color: "var(--accent)", saveLabel: "Save" }, (doc, svg) => {
+    if (!doc) return toast("A drawing needs at least one shape");
+    const n = updateDrawing(d.id, doc, svg);
+    toast(n ? `Saved “${d.name}” and updated ${plural(n, "item")}` : `Saved “${d.name}”`);
+  });
+  const copy = d => openIconDrawer({ doc: clone(d.doc), title: `New drawing from “${d.name}”`, color: "var(--accent)", saveLabel: "Save" }, (doc, svg) => {
+    if (doc) { addDrawing(`${d.name} (copy)`, doc, svg); toast("Saved a new drawing"); }
+  });
+  const rename = d => {
+    let close;
+    const input = h("input", { type: "text", value: d.name, maxlength: 60 });
+    const ok = () => { const v = input.value.trim(); if (v) commit(s => { s.iconLibrary.find(x => x.id === d.id).name = v; }, null); close(); };
+    close = openModal("Rename drawing", h("label", { class: "field" }, h("span", null, "Name"), input), { footer: [
+      h("button", { class: "btn", onclick: () => close() }, "Cancel"), h("button", { class: "btn primary", onclick: ok }, "Rename")] });
+    input.focus(); input.select();
+  };
+  const remove = d => confirmDialog(`Delete the drawing “${d.name}”?${used(d.id) ? ` The ${plural(used(d.id), "item")} using it keep their icon.` : ""}`, "Delete",
+    () => commit(s => { s.iconLibrary = s.iconLibrary.filter(x => x.id !== d.id); for (const it of drawingUsers(s, d.id)) delete it.iconLib; }, `Deleted “${d.name}”`, true));
+  const newOne = () => openIconDrawer({ title: "New drawing", color: "var(--accent)", templates: true, saveLabel: "Save" }, (doc, svg) => {
+    if (doc) { addDrawing("", doc, svg); toast("Saved a new drawing"); }
+  });
+  return h("section", null,
+    h("div", { class: "section-head" }, h("h2", null, "Drawings"),
+      h("button", { class: "btn", onclick: newOne }, icon("plus"), "New drawing")),
+    h("p", { class: "muted small" }, "Icons you've drawn. Give one to an item from its Icon (Choose…), edit one (items using it can update too), or start a new one from a copy."),
+    lib.length ? h("div", { class: "drawing-grid" }, lib.map(d => h("div", { class: "drawing-tile" },
+      h("button", { class: "drawing-art", type: "button", title: `Edit “${d.name}”`, onclick: () => edit(d) }, drawnIcon(d.svg, "drawing-svg") || icon("image")),
+      h("b", null, d.name),
+      h("small", { class: "muted" }, used(d.id) ? `Used by ${plural(used(d.id), "item")}` : "Not used yet"),
+      h("div", { class: "tpl-actions" },
+        h("button", { class: "link", onclick: () => edit(d) }, "Edit"),
+        h("button", { class: "link", onclick: () => copy(d) }, "Use as template"),
+        h("button", { class: "link", onclick: () => rename(d) }, "Rename"),
+        h("button", { class: "link danger-link", onclick: () => remove(d) }, "Delete")))))
+      : h("p", { class: "muted pad" }, "No drawings yet. Draw one here, or with Draw… next to an item's icon."));
 }
 
 // An item's own image, shown in place of its icon (a playing card's face, a portrait…).
@@ -2070,13 +2211,17 @@ function fieldInput(f, draft) {
       // Preview updates with the name/type; "Automatic" follows the item's name. Or draw one.
       const preview = h("span", { class: "icon-preview" });
       const label2 = h("span", { class: "muted small" });
-      const drawBtn = h("button", { class: "btn", type: "button", onclick: () => openIconDrawer(draft, (doc, svg) => {
-        if (doc) { draft.iconDoc = doc; draft.iconSvg = svg; delete draft.icon; } else { delete draft.iconDoc; delete draft.iconSvg; }
-        draw();
-      }) }, icon("edit"), "");
+      // Draw a new icon (it goes into the drawings library), or edit this item's drawing.
+      const drawBtn = h("button", { class: "btn", type: "button", onclick: () => {
+        if (draft.iconDoc) return editItemDrawing(draft, draw);
+        openIconDrawer({ name: draft.name, color: itemColor(draft), templates: true }, (doc, svg) => {
+          if (doc) setItemDrawing(draft, addDrawing(draft.name, doc, svg));
+          draw();
+        });
+      } }, icon("edit"), "");
       const draw = () => {
         setChildren(preview, itemIcon(draft, "big-icon"));
-        label2.textContent = draft.iconSvg ? "Your drawing" : draft.icon ? ICON_BY_ID.get(draft.icon)?.n || "" : "Automatic";
+        label2.textContent = draft.iconSvg ? findDrawing(draft.iconLib)?.name || "Your drawing" : draft.icon ? ICON_BY_ID.get(draft.icon)?.n || "" : "Automatic";
         drawBtn.lastChild.textContent = draft.iconDoc ? "Edit drawing…" : "Draw…";
       };
       draw();
@@ -2084,9 +2229,9 @@ function fieldInput(f, draft) {
         h("div", { class: "inline wrap" }, preview,
           h("button", { class: "btn", type: "button", onclick: () => openIconPicker(draft.icon, id => {
             if (id) draft.icon = id; else delete draft.icon;
-            delete draft.iconDoc; delete draft.iconSvg; // a chosen icon replaces a drawing
+            setItemDrawing(draft, null); // a chosen icon replaces a drawing
             draw();
-          }, draft) }, "Choose…"),
+          }, draft, { drawings: drawingLibrary(), onDrawing: d => { setItemDrawing(draft, d); draw(); } }) }, "Choose…"),
           drawBtn,
           label2));
     }
@@ -2159,6 +2304,7 @@ function renderCustom() {
         h("button", { class: "btn primary", onclick: () => openItemForm(null) }, icon("plus"), "New item")),
       items.length ? h("div", { class: "group" }, items.map(catalogRow))
         : h("div", { class: "empty" }, h("p", null, "No custom items yet. Make a homebrew weapon, a family heirloom, or a +1 version of an existing item (open any catalog item → Customize)."))),
+    drawingsSection(),
     h("section", null,
       h("div", { class: "section-head" }, h("h2", null, "Templates"),
         h("button", { class: "btn", onclick: () => openTemplateEditor(null) }, icon("plus"), "New template")),
@@ -2587,6 +2733,7 @@ async function boot() {
   }
   applyPrefs(); // saved preferences may live in the PC's shared file
   store.load();
+  adoptItemDrawings(); // drawn icons from before the drawings library
   store.subscribe(render);
   const nav = document.getElementById("nav");
   nav.replaceChildren(...Object.entries(VIEWS).map(([k, v]) =>

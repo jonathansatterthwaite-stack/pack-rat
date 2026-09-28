@@ -193,7 +193,8 @@ function itemIcon(item, cls = "") {
 }
 
 // Searchable grid of every icon. onPick(id) — id is null for "Automatic".
-function openIconPicker(current, onPick, sample) {
+// opts.drawings / opts.onDrawing(entry): also offer drawings from the library, first.
+function openIconPicker(current, onPick, sample, opts = {}) {
   let close, query = "";
   const grid = h("div", { class: "icon-grid", role: "listbox", "aria-label": "Icons" });
   const tile = (id, label, el) => h("button", {
@@ -203,8 +204,13 @@ function openIconPicker(current, onPick, sample) {
   const draw = () => {
     const q = query.trim().toLowerCase();
     const matches = ICON_LIBRARY.filter(i => !q || i.n.toLowerCase().includes(q) || i.t.includes(q) || i.id.includes(q));
+    const drawings = (opts.drawings || []).filter(d => !q || d.name.toLowerCase().includes(q));
     setChildren(grid,
-      !q && sample && tile(null, "Automatic", itemIcon({ ...sample, icon: undefined })),
+      drawings.length > 0 && h("div", { class: "icon-grid-head" }, "Your drawings"),
+      drawings.map(d => h("button", { type: "button", class: "icon-tile drawing" + (sample?.iconLib === d.id ? " active" : ""), title: d.name, role: "option",
+        onclick: () => { close(); opts.onDrawing(d); } }, drawnIcon(d.svg) || iconSvg("image"), h("span", null, d.name))),
+      drawings.length > 0 && h("div", { class: "icon-grid-head" }, "Icons"),
+      !q && sample && tile(null, "Automatic", itemIcon({ ...sample, icon: undefined, iconSvg: undefined })),
       matches.map(i => tile(i.id, i.n, iconSvg(i.id))),
       !matches.length && h("p", { class: "muted pad" }, "No icons match."));
   };
