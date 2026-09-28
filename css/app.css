@@ -501,8 +501,6 @@ button.tile:hover, .tile:has(.tile-hit:hover) { border-color: var(--muted); bord
 .pic-nav { position: absolute; top: 50%; transform: translateY(-50%); width: 48px; height: 48px; border-radius: 50%; background: rgb(0 0 0 / .45); color: #fff; }
 .pic-nav.prev { left: 10px; } .pic-nav.next { right: 10px; }
 .pic-empty { flex: 1; display: grid; place-content: center; justify-items: center; gap: 12px; color: #a89c8a; }
-.doc-mode { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
-.doc-mode .seg button { width: auto; padding: 0 14px; }
 .pic-edit-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
 .pic-edit { display: flex; align-items: center; gap: 10px; }
 .pic-edit input { flex: 1; min-width: 0; }

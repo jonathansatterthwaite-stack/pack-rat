@@ -50,6 +50,24 @@ async function fetchInfo(base, timeout = 6000) {
   }
 }
 
+// A JSON request to a Pack Rat server (this page's own or the party host's), as this player.
+// A failure throws the server's message, with its status and reply.
+async function apiRequest(url, method, body, token) {
+  const res = await fetch(url, {
+    method, cache: "no-store",
+    headers: { "Content-Type": "application/json", ...(token ? { "X-Player": token } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || res.statusText);
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+
 const party = {
   app: null,          // this page's own server (/api/info), if it has one
   info: null,         // the party server's /api/info
@@ -61,6 +79,7 @@ const party = {
   chars: [],          // every character in the party, from the latest snapshot
   trades: [],         // trades involving my characters
   shops: [],
+  gm: {},             // GM values (see gmValues)
   synced: new Map(),  // id -> { rev, json }: last version the server confirmed (= linked characters)
   records: {},        // id -> { rev, h }: the same, remembered on this device between visits
   undecided: new Set(), // changed both here and in the party while away: waiting for the player
@@ -122,21 +141,7 @@ const party = {
     this.settle();
   },
 
-  async api(method, url, body) {
-    const res = await fetch(this.url(url), {
-      method, cache: "no-store",
-      headers: { "Content-Type": "application/json", "X-Player": this.token },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const err = new Error(data.error || res.statusText);
-      err.status = res.status;
-      err.data = data;
-      throw err;
-    }
-    return data;
-  },
+  api(method, url, body) { return apiRequest(this.url(url), method, body, this.token); },
 
   // ------------------------------------------------------------ which characters are linked
 
@@ -346,7 +351,7 @@ const party = {
     kv.remove(JOINED_KEY);
     clearInterval(this.retryTimer);
     for (const t of this.timers.values()) clearTimeout(t);
-    Object.assign(this, { active: false, connected: false, base: "", info: null, token: null, chars: [], trades: [], shops: [], unreachable: null });
+    Object.assign(this, { active: false, connected: false, base: "", info: null, token: null, chars: [], trades: [], shops: [], gm: {}, unreachable: null });
     this.synced = new Map();
     this.undecided = new Set();
     this.uploaded = new Set();

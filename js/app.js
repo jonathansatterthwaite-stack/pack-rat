@@ -375,7 +375,7 @@ function renderInventory() {
       h("div", { class: "stat-sub" + (enc.status !== "ok" ? " warn-text" : "") }, enc.label)),
     h("button", { class: "stat clickable", onclick: openCoins },
       h("div", { class: "stat-label" }, icon("coins"), "Coins"),
-      h("div", { class: "coins" }, COIN_ORDER.map(k => h("span", { class: "coin " + k }, h("b", null, (char.coins[k] || 0).toLocaleString()), " ", k))),
+      h("div", { class: "coins" }, coinChips(char.coins)),
       h("div", { class: "stat-sub" }, `Worth ${fmtCost(coinTotalCp(char.coins))} · gear ${fmtCost(Math.round(value))}`)),
     h("div", { class: "stat" },
       h("div", { class: "stat-label" }, icon("user"), "Abilities"),
@@ -391,7 +391,7 @@ function renderInventory() {
       h("button", { class: "collapse" + (open ? "" : " closed"), onclick: toggleStats, "aria-expanded": String(open) }, icon("chevron"),
         h("h3", null, open ? "Character" : "")),
       !open && h("button", { class: "purse-btn", type: "button", title: "Open the coin purse", "aria-label": "Coins: open the coin purse", onclick: openCoins },
-        icon("coins"), h("span", { class: "coins" }, COIN_ORDER.map(k => h("span", { class: "coin " + k }, h("b", null, (char.coins[k] || 0).toLocaleString()), " ", k)))),
+        icon("coins"), h("span", { class: "coins" }, coinChips(char.coins))),
       !open && !enc.off && h("span", { class: "carried-mini" + (enc.status !== "ok" ? " warn-text" : ""), title: enc.label },
         icon("weight"), `${+enc.weight.toFixed(1)} / ${enc.capacity} lb`)),
     open && statsGrid);
@@ -414,6 +414,11 @@ function renderInventory() {
   return h("div", { class: "view-inventory" }, foundElsewhereBanner(), notInPartyBanner(), party.active && undecidedBanner(), stats, combatPanel(char), toolbar, inventoryTypeChips(char), list);
 }
 
+// "12 pp 40 gp 0 ep …", each coin in its colour.
+function coinChips(coins) {
+  return COIN_ORDER.map(k => h("span", { class: "coin " + k }, h("b", null, (coins[k] || 0).toLocaleString()), " ", k));
+}
+
 // ------------------------------------------------------------------ combat panel
 
 // Collapsible: the equipped weapons ready to use, with to-hit, damage, range and ammunition.
@@ -425,7 +430,7 @@ function combatPanel(char) {
   // Nothing equipped yet: show every weapon so the panel is still useful.
   const shown = ready.length ? ready : weapons;
   const others = ready.length ? weapons.filter(e => !e.equipped) : [];
-  const summary = ready.length ? ready.map(e => e.item.name).join(", ")
+  const summary = ready.length ? ready.map(entryName).join(", ")
     : weapons.length ? `${weapons.length} weapon${weapons.length === 1 ? "" : "s"}, none equipped` : "Unarmed";
   const profs = char.weaponProfs || ["Simple", "Martial"];
   const setProf = (cat, on) => commit((s, c) => {
@@ -470,10 +475,8 @@ function attackCard(char, e) {
       a.twoHanded && h("span", { class: "muted" }, ` · two hands ${a.twoHanded}`)),
     h("div", { class: "attack-meta" }, [where, a.ability.toUpperCase(), !a.prof && "not proficient"].filter(Boolean).join(" · ")),
     // Range and ammunition are spelt out above; the other properties keep their rules as tooltips.
-    it.properties?.some(p => !/^(range|ammunition)/i.test(p)) && h("div", { class: "attack-props" }, it.properties.filter(p => !/^(range|ammunition)/i.test(p)).map(p => {
-      const key = Object.keys(WEAPON_PROPERTIES).find(k => p.toLowerCase().startsWith(k.toLowerCase()));
-      return h("span", { class: "chip", title: key ? WEAPON_PROPERTIES[key] : "" }, p);
-    })),
+    it.properties?.some(p => !/^(range|ammunition)/i.test(p)) &&
+      h("div", { class: "attack-props" }, propertyChips(it.properties.filter(p => !/^(range|ammunition)/i.test(p)))),
     a.offHand && h("div", { class: "attack-note" }, `Off-hand attack (bonus action): ${a.offHand}${a.type ? " " + a.type : ""}`),
     a.loading && h("div", { class: "attack-note" }, "Loading: one shot per action, bonus action or reaction."),
     a.range && h("div", { class: "attack-note" }, "Beyond the first range: disadvantage. Can't reach past the second."),
@@ -495,10 +498,10 @@ function ammoLine(char, weapon) {
   });
   return h("div", { class: "ammo" }, stacks.map(s => h("div", { class: "ammo-row" },
     itemIcon(s.item, "ammo-icon"),
-    h("span", { class: "ammo-count" }, h("b", null, s.qty.toLocaleString()), " ", s.item.name),
+    h("span", { class: "ammo-count" }, h("b", null, s.qty.toLocaleString()), " ", entryName(s)),
     h("span", { class: "muted small ammo-where" }, locationLabel(char, s) || "on person"),
-    iconBtn("minus", `Use one ${s.item.name}`, () => change(s.uid, -1)),
-    iconBtn("plus", `Recover one ${s.item.name}`, () => change(s.uid, 1)))));
+    iconBtn("minus", `Use one ${entryName(s)}`, () => change(s.uid, -1)),
+    iconBtn("plus", `Recover one ${entryName(s)}`, () => change(s.uid, 1)))));
 }
 
 function unarmedCard(char) {
@@ -613,7 +616,7 @@ const INV_SORTS = {
 function sortEntries(char, entries) {
   const cmp = (INV_SORTS[ui.sort] || INV_SORTS.smart).cmp;
   const dir = ui.sortReverse ? -1 : 1;
-  return [...entries].sort((a, b) => dir * (cmp(a, b, char) || a.item.name.localeCompare(b.item.name)));
+  return [...entries].sort((a, b) => dir * (cmp(a, b, char) || entryName(a).localeCompare(entryName(b))));
 }
 
 function sortControl() {
@@ -695,20 +698,16 @@ function containerGroup(char, c, depth, siblings = [c], index = 0) {
   const all = sortEntries(char, childrenOf(char, c.uid));
   const kids = all.filter(k => !k.strapped);
   const outside = all.filter(k => k.strapped);
-  const inner = contentsWeight(char, c);
-  const cap = c.item.capacityLb;
   const spec = holderSpec(c);
   const fill = fillLevel(char, c);
   const collapsed = ui.collapsed.has(c.uid);
   const toggle = () => { collapsed ? ui.collapsed.delete(c.uid) : ui.collapsed.add(c.uid); render(); };
-  const load = spec ? `${fill.used} / ${fill.limit} ${fill.unit}s`
-    : cap ? `${+inner.toFixed(2)} / ${cap} lb` : fmtWeight(inner);
   return dropZone(c.uid, h("div", { class: "group container-group", style: { marginLeft: depth ? "12px" : null } },
     withFill(h("div", { class: "group-head" },
       h("button", { class: "collapse" + (collapsed ? " closed" : ""), onclick: toggle, "aria-expanded": String(!collapsed) }, icon("chevron"),
         h("h3", null, entryName(c), c.qty > 1 ? ` ×${c.qty}` : "")),
       h("span", { class: "muted" + (fill?.over ? " warn-text" : ""), title: spec ? `Holds ${spec.label.toLowerCase()}` : null },
-        load, c.item.weightless ? " (weightless)" : ""),
+        contentsLoad(char, c), c.item.weightless ? " (weightless)" : ""),
       siblings.length > 1 && h("span", { class: "reorder" },
         h("button", { class: "icon-btn", type: "button", title: `Move ${entryName(c)} up`, "aria-label": `Move ${entryName(c)} up`,
           disabled: index === 0, onclick: () => moveContainer(siblings, index, -1) }, icon("up")),
@@ -769,15 +768,17 @@ function moveEntry(id, parentUid, strapped = false) {
       return commit((s, c) => {
         const x = c.items.find(x => x.uid === id);
         x.qty -= room;
-        addToInventory(c, { ...clone(x.item), id: x.srcId }, room, parentUid);
-      }, `Moved ${room} × ${entry.item.name} to ${dest} (it's full)`, true);
+        // A renamed stack keeps its name (and doesn't join an unnamed one).
+        if (x.customName) c.items.push({ ...clone(x), uid: uid(), qty: room, parent: parentUid, strapped: false, equipped: false, attuned: false });
+        else addToInventory(c, { ...clone(x.item), id: x.srcId }, room, parentUid);
+      }, `Moved ${room} × ${entryName(entry)} to ${dest} (it's full)`, true);
     }
   }
   commit((s, c) => {
     const x = c.items.find(x => x.uid === id);
     x.parent = parentUid;
     x.strapped = strapped;
-  }, `Moved ${entry.item.name} to ${dest}`, true);
+  }, `Moved ${entryName(entry)} to ${dest}`, true);
 }
 
 // "in Backpack" / "on Backpack" for filtered lists.
@@ -793,10 +794,15 @@ function containerLoad(char, e) {
   if (!holdsItems(char, e)) return null;
   const inside = childrenOf(char, e.uid).filter(k => !k.strapped);
   if (!inside.length) return "Empty";
-  const fill = fillLevel(char, e);
-  const load = fill?.unit ? `${fill.used} / ${fill.limit} ${fill.unit}s`
-    : e.item.capacityLb > 0 ? `${+contentsWeight(char, e).toFixed(2)} / ${e.item.capacityLb} lb` : fmtWeight(contentsWeight(char, e));
-  return `${plural(inside.length, "item")} · ${load}`;
+  return `${plural(inside.length, "item")} · ${contentsLoad(char, e)}`;
+}
+
+// How full a container is: "12 / 20 arrows", "14.5 / 30 lb", or just the weight inside.
+function contentsLoad(char, e) {
+  const spec = holderSpec(e);
+  if (spec) return `${holderUsed(char, e, spec)} / ${spec.limit} ${spec.unit}s`;
+  const inner = contentsWeight(char, e);
+  return e.item.capacityLb > 0 ? `${+inner.toFixed(2)} / ${e.item.capacityLb} lb` : fmtWeight(inner);
 }
 
 // Tile labels: worth top-left, weight top-right, and along the bottom the stack count or, for a
@@ -855,7 +861,7 @@ function entryTile(char, e, showPath) {
   const it = e.item;
   const path = showPath ? locationLabel(char, e) : null;
   const el = h("button", { class: "tile" + (e.equipped ? " equipped" : ""), draggable: "true",
-    title: [entryName(e), liquidLabel(e) || containerLoad(char, e) || itemSummary(it), e.equipped && (it.type === "armor" || it.acBonus ? "worn" : "equipped"),
+    title: [entryName(e), liquidLabel(e) || containerLoad(char, e) || itemSummary(it), e.equipped && equipWord(e),
       e.attuned && "attuned", e.charges != null && `${e.charges}/${it.maxCharges} charges`, path].filter(Boolean).join(" · "),
     onclick: () => openEntry(e.uid),
     ondragstart: ev => { ev.dataTransfer.setData("text/entry", e.uid); ev.dataTransfer.effectAllowed = "move"; } },
@@ -868,26 +874,21 @@ function entryTile(char, e, showPath) {
 
 function entryRow(char, e, showPath = false) {
   const it = e.item;
-  const equipable = ["weapon", "armor", "magic"].includes(it.type) || it.acBonus;
   const path = showPath ? locationLabel(char, e) : null;
-  const setQty = n => commit((s, c) => {
-    const x = c.items.find(x => x.uid === e.uid);
-    x.qty = Math.max(0, n);
-    if (x.qty === 0) removeEntry(c, x.uid);
-  }, n <= 0 ? `Removed ${it.name}` : null, n <= 0);
+  const setQty = n => setEntryQty(e, n);
   return withFill(h("div", { class: "row" + (e.equipped ? " equipped" : ""), draggable: "true",
     ondragstart: ev => { ev.dataTransfer.setData("text/entry", e.uid); ev.dataTransfer.effectAllowed = "move"; } },
     itemIcon(it, "row-icon", () => entryIconVars(char, e)),
     h("button", { class: "row-main", onclick: () => openEntry(e.uid) },
       h("div", { class: "row-title" }, entryName(e),
-        e.equipped && h("span", { class: "tag on" }, it.type === "armor" || it.acBonus ? "worn" : "equipped"),
+        e.equipped && h("span", { class: "tag on" }, equipWord(e)),
         e.attuned && h("span", { class: "tag attuned" }, "attuned"),
         e.charges != null && h("span", { class: "tag" }, `${e.charges}/${it.maxCharges} charges`),
         path && h("span", { class: "tag" }, path)),
       h("div", { class: "row-sub" }, [liquidLabel(e) || containerLoad(char, e) || itemSummary(it), e.notes].filter(Boolean).join(" — "))),
     h("div", { class: "row-weight muted" }, fmtWeight(entryOwnWeight(e))),
     writingButton(e),
-    equipable && iconBtn(it.type === "weapon" ? "sword" : "shield", e.equipped ? "Unequip" : "Equip",
+    isEquipable(e) && iconBtn(it.type === "weapon" ? "sword" : "shield", e.equipped ? "Unequip" : "Equip",
       () => toggleEquip(e.uid), "equip" + (e.equipped ? " on" : "")),
     h("div", { class: "qty" },
       iconBtn("minus", "Decrease", () => setQty(e.qty - 1)),
@@ -910,11 +911,14 @@ function pageKind(it, srcId) {
   return hasFeature(it, "picture", srcId) ? "picture" : hasFeature(it, "writable", srcId) ? "writing" : null;
 }
 
+// Something to read or look at already (documents always open in the reader, even blank).
+const hasPage = (it, kind) => hasWriting(it) || (kind === "writing" && it.type === "document");
+
 // On an item's row: read or view what's there, or write in it / add a picture.
 function writingButton(e, onDone = () => {}, cls = "equip") {
   const it = e.item, kind = pageKind(it, e.srcId);
   if (!kind) return null;
-  const read = hasWriting(it) || (kind === "writing" && it.type === "document");
+  const read = hasPage(it, kind);
   const [ic, label] = kind === "picture" ? ["image", read ? "View" : "Add a picture"] : read ? ["book", "Read"] : ["edit", "Write"];
   return iconBtn(ic, label, () => { onDone(); read ? readEntry(e.uid) : writeEntry(e.uid); }, cls);
 }
@@ -952,6 +956,22 @@ function writeEntry(entryUid) {
     h("button", { class: "btn", onclick: () => close() }, "Cancel"),
     h("button", { class: "btn primary", onclick: save }, icon("check"), "Save"),
   ] });
+}
+
+// Weapons, armor, magic items and anything worn for an AC bonus can be equipped; armor is "worn".
+const wornForAc = e => !!e.item.acBonus && hasFeature(e.item, "worn", e.srcId);
+const isEquipable = e => ["weapon", "armor", "magic"].includes(e.item.type) || wornForAc(e);
+const equipWord = e => e.item.type === "armor" || wornForAc(e) ? "worn" : "equipped";
+
+// Set a stack's quantity; at 0 it's removed (with Undo).
+function setEntryQty(e, n) {
+  n = Math.max(0, Math.floor(+n || 0));
+  commit((s, c) => {
+    const x = c.items.find(x => x.uid === e.uid);
+    if (!x) return;
+    x.qty = n;
+    if (!n) removeEntry(c, x.uid);
+  }, n ? null : `Removed ${entryName(e)}`, !n);
 }
 
 function toggleEquip(entryUid) {
@@ -1027,10 +1047,7 @@ function itemDetails(item, onIcon = null, srcId = item.id, vars = null) {
       onIcon && h("button", { class: "btn", type: "button", onclick: () => openIconPicker(item.icon, onIcon, item,
         { drawings: drawingLibrary(), onDrawing: d => onIcon(undefined, d) }) }, "Change icon")),
     h("dl", null, rows.map(([k, v]) => [h("dt", null, k), h("dd", null, v)])),
-    item.properties?.length && h("div", { class: "props" }, item.properties.map(p => {
-      const key = Object.keys(WEAPON_PROPERTIES).find(k => p.toLowerCase().startsWith(k.toLowerCase()));
-      return h("span", { class: "chip", title: key ? WEAPON_PROPERTIES[key] : "" }, p);
-    })),
+    item.properties?.length && h("div", { class: "props" }, propertyChips(item.properties)),
     item.effect && h("p", { class: "desc" }, item.effect),
     item.description && item.description.split("\n\n").map(p => h("p", { class: "desc" }, p)),
     item.activities?.length && h("table", { class: "mini" },
@@ -1039,6 +1056,14 @@ function itemDetails(item, onIcon = null, srcId = item.id, vars = null) {
     has("pack") && item.contents?.length && h("div", null, h("h4", null, "Contents"),
       h("ul", { class: "contents" }, packPlan(item).map(r => h("li", null, r.qty > 1 ? `${r.qty} × ` : "", r.name,
         h("span", { class: "muted" }, { holder: " — holds the rest", strap: " — strapped outside", loose: " — on person", in: "" }[r.place]))))));
+}
+
+// Weapon properties as chips, each with its rule as a tooltip.
+function propertyChips(props) {
+  return props.map(p => {
+    const key = Object.keys(WEAPON_PROPERTIES).find(k => p.toLowerCase().startsWith(k.toLowerCase()));
+    return h("span", { class: "chip", title: key ? WEAPON_PROPERTIES[key] : "" }, p);
+  });
 }
 
 function fieldDisplay(f, v) {
@@ -1098,7 +1123,7 @@ function openEntry(entryUid) {
     h("label", { class: "field" }, h("span", null, "Location"), moveSel),
     h("label", { class: "field" }, h("span", null, "Quantity"),
       h("input", { type: "number", min: 0, value: e.qty, inputmode: "numeric",
-        onchange: ev => commit((s, c) => { c.items.find(x => x.uid === e.uid).qty = Math.max(0, Math.floor(+ev.target.value)); }) })),
+        onchange: ev => { const n = Math.floor(+ev.target.value || 0); if (!n) close(); setEntryQty(e, n); } })),
     (e.qty > 1 || sameStacks(char, e).length > 0) && h("div", { class: "field stack-actions" }, h("span", null, "Stack"),
       h("div", { class: "inline" },
         e.qty > 1 && h("button", { class: "btn", type: "button", onclick: () => { close(); openSplit(e.uid); } }, icon("copy"), "Split stack"),
@@ -1107,7 +1132,7 @@ function openEntry(entryUid) {
     hasFeature(it, "charges", e.srcId) && it.maxCharges && h("label", { class: "field" }, h("span", null, `Charges (max ${it.maxCharges})`),
       h("input", { type: "number", min: 0, max: it.maxCharges, value: e.charges ?? it.maxCharges,
         onchange: ev => commit((s, c) => { c.items.find(x => x.uid === e.uid).charges = Math.max(0, Math.min(it.maxCharges, +ev.target.value)); }) })),
-    (["weapon", "armor", "magic"].includes(it.type) || it.acBonus) && h("label", { class: "check" },
+    isEquipable(e) && h("label", { class: "check" },
       h("input", { type: "checkbox", checked: e.equipped, onchange: () => toggleEquip(e.uid) }), " Equipped / worn"),
     it.attunement && h("label", { class: "check" },
       h("input", { type: "checkbox", checked: e.attuned, onchange: ev => {
@@ -1130,10 +1155,10 @@ function openEntry(entryUid) {
       const where = { parent: x.parent, strapped: !!x.strapped };
       if (x.qty > 1) x.qty -= 1; else removeEntry(c, x.uid);
       unpackPack(c, plan.rows, { into: plan.into, ...where });
-    }, `Unpacked ${it.name}`, true);
+    }, `Unpacked ${entryName(e)}`, true);
   };
   const footer = [
-    h("button", { class: "btn danger", onclick: () => { close(); commit((s, c) => removeEntry(c, e.uid), `Removed ${it.name}`, true); } }, icon("trash"), "Remove"),
+    h("button", { class: "btn danger", onclick: () => { close(); commit((s, c) => removeEntry(c, e.uid), `Removed ${entryName(e)}`, true); } }, icon("trash"), "Remove"),
     planner && h("button", { class: "btn primary", onclick: unpack }, icon("package"), "Unpack"),
     h("button", { class: "btn", onclick: () => { close(); openSell(e.uid); } }, icon("coins"), "Sell"),
     // Player mode: no editing items (a copy can still be renamed with its display name).
@@ -1156,7 +1181,7 @@ function openEntry(entryUid) {
   };
   // Things that can be written in: read what's there, and write (more).
   const kind = pageKind(it, e.srcId);
-  const read = !!kind && (hasWriting(it) || (kind === "writing" && it.type === "document"));
+  const read = !!kind && hasPage(it, kind);
   const readBtn = kind && h("div", { class: "inline wrap read-btns" },
     read && h("button", { class: "btn primary read-btn", onclick: () => { close(); readEntry(e.uid); } },
       icon(kind === "picture" ? "image" : "book"), kind === "picture" ? "View" : "Read"),
@@ -1213,7 +1238,7 @@ function liquidControls(e) {
 function sameStacks(char, e) {
   const json = JSON.stringify(e.item);
   return char.items.filter(x => x !== e && x.srcId === e.srcId && x.parent === e.parent && !!x.strapped === !!e.strapped &&
-    JSON.stringify(x.item) === json && !char.items.some(k => k.parent === x.uid));
+    (x.customName || "") === (e.customName || "") && JSON.stringify(x.item) === json && !char.items.some(k => k.parent === x.uid));
 }
 
 // Divide a stack: how many go into the new stack, and where it goes (default: right beside it).
@@ -1245,7 +1270,7 @@ function openSplit(entryUid) {
       x.qty -= n;
       // Same item, notes and contents; not equipped or attuned (that stays with the original).
       c.items.splice(c.items.indexOf(x) + 1, 0, { ...clone(x), uid: newUid, qty: n, equipped: false, attuned: false });
-    }, `Split ${n} × ${e.item.name} into a new stack`, true);
+    }, `Split ${n} × ${entryName(e)} into a new stack`, true);
     const loc = parseLocation(where.value);
     if (loc.parent !== (e.parent || null) || loc.strapped !== !!e.strapped) {
       moveEntry(newUid, loc.parent, loc.strapped);
@@ -1259,7 +1284,7 @@ function openSplit(entryUid) {
       });
     }
   };
-  close = openModal(`Split ${e.item.name}`, h("div", { class: "form" },
+  close = openModal(`Split ${entryName(e)}`, h("div", { class: "form" },
     h("p", { class: "muted small" }, `${e.qty.toLocaleString()} in this stack${(e.item.bundle || 1) > 1 ? ` (bundles of ${e.item.bundle})` : ""}.`),
     h("label", { class: "field" }, h("span", null, "How many go into the new stack"), h("div", { class: "inline" }, num, slider)),
     summary,
@@ -1287,16 +1312,17 @@ function combineStacks(entryUid) {
       x.attuned = x.attuned || o.attuned;
     }
     c.items = c.items.filter(o => !ids.has(o.uid));
-  }, `Combined ${others.length + 1} stacks of ${e.item.name}`, true);
+  }, `Combined ${others.length + 1} stacks of ${entryName(e)}`, true);
 }
 
 function openSell(entryUid) {
   const char = store.char();
   const e = char.items.find(x => x.uid === entryUid);
+  if (!e) return;
   const unit = (e.item.cost || 0) / (e.item.bundle || 1);
   let qty = e.qty, pct = 50, close;
   const out = h("p", { class: "big-num" });
-  const upd = () => { out.textContent = fmtCost(Math.floor(unit * qty * pct / 100)) || "0"; };
+  const upd = () => { out.textContent = fmtMoney(Math.floor(unit * qty * pct / 100)); };
   const body = h("div", { class: "form" },
     h("label", { class: "field" }, h("span", null, `Quantity (of ${e.qty})`),
       h("input", { type: "number", min: 1, max: e.qty, value: qty, oninput: ev => { qty = Math.max(1, Math.min(e.qty, +ev.target.value || 1)); upd(); } })),
@@ -1304,16 +1330,17 @@ function openSell(entryUid) {
       h("input", { type: "number", min: 0, value: pct, oninput: ev => { pct = Math.max(0, +ev.target.value || 0); upd(); } })),
     h("div", null, h("span", { class: "muted" }, "You receive"), out));
   upd();
-  close = openModal(`Sell ${e.item.name}`, body, { footer: [
+  close = openModal(`Sell ${entryName(e)}`, body, { footer: [
     h("button", { class: "btn", onclick: () => close() }, "Cancel"),
     h("button", { class: "btn primary", onclick: () => {
       close();
       commit((s, c) => {
-        c.coins = receiveCoins(c.coins, Math.floor(unit * qty * pct / 100));
         const x = c.items.find(x => x.uid === entryUid);
+        if (!x) return;
+        c.coins = receiveCoins(c.coins, Math.floor(unit * qty * pct / 100));
         x.qty -= qty;
         if (x.qty <= 0) removeEntry(c, x.uid);
-      }, `Sold ${qty} × ${e.item.name}`, true);
+      }, `Sold ${qty} × ${entryName(e)}`, true);
     } }, "Sell"),
   ] });
 }
@@ -1340,9 +1367,7 @@ function openCoins() {
     h("button", { class: "btn", onclick: () => {
       close();
       commit((s, c) => {
-        let total = coinTotalCp(c.coins);
-        c.coins = { pp: 0, gp: 0, ep: 0, sp: 0, cp: 0 };
-        c.coins = receiveCoins(c.coins, total);
+        c.coins = receiveCoins({ pp: 0, gp: 0, ep: 0, sp: 0, cp: 0 }, coinTotalCp(c.coins));
       }, "Converted coins to gp/sp/cp", true);
     } }, "Consolidate into gp / sp / cp"));
 
@@ -1351,7 +1376,10 @@ function openCoins() {
     if (!cp) return;
     if (sign > 0) {
       close();
-      commit((s, c) => { c.coins = { ...c.coins, [denom]: (c.coins[denom] || 0) + Math.round(amt) }; }, `Gained ${amt} ${denom}`, true);
+      // Whole coins as given; a fraction (1.5 gp) as its worth in smaller coins.
+      commit((s, c) => {
+        c.coins = Number.isInteger(amt) ? { ...c.coins, [denom]: (c.coins[denom] || 0) + amt } : receiveCoins(c.coins, cp);
+      }, `Gained ${amt} ${denom}`, true);
     } else {
       const paid = payCoins(char.coins, cp);
       if (!paid) return toast("Not enough coin");
@@ -1373,9 +1401,9 @@ function catTypes() {
   return [["all", "All"], ...TYPE_GROUPS.filter(g => has.has(g.id)).map(g => [g.id, g.name]), ["custom", "Custom"]];
 }
 
-function catalogFiltered(sub = ui.catSub) {
-  const q = ui.catSearch.trim();
-  const t = ui.catType;
+// Catalog items in a tab (catTypes), matching a search, optionally in one subcategory.
+function catalogFiltered(t = ui.catType, q = ui.catSearch, sub = ui.catSub) {
+  q = q.trim();
   const subMatch = sub && GROUP_BY_ID[t] ? subcategories(t).find(s => s.key === sub)?.match : null;
   return store.catalog().filter(i => {
     if (t === "custom") { if (!i.id.startsWith("custom-")) return false; }
@@ -1404,7 +1432,7 @@ function renderCatalog() {
       onclick: () => { ui.catType = k; ui.catSub = null; ui.catLimit = 150; render(); } },
       GROUP_BY_ID[k] && colorDot(groupColor(k), label), label)));
   // Within a group: its subcategories (Gear / Tools, Light / Medium / Heavy…), each in its shade.
-  const all = GROUP_BY_ID[ui.catType] ? catalogFiltered(null) : [];
+  const all = GROUP_BY_ID[ui.catType] ? catalogFiltered(ui.catType, ui.catSearch, null) : [];
   const subs = GROUP_BY_ID[ui.catType] && subChips(ui.catType, ui.catSub, s => all.filter(s.match).length,
     key => { ui.catSub = key; ui.catLimit = 150; render(); });
   return h("div", { class: "view-catalog" },
@@ -1450,7 +1478,7 @@ function openCatalogItem(item) {
   const char = store.char();
   const isCustom = item.id.startsWith("custom-");
   const isPack = hasFeature(item, "pack", item.id);
-  let qty = item.bundle || 1, parent = null, strapped = false, close;
+  let qty = item.bundle || 1, parent = null, strapped = false, payForPack = false, close;
   const unit = (item.cost || 0) / (item.bundle || 1);
   const priceEl = h("span", { class: "muted" });
   const updPrice = () => { priceEl.textContent = item.cost ? `Total ${fmtCost(Math.round(unit * qty))}` : ""; };
@@ -1464,7 +1492,6 @@ function openCatalogItem(item) {
     isPack && item.cost && h("label", { class: "check" },
       h("input", { type: "checkbox", onchange: e => { payForPack = e.target.checked; } }), ` Pay ${fmtCost(item.cost)} from purse`));
   const planner = isPack ? packPlanner(item, char) : null;
-  let payForPack = false;
   // Returns the purse after paying for a pack (or unchanged), or null if unaffordable.
   const packPurse = () => {
     if (!payForPack) return char.coins;
@@ -1700,7 +1727,7 @@ function cardBackButton(e, close) {
   if (!e.fromDeck || e.parent === e.fromDeck) return null;
   const deck = store.char().items.find(x => x.uid === e.fromDeck);
   if (!deck) return null;
-  return h("button", { class: "btn primary read-btn", type: "button", onclick: () => { close(); putCardsBack(deck.uid, [e.uid], `Put ${e.item.name} back in the ${entryName(deck)}`); } },
+  return h("button", { class: "btn primary read-btn", type: "button", onclick: () => { close(); putCardsBack(deck.uid, [e.uid], `Put ${entryName(e)} back in the ${entryName(deck)}`); } },
     icon("package"), `Put back in the ${entryName(deck)}`);
 }
 
@@ -1718,9 +1745,10 @@ function packPlanner(pack, char) {
     const theirs = char.items.filter(e => holdsItems(char, e) && !holderSpec(e));
     setChildren(intoSel,
       h("option", { value: "" }, holder ? `Its own ${holder.name}` : "Nothing — everything on person"),
-      theirs.map(e => h("option", { value: e.uid, selected: into === e.uid }, `My ${e.item.name}${e.parent ? " (nested)" : ""}`)));
+      theirs.map(e => h("option", { value: e.uid, selected: into === e.uid }, `My ${entryName(e)}${e.parent ? " (nested)" : ""}`)));
     intoSel.value = into;
-    const target = into ? char.items.find(e => e.uid === into)?.item.name : holder?.name;
+    const intoEntry = into && char.items.find(e => e.uid === into);
+    const target = intoEntry ? entryName(intoEntry) : holder?.name;
     note.textContent = into && holder ? `The pack's own ${holder.name} comes along too, on person.` : "";
     setChildren(list, rows.map(r => h("div", { class: "row pack-row" + (r.include ? "" : " off") },
       h("input", { type: "checkbox", checked: r.include, "aria-label": `Include ${r.name}`, onchange: e => { r.include = e.target.checked; draw(); } }),
@@ -1736,7 +1764,7 @@ function packPlanner(pack, char) {
         if (e.target.value === "holder") for (const x of rows) if (x.place === "holder") x.place = "in";
         r.place = e.target.value;
         draw();
-      } }, PACK_PLACES.filter(([k]) => k !== "holder" || r.item?.type === "container")
+      } }, PACK_PLACES.filter(([k]) => k !== "holder" || hasFeature(r.item, "holds", r.item?.id))
         .map(([k, label]) => h("option", { value: k, selected: r.place === k }, label))))));
   };
   draw();
@@ -1786,7 +1814,7 @@ function openTrinketRoller() {
 // ------------------------------------------------------------------ item form (custom items + editing)
 
 function openItemForm(item, opts = {}) {
-  if (!item) return chooseTemplate(tpl => openItemForm({ type: tpl.type, template: tpl.builtin ? undefined : tpl.id, ...(tpl.defaults || {}) }, { ...opts, isNew: true }));
+  if (!item) return chooseTemplate(tpl => openItemForm(newItemFrom(tpl), opts));
   const draft = clone(item);
   const tpl = (draft.template && store.template(draft.template)) || store.template(draft.type) || store.template("gear");
   const fields = templateFields(tpl);
@@ -1831,8 +1859,6 @@ function openItemForm(item, opts = {}) {
     if (opts.entryUid) {
       const { id, ...snap } = draft;
       commit((s, c) => { c.items.find(x => x.uid === opts.entryUid).item = snap; }, `Updated ${draft.name}`, true);
-    } else if (opts.forInventory) {
-      commit((s, c) => addToInventory(c, { ...draft, id: "custom-" + uid(), source: draft.source || "Homebrew" }), `Added ${draft.name}`, true);
     } else {
       const isEdit = draft.id && store.state.customItems.some(i => i.id === draft.id);
       if (!draft.id || !isEdit) draft.id = "custom-" + uid();
@@ -1846,11 +1872,10 @@ function openItemForm(item, opts = {}) {
   }
 
   const title = opts.entryUid ? `Edit ${item.name}` : opts.copyOf ? `Customize ${item.name}` :
-    opts.forInventory ? `Quick ${tpl.name.toLowerCase()}` : draft.id ? `Edit ${item.name}` : `New ${tpl.name.toLowerCase()}`;
+    draft.id ? `Edit ${item.name}` : `New ${tpl.name.toLowerCase()}`;
   close = openModal(title, [
     h("p", { class: "muted small" }, typeBadge(tpl.type), ` Template: ${tpl.name}`,
-      opts.entryUid ? " — changes apply only to this copy in the inventory." : "",
-      opts.forInventory ? " — goes straight into the inventory." : ""),
+      opts.entryUid ? " — changes apply only to this copy in the inventory." : ""),
     form,
   ], { wide: true, footer: [
     h("button", { class: "btn", onclick: () => close() }, "Cancel"),
@@ -1860,16 +1885,24 @@ function openItemForm(item, opts = {}) {
 
 // ------------------------------------------------------------------ drawing icons (svg-lay-tool)
 
-// The icon editor is a separate library, loaded the first time it's needed.
-function loadSvgLay() {
-  if (window.SvgLayTool) return Promise.resolve();
-  return new Promise((ok, fail) => {
-    const script = h("script", { src: "js/vendor/svg-lay-tool.js" });
-    script.onload = ok;
-    script.onerror = () => fail(new Error("Couldn't load the icon editor"));
-    document.head.append(script);
-  });
+// Libraries only some screens need, loaded the first time they're wanted. Every caller meanwhile
+// shares the one load (a screen of live icons would otherwise add the script once per icon).
+const scriptLoads = new Map();
+function loadScript(src, global, what) {
+  if (window[global]) return Promise.resolve();
+  if (!scriptLoads.has(src)) {
+    scriptLoads.set(src, new Promise((ok, fail) => {
+      const script = h("script", { src });
+      script.onload = ok;
+      script.onerror = () => { script.remove(); scriptLoads.delete(src); fail(new Error(`Couldn't load ${what}`)); };
+      document.head.append(script);
+    }));
+  }
+  return scriptLoads.get(src);
 }
+
+// The icon editor (svg-lay-tool).
+const loadSvgLay = () => loadScript("js/vendor/svg-lay-tool.js", "SvgLayTool", "the icon editor");
 
 // Draw an icon from shapes on layers, in one colour (the app tints it like its other icons).
 // opts: doc (to edit), name (for the title), color (to draw in), templates (offer "Start from…" a
@@ -1883,8 +1916,9 @@ async function openIconDrawer(opts, onSave) {
   }
   const { SvgLayEditor, normalizeDocument } = window.SvgLayTool;
   const host = h("div", { class: "icon-drawer-host" });
-  let editor;
+  let editor, stopSync;
   const close = () => {
+    stopSync?.();
     editor?.destroy();
     overlay.remove();
     document.body.classList.toggle("modal-open", !!document.getElementById("modal-root").children.length);
@@ -1933,7 +1967,7 @@ async function openIconDrawer(opts, onSave) {
       panelWidths: (() => { try { return JSON.parse(readPref("packrat-icon-editor-panels", "null")) || undefined; } catch { return undefined; } })(),
     });
     editor.on("panelresize", widths => writePref("packrat-icon-editor-panels", JSON.stringify(widths)));
-    syncIconVariables(editor, host, opts.vars);
+    stopSync = syncIconVariables(editor, host, opts.vars);
     // Fit the canvas once the window has its final size.
     requestAnimationFrame(() => requestAnimationFrame(() => editor?.fitToView()));
   } catch (e) {
@@ -1955,15 +1989,15 @@ function drawingSvg(doc, variables) {
 // The editor's app values win over a drawing's own variables of the same name. Keep them in step:
 // a value the drawing declares follows its slider unless this inventory copy has a real value for it,
 // and gm_ names added while drawing join the list. Held while a pointer is down, so redrawing the
-// Variables panel doesn't interrupt dragging a slider.
+// Variables panel doesn't interrupt dragging a slider. Returns a function that stops it.
 function syncIconVariables(editor, host, vars) {
-  let actual = {};
-  try { actual = (typeof vars === "function" ? vars() : vars) || {}; } catch {}
+  const actual = readVars(vars);
+  const known = knownGmNames(); // elsewhere in Pack Rat: doesn't change while drawing
   let listed = "", held = false, pending = false;
   const sync = () => {
     pending = false;
     const doc = editor.getDocument();
-    const group = iconVariableGroup(vars, doc);
+    const group = iconVariableGroup(vars, doc, known);
     const names = group.variables.map(v => v.name).join();
     if (names !== listed) { listed = names; editor.registerVariables(group); }
     const follow = {};
@@ -1980,6 +2014,15 @@ function syncIconVariables(editor, host, vars) {
   window.addEventListener("pointercancel", release, true);
   editor.on("change", () => { if (held) pending = true; else sync(); });
   sync();
+  return () => {
+    window.removeEventListener("pointerup", release, true);
+    window.removeEventListener("pointercancel", release, true);
+  };
+}
+
+// The values a live drawing gets: an object, or a function giving one (read each time it's drawn).
+function readVars(vars) {
+  try { return (typeof vars === "function" ? vars() : vars) || {}; } catch { return {}; }
 }
 
 // Pack Rat's values that a drawing uses without declaring them get a default (so formulas work in
@@ -1998,20 +2041,24 @@ const GM_NAME_RE = /\bgm_[A-Za-z0-9_]+\b/g;
 function drawingGmSpecs(doc) {
   const specs = new Map();
   for (const v of doc?.variables || []) if (/^gm_[A-Za-z0-9_]+$/.test(v.name || "")) specs.set(v.name, v);
-  const used = formula => {
-    for (const name of (formula || "").match(GM_NAME_RE) || []) {
-      if (!specs.has(name)) specs.set(name, { name, value: 0, min: 0, max: 1, step: 0.01 });
-    }
-  };
   // Used in a formula variable (e.g. heat = gm_heat * 2) or a binding.
-  for (const v of doc?.variables || []) used(v.expression);
+  for (const name of drawingFormulas(doc).join(" ").match(GM_NAME_RE) || []) {
+    if (!specs.has(name)) specs.set(name, { name, value: 0, min: 0, max: 1, step: 0.01 });
+  }
+  return specs;
+}
+
+// The formulas of a drawing's layers (the enabled bindings), and with its formula variables too.
+function bindingFormulas(doc) {
+  const out = [];
   const walk = layers => (layers || []).forEach(l => {
-    for (const b of l.bindings || []) if (b.enabled !== false) used(b.expression);
+    for (const b of l.bindings || []) if (b.enabled !== false && (b.expression || "").trim()) out.push(b.expression);
     if (l.type === "group") walk(l.children);
   });
   walk(doc?.layers);
-  return specs;
+  return out;
 }
+const drawingFormulas = doc => [...(doc?.variables || []).map(v => v.expression || "").filter(Boolean), ...bindingFormulas(doc)];
 
 // Every GM value name Pack Rat knows of: set by the GM in the party, or used by a drawing on
 // this device (the library, custom items, characters' items).
@@ -2031,13 +2078,12 @@ function knownGmNames() {
 // GM values (this drawing's, and every other one Pack Rat knows of, so names stay consistent).
 // actual: the real values for the inventory copy being edited, if any. A value the drawing declares
 // itself shows its slider value (see openIconDrawer, which keeps the two in step).
-function iconVariableGroup(vars, doc) {
-  let actual = {};
-  try { actual = (typeof vars === "function" ? vars() : vars) || {}; } catch {}
+function iconVariableGroup(vars, doc, known = knownGmNames()) {
+  const actual = readVars(vars);
   const declared = new Map((doc?.variables || []).map(v => [v.name, v.value]));
   const value = (name, fallback) => name in actual ? actual[name] : declared.has(name) ? declared.get(name) : fallback;
   const gmHere = drawingGmSpecs(doc);
-  const gmNames = [...new Set([...gmHere.keys(), ...knownGmNames()])].sort();
+  const gmNames = [...new Set([...gmHere.keys(), ...known])].sort();
   const gmLabel = name => {
     const where = name in actual ? `this item's GM value (${actual[name]})` : party.active ? "not set by the GM for this item" : "set by the GM in a party";
     return `GM value: the GM sets it for the party, a player or an item (Party screen → GM values); ${where}.` +
@@ -2102,10 +2148,7 @@ function entryIconVars(char, e) {
 }
 
 // Does a drawing have bindings? (Checked without the editor library.)
-function isLiveDrawing(doc) {
-  const walk = layers => (layers || []).some(l => (l.bindings || []).some(b => b.enabled !== false && (b.expression || "").trim()) || (l.type === "group" && walk(l.children)));
-  return !!doc && walk(doc.layers);
-}
+const isLiveDrawing = doc => !!doc && bindingFormulas(doc).length > 0;
 
 // Live icons on screen. Each shows the saved picture first, then is redrawn with its item's values
 // once the editor library has loaded, and again every so often if it uses the time.
@@ -2119,14 +2162,9 @@ function liveDrawnIcon(doc, svgText, cls, vars) {
     const { documentUsesTime, normalizeDocument } = window.SvgLayTool;
     const n = normalizedDrawing(doc, normalizeDocument);
     if (!documentUsesTime(n)) return;
-    // Smooth hands and loops ("t", "time", "now") update often; whole hours/minutes/seconds once a second.
-    const formulas = (n.variables || []).map(v => v.expression || ""); // time can come through a formula variable
-    const walk = layers => layers.forEach(l => {
-      for (const b of l.bindings || []) if (b.enabled !== false) formulas.push(b.expression || "");
-      if (l.type === "group") walk(l.children);
-    });
-    walk(n.layers);
-    const smooth = /\b(t|time|now|dayFraction)\b/.test(formulas.join(" "));
+    // Smooth hands and loops ("t", "time", "now") update often; whole hours/minutes/seconds once a
+    // second. Time can also come through a formula variable.
+    const smooth = /\b(t|time|now|dayFraction)\b/.test(drawingFormulas(n).join(" "));
     live.period = smooth ? 100 : 1000;
     liveIcons.add(live);
     if (!liveTimer) liveTimer = setInterval(tickLiveIcons, 100);
@@ -2135,9 +2173,7 @@ function liveDrawnIcon(doc, svgText, cls, vars) {
 }
 
 function redrawLive(live) {
-  let values;
-  try { values = typeof live.vars === "function" ? live.vars() : live.vars || undefined; } catch { values = undefined; }
-  const next = drawnIcon(drawingSvg(live.doc, values), live.cls, { cache: false });
+  const next = drawnIcon(drawingSvg(live.doc, readVars(live.vars)), live.cls, { cache: false });
   if (!next) return;
   // Swap the picture inside the same element, so it works whether or not it's on screen yet.
   live.node.setAttribute("viewBox", next.getAttribute("viewBox") || "0 0 256 256");
@@ -2155,7 +2191,6 @@ function tickLiveIcons() {
   }
   if (!liveIcons.size) { clearInterval(liveTimer); liveTimer = null; }
 }
-
 
 // ------------------------------------------------------------------ the drawings library
 // Every drawn icon is kept in the library (store.state.iconLibrary) to use again, edit, or start
@@ -2269,17 +2304,20 @@ function drawingsSection() {
     h("div", { class: "section-head" }, h("h2", null, "Drawings"),
       h("button", { class: "btn", onclick: newOne }, icon("plus"), "New drawing")),
     h("p", { class: "muted small" }, "Icons you've drawn. Give one to an item from its Icon (Choose…), edit one (items using it can update too), or start a new one from a copy."),
-    lib.length ? h("div", { class: "drawing-grid" }, lib.map(d => h("div", { class: "drawing-tile" },
-      h("button", { class: "drawing-art", type: "button", title: `Edit “${d.name}”`, onclick: () => edit(d) },
-        (isLiveDrawing(d.doc) ? liveDrawnIcon(d.doc, d.svg, "drawing-svg", null) : drawnIcon(d.svg, "drawing-svg")) || icon("image")),
-      isLiveDrawing(d.doc) && h("span", { class: "tag" }, "live"),
-      h("b", null, d.name),
-      h("small", { class: "muted" }, used(d.id) ? `Used by ${plural(used(d.id), "item")}` : "Not used yet"),
-      h("div", { class: "tpl-actions" },
-        h("button", { class: "link", onclick: () => edit(d) }, "Edit"),
-        h("button", { class: "link", onclick: () => copy(d) }, "Use as template"),
-        h("button", { class: "link", onclick: () => rename(d) }, "Rename"),
-        h("button", { class: "link danger-link", onclick: () => remove(d) }, "Delete")))))
+    lib.length ? h("div", { class: "drawing-grid" }, lib.map(d => {
+      const live = isLiveDrawing(d.doc), n = used(d.id);
+      return h("div", { class: "drawing-tile" },
+        h("button", { class: "drawing-art", type: "button", title: `Edit “${d.name}”`, onclick: () => edit(d) },
+          (live ? liveDrawnIcon(d.doc, d.svg, "drawing-svg", null) : drawnIcon(d.svg, "drawing-svg")) || icon("image")),
+        live && h("span", { class: "tag" }, "live"),
+        h("b", null, d.name),
+        h("small", { class: "muted" }, n ? `Used by ${plural(n, "item")}` : "Not used yet"),
+        h("div", { class: "tpl-actions" },
+          h("button", { class: "link", onclick: () => edit(d) }, "Edit"),
+          h("button", { class: "link", onclick: () => copy(d) }, "Use as template"),
+          h("button", { class: "link", onclick: () => rename(d) }, "Rename"),
+          h("button", { class: "link danger-link", onclick: () => remove(d) }, "Delete")));
+    }))
       : h("p", { class: "muted pad" }, "No drawings yet. Draw one here, or with Draw… next to an item's icon."));
 }
 
@@ -2424,10 +2462,6 @@ function fieldInput(f, draft) {
     case "dice":
       return h("label", { class: cls }, label, h("input", { type: "text", value: draft[f.key] || "", placeholder: f.placeholder,
         pattern: "^\\s*(\\d+(d\\d+)?(\\s*[+\\-]\\s*\\d+)?)?\\s*$", oninput: e => set(e.target.value.trim()) }));
-    case "lines": { // a list, one entry per line
-      return h("label", { class: cls + " full" }, label, h("textarea", { rows: 5, placeholder: f.placeholder || "", value: (draft[f.key] || []).join("\n"),
-        oninput: e => { const list = e.target.value.split("\n").map(x => x.trim()).filter(Boolean); if (list.length) set(list); else delete draft[f.key]; } }));
-    }
     case "markdown":
       return markdownField(f, draft);
     case "picture":
@@ -2508,6 +2542,12 @@ function packContentsField(f, draft) {
     h("p", { class: "muted small" }, "“Auto” puts everything in the pack's backpack or chest, with bedrolls, rope and the like strapped to a backpack's side."));
 }
 
+// A new item made with a template (built-in or custom), with its defaults filled in.
+const newItemFrom = tpl => ({ type: tpl.type, template: tpl.builtin ? undefined : tpl.id, ...(tpl.defaults || {}) });
+
+// A custom template that starts as a copy of a built-in one.
+const extendTemplate = tpl => openTemplateEditor({ ...clone(tpl), id: null, builtin: false, name: tpl.name + " (custom)", fields: [] });
+
 function chooseTemplate(onPick) {
   let close;
   const tile = t => h("button", { class: "tpl-tile", onclick: () => { close(); onPick(t); } },
@@ -2556,13 +2596,13 @@ function renderCustom() {
             // A combined group lists its types, each in its shade, with its own New / Extend.
             multi && h("div", { class: "tpl-types" }, tpls.map(t => h("div", { class: "tpl-type" },
               colorDot(typeColor(t.type), t.name), h("span", null, t.name),
-              h("button", { class: "link", onclick: () => openItemForm({ type: t.type, ...(t.defaults || {}) }, { isNew: true }) }, "New"),
-              h("button", { class: "link", onclick: () => openTemplateEditor({ ...clone(t), id: null, builtin: false, name: t.name + " (custom)", fields: [] }) }, "Extend")))),
+              h("button", { class: "link", onclick: () => openItemForm(newItemFrom(t)) }, "New"),
+              h("button", { class: "link", onclick: () => extendTemplate(t) }, "Extend")))),
             h("div", { class: "tpl-actions" },
               h("button", { class: "link", onclick: () => openGroupColour(g.id) }, "Colour"),
               !multi && [
-                h("button", { class: "link", onclick: () => openItemForm({ type: tpls[0].type, ...(tpls[0].defaults || {}) }, { isNew: true }) }, "New item"),
-                h("button", { class: "link", onclick: () => openTemplateEditor({ ...clone(tpls[0]), id: null, builtin: false, name: tpls[0].name + " (custom)", fields: [] }) }, "Extend"),
+                h("button", { class: "link", onclick: () => openItemForm(newItemFrom(tpls[0])) }, "New item"),
+                h("button", { class: "link", onclick: () => extendTemplate(tpls[0]) }, "Extend"),
               ]));
         }),
         store.state.templates.map(t => h("div", { class: "tpl-tile static" },
@@ -2570,7 +2610,7 @@ function renderCustom() {
           h("b", null, t.name),
           h("small", { class: "muted" }, `Based on ${TYPE_LABELS[t.type]} · +${plural((t.fields || []).length, "field")} · ${plural(usage(t.id), "item")}`),
           h("div", { class: "tpl-actions" },
-            h("button", { class: "link", onclick: () => openItemForm({ type: t.type, template: t.id, ...(t.defaults || {}) }, { isNew: true }) }, "New item"),
+            h("button", { class: "link", onclick: () => openItemForm(newItemFrom(t)) }, "New item"),
             h("button", { class: "link", onclick: () => openTemplateEditor(t) }, "Edit")))))));
 }
 

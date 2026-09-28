@@ -162,6 +162,9 @@ function pickImageFiles(multiple, onFiles) {
   input.click();
 }
 
+// A picture's caption from its file name ("Map of Phandalin.png" -> "Map of Phandalin").
+const imageCaption = file => file.name.replace(/\.[^.]+$/, "").replace(/[\[\]]/g, "");
+
 // Stored image srcs already looked up (so re-rendered lists show them straight away).
 const imageSrcCache = new Map();
 
@@ -421,52 +424,37 @@ function openPictureReader(item, opts = {}) {
 
 // ------------------------------------------------------------------ editor field
 
-// Text (Markdown, with pictures). Just-a-picture items use pictureEditor (the Picture feature).
-function markdownField(f, draft) {
-  return markdownEditor(f, draft);
-}
-
 // For "just a picture" documents: add, caption and remove pictures (kept in the body as image references).
 function pictureEditor(f, draft) {
   const list = h("div", { class: "pic-edit-list" });
   const draw = () => {
     const pics = docPictures({ body: draft[f.key] });
     setChildren(list, pics.map(p => {
-      const thumb = h("img", { class: "pic-thumb", alt: "" });
-      imageStore.src(p.id).then(src => { if (src) thumb.src = src; });
-      return h("div", { class: "pic-edit" }, thumb,
+      return h("div", { class: "pic-edit" }, storedImage(p.id, "pic-thumb"),
         h("input", { type: "text", value: p.caption, placeholder: "Caption (optional)", "aria-label": "Caption",
           onchange: e => { draft[f.key] = draft[f.key].replace(p.raw, `![${e.target.value.replace(/[\[\]]/g, "")}](img:${p.id})`); draw(); } }),
         iconBtn("trash", "Remove picture", () => { draft[f.key] = draft[f.key].replace(p.raw, "").replace(/\n{3,}/g, "\n\n").trim(); draw(); }));
     }), !pics.length && h("p", { class: "muted small" }, "No picture yet."));
   };
-  const add = () => {
-    const input = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", hidden: true,
-      onchange: async () => {
-        const file = input.files[0];
-        input.remove();
-        if (!file) return;
-        try {
-          toast("Adding picture…");
-          const id = await addImageFile(file);
-          const caption = file.name.replace(/\.[^.]+$/, "").replace(/[\[\]]/g, "");
-          draft[f.key] = ((draft[f.key] || "").trim() + `\n\n![${caption}](img:${id})`).trim();
-          draw();
-          toast("Picture added");
-        } catch (e) {
-          toast(e.message);
-        }
-      } });
-    document.body.append(input);
-    input.click();
-  };
+  const add = () => pickImageFiles(false, async ([file]) => {
+    try {
+      toast("Adding picture…");
+      const id = await addImageFile(file);
+      draft[f.key] = ((draft[f.key] || "").trim() + `\n\n![${imageCaption(file)}](img:${id})`).trim();
+      draw();
+      toast("Picture added");
+    } catch (e) {
+      toast(e.message);
+    }
+  });
   draw();
   return h("div", { class: "pic-editor" }, list,
     h("button", { type: "button", class: "btn", onclick: add }, icon("upload"), "Add picture"),
     h("p", { class: "muted small" }, "Opens full screen on a dark background, fitted to the screen, with zoom. Good for maps and handouts. Several pictures page left and right."));
 }
 
-function markdownEditor(f, draft) {
+// Text (Markdown, with pictures). Just-a-picture items use pictureEditor (the Picture feature).
+function markdownField(f, draft) {
   const ta = h("textarea", { class: "md-input", rows: 14, value: draft[f.key] || "", placeholder: "Write here. **Bold**, *italic*, # Heading, - list, > quote, [link](https://…)",
     oninput: e => { draft[f.key] = e.target.value; if (!preview.hidden) drawPreview(); } });
   const preview = h("div", { class: "md-preview", hidden: true });
@@ -484,27 +472,17 @@ function markdownEditor(f, draft) {
     ta.focus();
     ta.dispatchEvent(new Event("input"));
   };
-  const insertImage = () => {
-    const input = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", hidden: true,
-      onchange: async () => {
-        const file = input.files[0];
-        input.remove();
-        if (!file) return;
-        try {
-          toast("Adding image…");
-          const id = await addImageFile(file);
-          const caption = file.name.replace(/\.[^.]+$/, "").replace(/[\[\]]/g, "");
-          const at = ta.selectionStart;
-          ta.setRangeText(`\n![${caption}](img:${id})\n`, at, ta.selectionEnd, "end");
-          ta.dispatchEvent(new Event("input"));
-          toast("Image added");
-        } catch (e) {
-          toast(e.message);
-        }
-      } });
-    document.body.append(input);
-    input.click();
-  };
+  const insertImage = () => pickImageFiles(false, async ([file]) => {
+    try {
+      toast("Adding image…");
+      const id = await addImageFile(file);
+      ta.setRangeText(`\n![${imageCaption(file)}](img:${id})\n`, ta.selectionStart, ta.selectionEnd, "end");
+      ta.dispatchEvent(new Event("input"));
+      toast("Image added");
+    } catch (e) {
+      toast(e.message);
+    }
+  });
   const tabs = h("div", { class: "seg md-tabs", role: "tablist" },
     h("button", { type: "button", class: "active", onclick: ev => show(false, ev.currentTarget) }, "Write"),
     h("button", { type: "button", onclick: ev => show(true, ev.currentTarget) }, "Preview"));

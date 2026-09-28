@@ -225,6 +225,7 @@ const store = {
 };
 
 const SRD_BY_ID = new Map(SRD_ITEMS.map(i => [i.id, i]));
+const SRD_BY_NAME = new Map(SRD_ITEMS.map(i => [i.name, i]));
 
 // Catalog items that moved type (see RECLASSIFY in tools/build_srd.py): older inventory
 // copies are brought in line when loaded. Returns true if the item changed.
@@ -251,7 +252,6 @@ function reclassify(item, srcId) {
   }
   return true;
 }
-const SRD_BY_NAME = new Map(SRD_ITEMS.map(i => [i.name, i]));
 
 // ------------------------------------------------------------------ features
 // See FEATURES in templates.js. An item's own `features` flags win; otherwise the default for
@@ -437,6 +437,9 @@ function unpackPack(char, rows, { into = null, parent = null, strapped = false }
 // What an inventory copy is called: the player's own name for it, else the item's.
 const entryName = e => (e.customName || "").trim() || e.item.name;
 
+// Inventory copies in order of what they're called.
+const byName = entries => [...entries].sort((a, b) => entryName(a).localeCompare(entryName(b)));
+
 function removeEntry(char, entryUid) {
   // Contents of a removed container fall out to wherever it was; a deck's cards go with it.
   const entry = char.items.find(e => e.uid === entryUid);
@@ -608,7 +611,10 @@ function armorClass(char) {
   }
   if (shield) { ac += (shield.item.ac || 2) + (shield.item.bonus || 0); parts.push(`Shield +${(shield.item.ac || 2) + (shield.item.bonus || 0)}`); }
   for (const e of worn) {
-    if (e.item.acBonus && (!e.item.attunement || e.attuned)) { ac += e.item.acBonus; parts.push(`${e.item.name} ${fmtMod(e.item.acBonus)}`); }
+    if (e.item.acBonus && hasFeature(e.item, "worn", e.srcId) && (!e.item.attunement || e.attuned)) {
+      ac += e.item.acBonus;
+      parts.push(`${entryName(e)} ${fmtMod(e.item.acBonus)}`);
+    }
   }
   const strPenalty = !!(armor && armor.item.strength && (char.str || 10) < armor.item.strength);
   const stealth = worn.some(e => e.item.stealthDisadvantage);
@@ -672,9 +678,6 @@ function ammoEntries(char, item) {
 
 // ------------------------------------------------------------------ coins
 
-// Pay `cost` cp from a purse, spending big coins first without overpaying,
-// then breaking the smallest coin that covers the remainder. Returns the
-// new purse, or null if the character can't afford it.
 const PAYOUT_COINS = ["gp", "sp", "cp"];
 
 // Greedy split of copper into the allowed denominations.
@@ -700,6 +703,9 @@ function payout(amount, margin = 0, top = "gp") {
   return Object.fromEntries(PAYOUT_COINS.map(k => [k, (main[k] || 0) + (extra[k] || 0)]));
 }
 
+// Pay `cost` cp from a purse, spending big coins first without overpaying,
+// then breaking the smallest coin that covers the remainder. Returns the
+// new purse, or null if the character can't afford it.
 function payCoins(coins, cost, margin = 0) {
   if (coinTotalCp(coins) < cost) return null;
   const c = { ...coins };
@@ -746,6 +752,9 @@ function fmtCost(cp) {
   if (cp >= 10 && cp % 10 === 0) return cp / 10 + " sp";
   return +cp.toFixed(2) + " cp";
 }
+
+// An amount of money, "0 gp" rather than a dash when there's none (purses, tills).
+const fmtMoney = cp => cp ? fmtCost(cp) : "0 gp";
 
 function fmtWeight(lb) {
   if (!lb) return "—";

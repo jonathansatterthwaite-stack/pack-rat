@@ -184,7 +184,7 @@ function describeSide(side) {
 function tradeCard(t) {
   const iGive = t.fromMine ? t.give : t.ask;
   const iGet = t.fromMine ? t.ask : t.give;
-  const who = t.fromMine ? `${t.fromName} → ${t.toName}` : `${t.fromName} → ${t.toName}`;
+  const who = `${t.fromName} → ${t.toName}`;
   const status = {
     accepted: "Completed", declined: "Declined", cancelled: "Cancelled", failed: "Failed",
   }[t.status];
@@ -212,7 +212,7 @@ function memberCard(c) {
   const where = e => {
     if (!e.parent) return "";
     const p = c.items.find(x => x.uid === e.parent);
-    return p ? ` (${e.strapped ? "on" : "in"} ${p.item.name})` : "";
+    return p ? ` (${e.strapped ? "on" : "in"} ${entryName(p)})` : "";
   };
   return h("div", { class: "group member" },
     h("div", { class: "row" },
@@ -225,7 +225,7 @@ function memberCard(c) {
       // The host can clear out players who have left (only while they're away).
       party.info?.canManageShops && !c.online && iconBtn("trash", `Remove ${c.name} from the party`, () => removeMember(c), "danger-hover")),
     open && (c.items.length
-      ? h("ul", { class: "member-items" }, [...c.items].sort((a, b) => a.item.name.localeCompare(b.item.name)).map(e =>
+      ? h("ul", { class: "member-items" }, byName(c.items.filter(e => !inDeck(c, e))).map(e =>
         h("li", null, itemIcon(e.item, "row-icon small"), e.qty > 1 ? `${e.qty} × ` : "", entryName(e), h("span", { class: "muted" }, where(e)))))
       : h("p", { class: "muted pad" }, "Nothing carried.")));
 }
@@ -236,7 +236,7 @@ function renderParty() {
     [["party", "Party"], ["gm", "GM values"]].map(([k, label]) => h("button", { type: "button", role: "tab",
       class: ui.partyTab === k ? "active" : "", "aria-selected": String(ui.partyTab === k), onclick: () => { ui.partyTab = k; render(); } }, label)));
   if (gmTabs && ui.partyTab === "gm") return h("div", { class: "view-party" }, gmTabs, gmValuesView());
-  const incoming = party.trades.filter(t => t.status === "pending" && t.toMine);
+  const incoming = party.incoming();
   const outgoing = party.trades.filter(t => t.status === "pending" && t.fromMine);
   const history = party.trades.filter(t => t.status !== "pending").slice(0, 10);
   const others = party.others();
@@ -324,8 +324,8 @@ function gmValuesView() {
   return h("section", { class: "gm-values" },
     h("h2", null, "GM values"),
     h("p", { class: "muted small" }, "Numbers you set for drawn icons, e.g. how cursed a blade is. Set a value for the whole party, for a player, or for one item: each item uses the most specific one. Players see the change straight away."),
-    !vars.size ? h("div", { class: "empty" }, h("p", null, "No GM values yet. In the icon editor, add a variable whose name starts with ",
-      h("code", null, "gm_"), " (e.g. ", h("code", null, "gm_curse"), ") and bind layers to it. Items with that icon show up here."))
+    !vars.size ? h("div", { class: "empty" }, h("p", null, "No GM values yet. In the icon editor's Variables tab, add one with + GM value (a name starting ",
+      h("code", null, "gm_"), ", e.g. ", h("code", null, "gm_curse"), ") and bind layers to it. Items carried with that icon show up here."))
       : [...vars].map(([name, g]) => {
         const all = gm.party?.[name];
         const [closed, toggle] = fold(`gm:${name}`);
@@ -448,21 +448,14 @@ function partyUrl(text) {
   }
 }
 
-// Is there a Pack Rat party at this address? Returns null if so, or what's wrong.
+// The party at this address: { info } (its /api/info), or { problem } saying what's wrong.
 async function checkPartyAddress(url) {
   const where = new URL(url).host;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 6000);
-  try {
-    const res = await fetch(url + "api/info", { cache: "no-store", signal: ctrl.signal });
-    const info = await res.json();
-    if (info.party) return null;
-    return `Pack Rat is open at ${where}, but it isn't hosting a party. Ask the host to start one on their Party tab.`;
-  } catch {
-    return `There's no Pack Rat party at ${where}. Check the address on the host's Party tab, including the number after the colon, and that you're on the same Wi-Fi.`;
-  } finally {
-    clearTimeout(timer);
-  }
+  const info = await fetchInfo(url);
+  if (info?.party) return { info };
+  return { problem: info
+    ? `Pack Rat is open at ${where}, but it isn't hosting a party. Ask the host to start one on their Party tab.`
+    : `There's no Pack Rat party at ${where}. Check the address on the host's Party tab, including the number after the colon, and that you're on the same Wi-Fi.` };
 }
 
 // "http://192.168.1.27:8765/" -> "192.168.1.27:8765"
@@ -479,10 +472,10 @@ function joinOtherSection() {
     writePref("packrat-last-join", addr.trim());
     busy = true;
     try {
-      const problem = await checkPartyAddress(url);
+      const { info, problem } = await checkPartyAddress(url);
       if (problem) return toast(problem);
       // Stay on this page (and this device's saved characters): talk to the host from here.
-      await party.join(url, await fetchInfo(url));
+      await party.join(url, info);
     } catch (e) {
       toast(`Couldn't join: ${e.message}`);
     } finally {
@@ -505,15 +498,7 @@ function joinOtherSection() {
 // ------------------------------------------------------------------ scanning a join code
 
 // The QR reader (jsQR) is only loaded when it's needed.
-function loadQrReader() {
-  if (window.jsQR) return Promise.resolve();
-  return new Promise((ok, fail) => {
-    const script = h("script", { src: "js/vendor/jsQR.js" });
-    script.onload = ok;
-    script.onerror = () => fail(new Error("Couldn't load the QR reader"));
-    document.head.append(script);
-  });
-}
+const loadQrReader = () => loadScript("js/vendor/jsQR.js", "jsQR", "the QR reader");
 
 // A party address from a QR code: the host's join code is a plain http address.
 function partyUrlFromQr(text) {
@@ -669,20 +654,18 @@ function openTradeBuilder(targetId = null, preselectUid = null) {
   };
   // Each side has a search box; picked items stay listed whatever the search.
   const queries = new Map();
-  const matches = (char, e, q) => {
-    if (!q) return true;
-    const loc = e.parent ? char.items.find(x => x.uid === e.parent)?.item.name || "" : "";
-    return [entryName(e), e.item.name, e.item.category, e.item.type, loc].some(t => t && t.toLowerCase().includes(q));
-  };
+  const holderName = (char, e) => { const p = e.parent && char.items.find(x => x.uid === e.parent); return p ? entryName(p) : null; };
+  const matches = (char, e, q) => !q ||
+    [entryName(e), e.item.name, e.item.category, e.item.type, holderName(char, e)].some(t => t && t.toLowerCase().includes(q));
   const drawPicker = (box, char, map) => {
     const q = (queries.get(box) || "").trim().toLowerCase();
     // Cards in a deck go with the deck, like a container's contents.
     const all = char.items.filter(e => !inDeck(char, e));
-    const items = all.filter(e => map.has(e.uid) || matches(char, e, q)).sort((a, b) => a.item.name.localeCompare(b.item.name));
+    const items = byName(all.filter(e => map.has(e.uid) || matches(char, e, q)));
     setChildren(box, (items.length ? items.map(e => {
       const included = insideSelected(char, e, map);
       const checked = map.has(e.uid);
-      const loc = e.parent ? char.items.find(x => x.uid === e.parent)?.item.name : null;
+      const loc = holderName(char, e);
       return h("div", { class: "pick" + (checked ? " on" : "") + (included ? " included" : "") },
         h("label", { class: "check" },
           itemIcon(e.item, "row-icon small"),

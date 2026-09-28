@@ -22,21 +22,7 @@ const shopStore = {
 
   find(id) { return this.list().find(s => s.id === id); },
 
-  async request(method, url, body) {
-    const res = await fetch(this.base() + url, {
-      method, cache: "no-store",
-      headers: { "Content-Type": "application/json", ...(party.token ? { "X-Player": party.token } : {}) },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const err = new Error(data.error || res.statusText);
-      err.status = res.status;
-      err.data = data;
-      throw err;
-    }
-    return data;
-  },
+  request(method, url, body) { return apiRequest(this.base() + url, method, body, party.token); },
 
   // Managers fetch every shop (including closed ones) from the server. Calls
   // made while a fetch is running wait for a fresh one, so callers always see
@@ -182,16 +168,16 @@ function openBuy(shop, listing) {
   const char = store.char();
   const unit = listingPrice(shop, listing);
   const max = listing.stock == null ? 99 : listing.stock;
-  let lots = 1, close;
+  let lots = 1, close, qtyIn;
   const totalEl = h("p", { class: "big-num" });
   const after = h("p", { class: "muted small" });
   const buyBtn = h("button", { class: "btn primary" }, icon("cart"), "Buy");
   const draw = () => {
     const total = unit * lots;
-    totalEl.textContent = fmtCost(total) === "—" ? "Free" : fmtCost(total);
+    totalEl.textContent = total ? fmtCost(total) : "Free";
     const purse = char && payCoins(char.coins, total, shopMargin(shop));
-    after.textContent = !char ? "" : purse ? `${char.name} has ${fmtCost(coinTotalCp(char.coins))}; afterwards ${fmtCost(coinTotalCp(purse)) === "—" ? "0 gp" : fmtCost(coinTotalCp(purse))}`
-      : `${char.name} only has ${fmtCost(coinTotalCp(char.coins)) === "—" ? "0 gp" : fmtCost(coinTotalCp(char.coins))}`;
+    after.textContent = !char ? "" : purse ? `${char.name} has ${fmtMoney(coinTotalCp(char.coins))}; afterwards ${fmtMoney(coinTotalCp(purse))}`
+      : `${char.name} only has ${fmtMoney(coinTotalCp(char.coins))}`;
     buyBtn.disabled = !purse;
   };
   buyBtn.onclick = async () => {
@@ -216,7 +202,6 @@ function openBuy(shop, listing) {
     itemDetails(listing.item),
   ], { footer: [h("button", { class: "btn", onclick: () => close() }, "Cancel"), buyBtn] });
 }
-let qtyIn;
 
 // ------------------------------------------------------------------ views
 
@@ -273,7 +258,7 @@ function renderShop(shop) {
         h("button", { class: "btn", onclick: () => editShop(shop) }, icon("edit"), "Edit"),
         h("button", { class: "btn", onclick: () => toggleShopOpen(shop) }, shop.open ? "Close shop" : "Open shop"))),
     char && h("div", { class: "purse" }, icon("coins"), h("span", null, h("b", null, char.name), " has ",
-      h("b", null, fmtCost(coinTotalCp(char.coins)) === "—" ? "0 gp" : fmtCost(coinTotalCp(char.coins))))),
+      h("b", null, fmtMoney(coinTotalCp(char.coins))))),
     closed && h("p", { class: "warn-text" }, "This shop is closed."),
     shop.buys && char && !closed && h("button", { class: "btn sell-btn", onclick: () => openSellToShop(shop) }, icon("coins"), `Sell items to ${shop.name}`),
     manage && stockroomPanel(shop),
@@ -360,7 +345,7 @@ function renderShopEditor() {
   const items = h("div", { class: "group shop-edit-items" }, d.items.length ? d.items.map((li, i) => h("div", { class: "row shop-edit-row" },
     itemIcon(li.item, "row-icon"),
     h("div", { class: "row-main static" }, h("div", { class: "row-title" }, li.item.name),
-      h("div", { class: "row-sub" }, "List price ", fmtCost(li.item.cost) === "—" ? "free" : fmtCost(li.item.cost), (li.item.bundle || 1) > 1 ? ` per ${li.item.bundle}` : "")),
+      h("div", { class: "row-sub" }, "List price ", li.item.cost ? fmtCost(li.item.cost) : "free", (li.item.bundle || 1) > 1 ? ` per ${li.item.bundle}` : "")),
     h("label", { class: "field mini" }, h("span", null, "Price (gp)"),
       h("input", { type: "number", min: 0, step: "any", inputmode: "decimal", placeholder: "list", value: priceGp(li),
         oninput: e => { li.price = e.target.value === "" ? null : Math.max(0, Math.round(+e.target.value * 100)); } })),
@@ -412,12 +397,7 @@ function openStockPicker(opts) {
   const list = h("div", { class: "group stock-list" });
   const chips = h("div");
   const draw = () => {
-    const q = query.trim();
-    const inGroup = store.catalog().filter(i => {
-      if (type === "custom") { if (!i.id.startsWith("custom-")) return false; }
-      else if (type !== "all" && GROUP_OF[i.type] !== type) return false;
-      return matchesSearch(i, q);
-    });
+    const inGroup = catalogFiltered(type, query, null);
     const subMatch = sub && GROUP_BY_ID[type] ? subcategories(type).find(sc => sc.key === sub)?.match : null;
     const items = (subMatch ? inGroup.filter(subMatch) : inGroup).slice(0, 200);
     setChildren(chips,
@@ -446,7 +426,6 @@ function openStockPicker(opts) {
 }
 
 // ------------------------------------------------------------------ selling to shops
-
 
 // Editor section: default %, % per item type, and rules for specific items.
 function sellSettings(d) {
@@ -503,7 +482,8 @@ function openSellToShop(shop) {
   const list = h("div", { class: "group sell-list" });
   const draw = () => {
     const char = store.char();
-    const entries = [...(char?.items || [])].sort((a, b) => a.item.name.localeCompare(b.item.name));
+    // Cards in a deck are sold with it, like a container's contents.
+    const entries = char ? byName(char.items.filter(e => !inDeck(char, e))) : [];
     setChildren(list, entries.map(e => {
       const hasContents = char.items.some(x => x.parent === e.uid && !x.item.card);
       const unit = sellOffer(shop, e, e.item.bundle > 1 ? Math.min(e.qty, e.item.bundle) : 1);
@@ -534,7 +514,7 @@ function sellDialog(shop, entry, redraw) {
   const draw = () => {
     const paid = sellOffer(shop, entry, qty);
     out.textContent = paid ? fmtCost(paid) : "Nothing";
-    note.textContent = paid && !shopCanPay(shop, paid) ? `${shop.name} only has ${fmtCost(shop.funds) === "—" ? "0 gp" : fmtCost(shop.funds)}` : "";
+    note.textContent = paid && !shopCanPay(shop, paid) ? `${shop.name} only has ${fmtMoney(shop.funds)}` : "";
     sellBtn.disabled = !paid || !shopCanPay(shop, paid);
   };
   sellBtn.onclick = async () => {
@@ -568,7 +548,7 @@ async function sellToShop(shop, entry, qty) {
     }
     if (!paid) return toast(`${shop.name} won't buy that`), false;
     if (!shopCanPay(shop, paid)) return toast(`${shop.name} can't afford that right now`), false;
-    if (char.items.some(x => x.parent === entry.uid && !x.item.card)) return toast(`Empty the ${entry.item.name} first`), false;
+    if (char.items.some(x => x.parent === entry.uid && !x.item.card)) return toast(`Empty the ${entryName(entry)} first`), false;
     let received = paid;
     if (shopStore.server()) {
       // The host's own solo character: the shop's till and stockroom live on the server.
@@ -601,7 +581,7 @@ function shopCanPay(shop, amount) { return shop.funds == null || shop.funds >= a
 
 function fundsLabel(shop, manage) {
   if (shop.funds == null) return manage ? "Unlimited funds" : null;
-  return `Funds: ${fmtCost(shop.funds) === "—" ? "0 gp" : fmtCost(shop.funds)}`;
+  return `Funds: ${fmtMoney(shop.funds)}`;
 }
 
 // Items bought from players go to the stockroom, stacking identical ones (as add_to_backroom in server.py).
@@ -701,9 +681,9 @@ function shelveDialog(shop, b) {
     same
       ? h("p", { class: "muted small" }, same.stock == null
         ? "It's already on the shelf with unlimited stock, so this just clears it from the stockroom."
-        : `Adds to the ${same.stock} already on the shelf, at the same price (${fmtCost(listingPrice(shop, same)) === "—" ? "free" : fmtCost(listingPrice(shop, same))}).`)
+        : `Adds to the ${same.stock} already on the shelf, at the same price (${listingPrice(shop, same) ? fmtCost(listingPrice(shop, same)) : "free"}).`)
       : h("label", { class: "field" }, h("span", null, "Price (gp) — empty for the list price"),
-        h("input", { type: "number", min: 0, step: "any", inputmode: "decimal", placeholder: fmtCost(b.item.cost) === "—" ? "0" : +(b.item.cost / 100).toFixed(2),
+        h("input", { type: "number", min: 0, step: "any", inputmode: "decimal", placeholder: +((b.item.cost || 0) / 100).toFixed(2),
           oninput: e => { priceGp = e.target.value; } }))),
   { footer: [h("button", { class: "btn", onclick: () => close() }, "Cancel"), h("button", { class: "btn primary", onclick: go }, "Put on shelf")] });
 }

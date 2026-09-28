@@ -214,7 +214,8 @@ def clean_side(char, side):
         e = find_entry(char, it.get("uid"))
         if qty <= 0 or not e:
             raise TradeError("An item in the offer no longer exists.")
-        items.append({"uid": e["uid"], "qty": qty, "name": e["item"]["name"]})
+        name = str(e.get("customName") or "").strip() or e["item"]["name"]  # the player's name for it, if any
+        items.append({"uid": e["uid"], "qty": qty, "name": name})
     uids = {i["uid"] for i in items}
     for i in items:  # giving a container already gives everything in it
         if any(d["uid"] in uids for d in descendants(char, i["uid"])):

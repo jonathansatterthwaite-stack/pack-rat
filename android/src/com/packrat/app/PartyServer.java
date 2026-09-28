@@ -415,7 +415,8 @@ public class PartyServer {
                 JSONObject clean = new JSONObject();
                 clean.put("uid", e.getString("uid"));
                 clean.put("qty", qty);
-                clean.put("name", e.getJSONObject("item").optString("name"));
+                String custom = e.isNull("customName") ? "" : e.optString("customName").trim(); // the player's name for it, if any
+                clean.put("name", custom.isEmpty() ? e.getJSONObject("item").optString("name") : custom);
                 items.put(clean);
                 uids.add(e.getString("uid"));
             }
