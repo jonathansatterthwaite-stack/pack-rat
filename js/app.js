@@ -171,6 +171,7 @@ const ui = {
   sort: readPref("packrat-sort", "smart"),
   sortReverse: readPref("packrat-sort-rev", "") === "1",
   combatOpen: readPref("packrat-combat", "1") === "1",
+  partyTab: "party", // the GM's Party screen: "party" or "gm" (GM values)
   statsOpen: readPref("packrat-stats", "1") === "1",
   playerMode: readPref("packrat-player-mode", "") === "1",
 };
@@ -1908,7 +1909,7 @@ async function openIconDrawer(opts, onSave) {
       h("button", { class: "btn", onclick: close }, "Cancel"),
       h("button", { class: "btn primary", onclick: save }, icon("check"), opts.saveLabel || "Use this icon")),
     h("p", { class: "icon-drawer-hint muted small" },
-      "Build the icon from shapes on layers: add shapes from the library and pick a layer in the strip beside the canvas. Press and hold a shape to move it; drag its handles to resize or rotate it. Modifiers add outlines, effects and masks. Variables make it live: in the Variables tab, bind a layer to one of Pack Rat's item values (“fill” shows how full a container is) or to the time for a clock. It's drawn in one colour; the app colours it like its other icons."),
+      "Build the icon from shapes on layers: add shapes from the library and pick a layer in the strip beside the canvas. Press and hold a shape to move it; drag its handles to resize or rotate it. Modifiers add outlines, effects and masks. Variables make it live: in the Variables tab, bind a layer to one of Pack Rat's item values (“fill” shows how full a container is) or to the time for a clock. A variable you add whose name starts with gm_ (e.g. gm_curse) is a GM value: in a party the GM sets it from the Party screen. It's drawn in one colour; the app colours it like its other icons."),
     host);
   document.body.append(overlay);
   document.body.classList.add("modal-open");
@@ -2000,6 +2001,8 @@ function entryIconVars(char, e) {
   }
   if (hasFeature(it, "charges", e.srcId) && it.maxCharges) { v.charges = e.charges ?? it.maxCharges; v.maxCharges = it.maxCharges; }
   if (isDeckEntry(e)) { v.pieces = cardsIn(char, e).length; v.piecesTotal = v.pieces + cardsOut(char, e).length; }
+  // In a party: the GM's values for this item (its own, else its character's, else the party's).
+  if (party.active && char?.id) Object.assign(v, party.gmValues(char.id, e.uid));
   return v;
 }
 

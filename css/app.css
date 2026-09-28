@@ -238,6 +238,21 @@ svg.drawn-icon { overflow: visible; }
   --slt-input-bg: var(--surface); --slt-selected: var(--accent-soft); --slt-danger: var(--bad); --slt-font: var(--font);
 }
 
+/* The GM's Party screen: tabs, and GM values as a hierarchy (value → player → item). */
+.party-tabs { margin-bottom: 14px; }
+.seg.party-tabs button { width: auto; padding: 0 16px; white-space: nowrap; font-weight: 600; }
+.gm-var .gm-level { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.gm-var .collapse { flex: none; }
+.gm-var .group-head h3 { flex: 1; text-align: left; }
+.gm-var .gm-level .row-main { flex: 1 1 160px; min-width: 0; }
+.gm-player > .gm-level { padding-left: 14px; background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
+.gm-item { padding-left: 46px !important; }
+.gm-control { display: flex; align-items: center; gap: 8px; flex: 1 1 240px; max-width: 360px; }
+.gm-control input[type=range] { flex: 1; min-width: 80px; }
+.gm-control input.gm-num { width: 84px; flex: none; }
+.gm-control.inherits input { opacity: .6; }
+.gm-inherit { width: 56px; flex: none; }
+
 /* The drawings library (Custom tab) and drawings in the icon picker. */
 .drawing-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
 .drawing-tile { display: flex; flex-direction: column; gap: 4px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }

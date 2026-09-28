@@ -68,6 +68,8 @@ public class PartyServer {
     private JSONObject characters = new JSONObject();
     private JSONArray trades = new JSONArray();
     private JSONArray shops = new JSONArray();
+    /** GM values (see gm_api in server.py): {party: {name: v}, characters: {id: {…}}, items: {"charId/uid": {…}}}. */
+    private JSONObject gm = new JSONObject();
     private long version = 0;
     private final Map<String, Integer> online = new HashMap<>();
 
@@ -252,6 +254,7 @@ public class PartyServer {
             characters = data.optJSONObject("characters") != null ? data.getJSONObject("characters") : new JSONObject();
             trades = data.optJSONArray("trades") != null ? data.getJSONArray("trades") : new JSONArray();
             shops = data.optJSONArray("shops") != null ? data.getJSONArray("shops") : new JSONArray();
+            gm = data.optJSONObject("gm") != null ? data.getJSONObject("gm") : new JSONObject();
             partyId = data.optString("partyId", "");
         } catch (Exception e) {
             // Corrupt file: keep a copy and start fresh rather than refusing to run.
@@ -265,6 +268,7 @@ public class PartyServer {
             data.put("characters", characters);
             data.put("trades", trades);
             data.put("shops", shops);
+            data.put("gm", gm);
             data.put("partyId", partyId);
             File tmp = new File(dataFile.getPath() + ".tmp");
             try (OutputStream out = new FileOutputStream(tmp)) {
@@ -328,6 +332,7 @@ public class PartyServer {
         JSONArray openShops = new JSONArray();
         for (int i = 0; i < shops.length(); i++) if (shops.getJSONObject(i).optBoolean("open")) openShops.put(publicShop(shops.getJSONObject(i)));
         snap.put("shops", openShops);
+        snap.put("gm", new JSONObject(gm.toString()));
         return snap;
     }
 
@@ -697,6 +702,46 @@ public class PartyServer {
         e.put("notes", "");
         if (item.optInt("maxCharges") > 0) e.put("charges", item.optInt("maxCharges"));
         return e;
+    }
+
+    /** GM values: see gm_api() in server.py. POST /api/gm {scope, target, name, value|null}, host only. */
+    private JSONObject gmApi(Request req, List<String> parts) throws ApiError, JSONException {
+        if (!req.method.equals("POST") || !parts.isEmpty()) throw new ApiError(404, "Unknown endpoint");
+        if (!req.fromHostDevice()) throw new ApiError(403, "Only the GM (the host) can set GM values");
+        JSONObject body = req.json();
+        String scope = body.optString("scope"), target = body.isNull("target") ? "" : body.optString("target", ""), name = body.optString("name");
+        boolean scopeOk = scope.equals("party") || scope.equals("character") || scope.equals("item");
+        if (!scopeOk || !name.matches("gm_[A-Za-z0-9_]{1,40}") || target.length() > 200 || (!scope.equals("party") && target.isEmpty())) {
+            throw new ApiError(400, "Not a GM value");
+        }
+        Object raw = body.opt("value");
+        boolean clear = raw == null || raw == JSONObject.NULL;
+        double value = 0;
+        if (!clear) {
+            if (!(raw instanceof Number)) throw new ApiError(400, "GM values are numbers");
+            value = ((Number) raw).doubleValue();
+            if (Double.isNaN(value) || Double.isInfinite(value) || Math.abs(value) > 1e9) throw new ApiError(400, "GM values are numbers");
+        }
+        synchronized (lock) {
+            JSONObject group = null, bucket;
+            if (scope.equals("party")) {
+                bucket = gm.optJSONObject("party");
+                if (bucket == null) { bucket = new JSONObject(); gm.put("party", bucket); }
+            } else {
+                String key = scope.equals("character") ? "characters" : "items";
+                group = gm.optJSONObject(key);
+                if (group == null) { group = new JSONObject(); gm.put(key, group); }
+                bucket = group.optJSONObject(target);
+                if (bucket == null) { bucket = new JSONObject(); group.put(target, bucket); }
+            }
+            if (clear) bucket.remove(name);
+            else bucket.put(name, value);
+            if (group != null && bucket.length() == 0) group.remove(target);
+            changed(true);
+        }
+        JSONObject r = new JSONObject();
+        r.put("ok", true);
+        return r;
     }
 
     /** See shops_api() in server.py for the endpoints. */
@@ -1286,6 +1331,7 @@ public class PartyServer {
             return info; // readable from any page (see corsHeaders): apps check an address before joining
         }
         if (p0.equals("shops")) return shopsApi(req, parts.subList(1, parts.size()), token);
+        if (p0.equals("gm")) return gmApi(req, parts.subList(1, parts.size()));
         if (p0.equals("presence") || p0.equals("host") || p0.equals("quit")) {
             if (!req.fromApp) throw new ApiError(403, "Only the app on the hosting device can do that");
             if (m.equals("GET") && p0.equals("presence")) {

@@ -94,6 +94,9 @@ def save_local():
     os.replace(tmp, local_file())
 
 
+GM_NAME = re.compile(r"^gm_[A-Za-z0-9_]{1,40}$")  # a GM value's name, as drawn icons' formulas use it
+
+
 def party_enabled():
     return not DESKTOP or lan_server is not None
 
@@ -151,7 +154,8 @@ def snapshot(token):
     trades = [dict(t, fromMine=t["from"] in mine, toMine=t["to"] in mine)
               for t in state["trades"] if t["from"] in mine or t["to"] in mine]
     return {"characters": [public_char(c, token) for c in chars.values()], "trades": trades,
-            "shops": [public_shop(sh) for sh in state.get("shops", []) if sh.get("open")]}
+            "shops": [public_shop(sh) for sh in state.get("shops", []) if sh.get("open")],
+            "gm": state.get("gm") or {}}
 
 
 _own_ips = {"at": 0, "ips": set()}
@@ -637,6 +641,8 @@ class Handler(SimpleHTTPRequestHandler):
                     "defaultPort": lan_port or DEFAULT_LAN_PORT}
         if parts[:1] == ["shops"]:
             return self.shops_api(method, parts[1:], token)
+        if parts[:1] == ["gm"]:
+            return self.gm_api(method, parts[1:])
         if parts[:1] == ["local"]:
             if not (self.is_app() and LOCAL_DIR):
                 raise ApiError(403, "Only Pack Rat on this PC can do that")
@@ -1034,6 +1040,43 @@ class Handler(SimpleHTTPRequestHandler):
                 cond.notify_all()  # other windows on this PC reload
                 return {"rev": local["rev"]}
         raise ApiError(404, "Unknown endpoint")
+
+    def gm_api(self, method, parts):
+        """GM values: numbers the host (the GM) sets for drawn icons' `gm_…` variables, for the whole
+        party, one character or one item. Items use the most specific value set; every player gets
+        them in the state snapshot. Stored as {"party": {name: v}, "characters": {charId: {…}},
+        "items": {"charId/entryUid": {…}}}.
+
+        POST /api/gm {scope: party|character|item, target: "" | charId | "charId/uid", name, value}
+             value null clears it (the level above then applies).
+        """
+        if method != "POST" or parts:
+            raise ApiError(404, "Unknown endpoint")
+        if not self.is_host_pc():
+            raise ApiError(403, "Only the GM (the host) can set GM values")
+        body = self.body()
+        scope, target, name, value = body.get("scope"), str(body.get("target") or ""), body.get("name"), body.get("value")
+        if scope not in ("party", "character", "item") or not isinstance(name, str) \
+                or not GM_NAME.match(name) or len(target) > 200 or (scope != "party" and not target):
+            raise ApiError(400, "Not a GM value")
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                  or not math.isfinite(value) or abs(value) > 1e9):
+            raise ApiError(400, "GM values are numbers")
+        with cond:
+            gm = state.setdefault("gm", {})
+            if scope == "party":
+                group, bucket = None, gm.setdefault("party", {})
+            else:
+                group = gm.setdefault("characters" if scope == "character" else "items", {})
+                bucket = group.setdefault(target, {})
+            if value is None:
+                bucket.pop(name, None)
+            else:
+                bucket[name] = value
+            if group is not None and not bucket:
+                del group[target]
+            changed()
+        return {"ok": True}
 
     def images(self, method, parts, folder):
         """Document images: the party's (party-data/images) or this PC's own (my-data/images)."""

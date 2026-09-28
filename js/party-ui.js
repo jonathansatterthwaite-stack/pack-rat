@@ -231,11 +231,17 @@ function memberCard(c) {
 }
 
 function renderParty() {
+  // The GM (the host) has a second tab: GM values.
+  const gmTabs = party.isGm() && h("div", { class: "seg party-tabs", role: "tablist", "aria-label": "Party screen" },
+    [["party", "Party"], ["gm", "GM values"]].map(([k, label]) => h("button", { type: "button", role: "tab",
+      class: ui.partyTab === k ? "active" : "", "aria-selected": String(ui.partyTab === k), onclick: () => { ui.partyTab = k; render(); } }, label)));
+  if (gmTabs && ui.partyTab === "gm") return h("div", { class: "view-party" }, gmTabs, gmValuesView());
   const incoming = party.trades.filter(t => t.status === "pending" && t.toMine);
   const outgoing = party.trades.filter(t => t.status === "pending" && t.fromMine);
   const history = party.trades.filter(t => t.status !== "pending").slice(0, 10);
   const others = party.others();
   return h("div", { class: "view-party" },
+    gmTabs,
     h("section", { class: "party-banner" },
       h("div", { class: "section-head" },
         h("h2", null, "Party"),
@@ -265,6 +271,92 @@ function renderParty() {
           h("div", { class: "row-sub" }, plural(c.items.length, "entry", "entries")))))),
       h("p", { class: "muted small" }, `Saved on this ${party.app?.android ? "phone" : "device"} and shared live with the party.`)),
     history.length > 0 && h("section", null, h("h2", null, "Recent trades"), history.map(tradeCard)));
+}
+
+// ------------------------------------------------------------------ GM values
+
+// The gm_… variables of the drawn icons carried in the party: name → { spec, chars: charId → { char, items } }.
+function gmVariablesInParty() {
+  const vars = new Map();
+  for (const c of party.chars) {
+    for (const e of c.items || []) {
+      for (const v of e.item.iconDoc?.variables || []) {
+        if (!/^gm_[A-Za-z0-9_]+$/.test(v.name || "")) continue;
+        let g = vars.get(v.name);
+        if (!g) vars.set(v.name, g = { spec: v, chars: new Map() });
+        let cg = g.chars.get(c.id);
+        if (!cg) g.chars.set(c.id, cg = { char: c, items: [] });
+        cg.items.push({ e, spec: v });
+      }
+    }
+  }
+  return new Map([...vars].sort(([a], [b]) => a.localeCompare(b)));
+}
+
+// A value at one level: a slider and a number, or "inherited" (the level above applies) until set.
+function gmValueControl(spec, own, inherited, onSet) {
+  const shown = own ?? inherited;
+  const min = Math.min(spec.min ?? 0, shown), max = Math.max(spec.max ?? 1, shown);
+  const num = h("input", { type: "number", class: "gm-num", step: spec.step || "any", value: shown, "aria-label": "Value",
+    onchange: ev => { if (ev.target.value !== "") onSet(+ev.target.value); } });
+  const range = h("input", { type: "range", min, max, step: spec.step || "any", value: shown, "aria-label": "Value",
+    oninput: ev => { num.value = ev.target.value; }, onchange: ev => onSet(+ev.target.value) });
+  return h("div", { class: "gm-control" + (own === undefined ? " inherits" : "") }, range, num,
+    own !== undefined ? iconBtn("x", "Clear (use the value above)", () => onSet(null))
+      : h("span", { class: "muted small gm-inherit" }, "inherited"));
+}
+
+// The GM values tab: every gm_ value in use, then the players whose items use it, then those items.
+// Each level can be set; an item uses the most specific value (item, player, party, the drawing's own).
+function gmValuesView() {
+  const vars = gmVariablesInParty();
+  const gm = party.gm || {};
+  const set = (scope, target, name) => async value => {
+    try { await party.setGm(scope, target, name, value); } catch (e) { toast(e.message); }
+  };
+  const fold = key => {
+    const closed = ui.collapsed.has(key);
+    return [closed, h("button", { class: "collapse" + (closed ? " closed" : ""), "aria-expanded": String(!closed),
+      onclick: () => { closed ? ui.collapsed.delete(key) : ui.collapsed.add(key); render(); } }, icon("chevron"))];
+  };
+  const source = (item, player, all) => item !== undefined ? "this item" : player !== undefined ? "the player" : all !== undefined ? "the party" : "the drawing";
+  return h("section", { class: "gm-values" },
+    h("h2", null, "GM values"),
+    h("p", { class: "muted small" }, "Numbers you set for drawn icons, e.g. how cursed a blade is. Set a value for the whole party, for a player, or for one item: each item uses the most specific one. Players see the change straight away."),
+    !vars.size ? h("div", { class: "empty" }, h("p", null, "No GM values yet. In the icon editor, add a variable whose name starts with ",
+      h("code", null, "gm_"), " (e.g. ", h("code", null, "gm_curse"), ") and bind layers to it. Items with that icon show up here."))
+      : [...vars].map(([name, g]) => {
+        const all = gm.party?.[name];
+        const [closed, toggle] = fold(`gm:${name}`);
+        const users = [...g.chars.values()].reduce((n, cg) => n + cg.items.length, 0);
+        return h("div", { class: "group gm-var" },
+          h("div", { class: "group-head" }, toggle,
+            h("h3", null, h("code", null, name)),
+            h("span", { class: "muted small" }, `${plural(users, "item")} · ${plural(g.chars.size, "player")}`)),
+          !closed && [
+            h("div", { class: "row gm-level" }, h("div", { class: "row-main static" }, h("div", { class: "row-title" }, "Everyone"),
+              h("div", { class: "row-sub" }, `The drawing's own value is ${g.spec.value}`)),
+              gmValueControl(g.spec, all, g.spec.value, set("party", "", name))),
+            [...g.chars.values()].map(({ char, items }) => {
+              const player = gm.characters?.[char.id]?.[name];
+              const [cClosed, cToggle] = fold(`gm:${name}:${char.id}`);
+              return h("div", { class: "gm-player" },
+                h("div", { class: "row gm-level" }, cToggle,
+                  h("div", { class: "row-main static" }, h("div", { class: "row-title" }, char.name, char.mine && h("span", { class: "tag" }, "yours")),
+                    h("div", { class: "row-sub" }, plural(items.length, "item"))),
+                  gmValueControl(g.spec, player, all ?? g.spec.value, set("character", char.id, name))),
+                !cClosed && items.map(({ e, spec }) => {
+                  const own = gm.items?.[`${char.id}/${e.uid}`]?.[name];
+                  const effective = own ?? player ?? all ?? spec.value;
+                  return h("div", { class: "row gm-level gm-item" },
+                    itemIcon(e.item, "row-icon", () => entryIconVars(char, e)),
+                    h("div", { class: "row-main static" }, h("div", { class: "row-title" }, entryName(e)),
+                      h("div", { class: "row-sub" }, `Uses ${effective} (from ${source(own, player, all)})`)),
+                    gmValueControl(spec, own, player ?? all ?? spec.value, set("item", `${char.id}/${e.uid}`, name)));
+                }));
+            }),
+          ]);
+      }));
 }
 
 // Host: remove a player's character who isn't connected. Offers a backup file first.

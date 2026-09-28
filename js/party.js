@@ -111,6 +111,7 @@ const party = {
     this.chars = snap.characters;
     this.trades = snap.trades;
     this.shops = snap.shops || [];
+    this.gm = snap.gm || {};
     this.active = true;
     return true;
   },
@@ -245,6 +246,23 @@ const party = {
     }
   },
 
+  // ------------------------------------------------------------ GM values
+  // Numbers the GM (the host) sets for drawn icons' gm_… variables: for the whole party, one
+  // character or one item. An item uses the most specific one set.
+
+  isGm() { return this.active && !!this.info?.canManageShops; },
+
+  // The GM values that apply to one item: party-wide, then its character's, then its own.
+  gmValues(charId, entryUid) {
+    const g = this.gm || {};
+    return { ...(g.party || {}), ...(g.characters?.[charId] || {}), ...(g.items?.[`${charId}/${entryUid}`] || {}) };
+  },
+
+  // scope: "party" | "character" | "item"; target: "" | charId | "charId/entryUid"; value null clears it.
+  async setGm(scope, target, name, value) {
+    await this.api("POST", "api/gm", { scope, target, name, value });
+  },
+
   // ------------------------------------------------------------ document images
 
   async uploadImage(id, data) {
@@ -344,6 +362,7 @@ const party = {
     this.chars = snap.characters;
     this.trades = snap.trades;
     this.shops = snap.shops || [];
+    this.gm = snap.gm || {};
     const local = store.state.characters;
     let conflict = false, replaced = false;
 
