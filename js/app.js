@@ -1796,6 +1796,11 @@ function openItemForm(item, opts = {}) {
   Object.defineProperty(draft, "_self", { enumerable: false, value: opts.entryUid
     ? store.char()?.items.find(x => x.uid === opts.entryUid)?.item
     : store.state.customItems.find(i => i.id === draft.id) });
+  // An inventory copy: its drawing is edited with the copy's own values (how full it is…).
+  Object.defineProperty(draft, "_vars", { enumerable: false, value: opts.entryUid ? () => {
+    const c = store.char(), e = c?.items.find(x => x.uid === opts.entryUid);
+    return e ? entryIconVars(c, e) : {};
+  } : null });
   for (const k of FEATURE_FIELD_KEYS) if (draft[k] === undefined && cat?.[k] !== undefined) draft[k] = clone(cat[k]);
   const chosen = {}; // features ticked or unticked here
   const isOn = key => key in chosen ? chosen[key] : hasFeature(draft, key, srcId);
@@ -1895,18 +1900,15 @@ async function openIconDrawer(opts, onSave) {
       editor?.store.commit(normalizeDocument(clone(d.doc)));
       editor?.fitToView();
     }) }, icon("copy"), h("span", { class: "hide-sm" }, "Start from…"));
-  // Add the values Pack Rat fills in (how full, how many, charges…) as variables to bind to.
-  const values = h("button", { class: "btn", onclick: () => editor && openIconVariables(editor) }, icon("sliders"), h("span", { class: "hide-sm" }, "Pack Rat values…"));
   // No Escape-to-close: the editor uses Escape itself, and closing would lose the drawing.
   const overlay = h("div", { class: "reader icon-drawer", role: "dialog", "aria-modal": "true", "aria-label": "Draw an icon" },
     h("div", { class: "reader-bar" },
       h("div", { class: "reader-title" }, opts.title || `Draw an icon${opts.name ? ` for ${opts.name}` : ""}`),
       startFrom,
-      values,
       h("button", { class: "btn", onclick: close }, "Cancel"),
       h("button", { class: "btn primary", onclick: save }, icon("check"), opts.saveLabel || "Use this icon")),
     h("p", { class: "icon-drawer-hint muted small" },
-      "Build the icon from shapes on layers: add shapes from the library and pick a layer in the strip beside the canvas. Press and hold a shape to move it; drag its handles to resize or rotate it. Modifiers add outlines, effects and masks. Variables make it live: bind a layer to “fill” to show how full a container is (add Pack Rat's values with the button above), or to the time for a clock. It's drawn in one colour; the app colours it like its other icons."),
+      "Build the icon from shapes on layers: add shapes from the library and pick a layer in the strip beside the canvas. Press and hold a shape to move it; drag its handles to resize or rotate it. Modifiers add outlines, effects and masks. Variables make it live: in the Variables tab, bind a layer to one of Pack Rat's item values (“fill” shows how full a container is) or to the time for a clock. It's drawn in one colour; the app colours it like its other icons."),
     host);
   document.body.append(overlay);
   document.body.classList.add("modal-open");
@@ -1919,6 +1921,9 @@ async function openIconDrawer(opts, onSave) {
         colorMode: "monochrome", monoColor: opts.color || "#888",
         export: false, canvasSize: false, background: false,
       },
+      // The values Pack Rat fills in for an item: formulas can use them, and the Variables tab lists
+      // them (with this copy's real values when editing one in an inventory).
+      variableGroups: [iconVariableGroup(opts.vars)],
     });
     // Fit the canvas once the window has its final size.
     requestAnimationFrame(() => requestAnimationFrame(() => editor?.fitToView()));
@@ -1932,8 +1937,25 @@ async function openIconDrawer(opts, onSave) {
 // icons), no background, ids that drawnIcon() makes unique per copy. Needs the editor loaded.
 function drawingSvg(doc, variables) {
   const { renderDocumentToString, normalizeDocument } = window.SvgLayTool;
-  return renderDocumentToString(normalizedDrawing(doc, normalizeDocument), {
-    background: false, colorMode: "monochrome", monoColor: "currentColor", idPrefix: DRAWN_ID_PREFIX, variables });
+  const n = normalizedDrawing(doc, normalizeDocument);
+  return renderDocumentToString(n, {
+    background: false, colorMode: "monochrome", monoColor: "currentColor", idPrefix: DRAWN_ID_PREFIX,
+    variables: { ...iconVariableDefaults(n), ...(variables || {}) } });
+}
+
+// Pack Rat's values that a drawing uses without declaring them get a default (so formulas work in
+// the catalog and the library too); a variable the drawing declares itself keeps its slider value.
+function iconVariableDefaults(doc) {
+  const declared = new Set((doc.variables || []).map(v => v.name));
+  return Object.fromEntries(ICON_VARIABLES.filter(v => !declared.has(v.name)).map(v => [v.name, v.value]));
+}
+
+// Pack Rat's values as a variable group for the editor's Variables tab.
+function iconVariableGroup(vars) {
+  let actual = {};
+  try { actual = (typeof vars === "function" ? vars() : vars) || {}; } catch {}
+  return { id: "packrat", title: "Pack Rat item",
+    variables: ICON_VARIABLES.map(v => ({ name: v.name, label: v.label, value: v.name in actual ? actual[v.name] : v.value })) };
 }
 
 // Stored drawings may be from an older editor version: normalise each once.
@@ -1946,7 +1968,8 @@ function normalizedDrawing(doc, normalizeDocument) {
 
 // ------------------------------------------------------------------ live drawings (variables)
 // A drawing whose layers are bound to variables is live: Pack Rat fills in values for the item it
-// belongs to (ICON_VARIABLES, by name) and redraws it, and ones bound to the time keep ticking.
+// belongs to (ICON_VARIABLES, by name; the editor lists them as the "Pack Rat item" group) and
+// redraws it, and ones bound to the time keep ticking.
 
 const ICON_VARIABLES = [
   { name: "fill", label: "How full it is, 0 to 1 (a container's contents, or its liquid); over 1 when overfilled", value: 0.5, min: 0, max: 1, step: 0.01 },
@@ -2035,28 +2058,6 @@ function tickLiveIcons() {
   if (!liveIcons.size) { clearInterval(liveTimer); liveTimer = null; }
 }
 
-// In the editor: the values Pack Rat fills in, to add to the drawing as variables.
-function openIconVariables(editor) {
-  const { createVariable } = window.SvgLayTool;
-  let close;
-  const has = name => (editor.getDocument().variables || []).some(v => v.name === name);
-  const list = h("div", { class: "group" });
-  const draw = () => setChildren(list, ICON_VARIABLES.map(v => h("div", { class: "row" },
-    h("div", { class: "row-main static" }, h("div", { class: "row-title" }, h("code", null, v.name)), h("div", { class: "row-sub" }, v.label)),
-    has(v.name) ? h("span", { class: "tag on" }, "added")
-      : h("button", { class: "btn", type: "button", onclick: () => {
-        editor.store.commit(doc => ({ ...doc, variables: [...(doc.variables || []), createVariable({ name: v.name, value: v.value, min: v.min, max: v.max, step: v.step })] }));
-        draw();
-      } }, icon("plus"), "Add"))));
-  draw();
-  close = openModal("Pack Rat values", [
-    h("p", { class: "muted small" }, "Pack Rat fills these in for each item in an inventory. Add the ones you want, then bind layers to them in the Variables tab: e.g. a water layer's height to ", h("code", null, "fill * 180"),
-      " with its anchor at the bottom, or a coin's visibility to ", h("code", null, "worth >= 100"), ". The slider values are what the catalog and the library show."),
-    list,
-    h("p", { class: "muted small" }, "The time is always available for clocks: ", h("code", null, "hours12"), ", ", h("code", null, "minutes"), ", ", h("code", null, "seconds"), ", ",
-      h("code", null, "time"), " (seconds since midnight, for smooth hands)… e.g. an hour hand's rotation ", h("code", null, "hours12 * 30 + minutes / 2"), "."),
-  ], { wide: true });
-}
 
 // ------------------------------------------------------------------ the drawings library
 // Every drawn icon is kept in the library (store.state.iconLibrary) to use again, edit, or start
@@ -2106,7 +2107,7 @@ function pickDrawing(title, onPick) {
 // whether to change it everywhere or make this a drawing of its own.
 function editItemDrawing(it, done) {
   const d = findDrawing(it.iconLib);
-  openIconDrawer({ doc: d?.doc || it.iconDoc, name: it.name, color: itemColor(it) }, (doc, svg) => {
+  openIconDrawer({ doc: d?.doc || it.iconDoc, name: it.name, color: itemColor(it), vars: it._vars }, (doc, svg) => {
     if (!doc) { setItemDrawing(it, null); return done(); }
     const others = d ? drawingUsers(store.state, d.id).filter(u => u !== it._self).length : 0;
     const asNew = () => { setItemDrawing(it, addDrawing(it.name, doc, svg)); done(); };
@@ -2346,7 +2347,7 @@ function fieldInput(f, draft) {
       // Draw a new icon (it goes into the drawings library), or edit this item's drawing.
       const drawBtn = h("button", { class: "btn", type: "button", onclick: () => {
         if (draft.iconDoc) return editItemDrawing(draft, draw);
-        openIconDrawer({ name: draft.name, color: itemColor(draft), templates: true }, (doc, svg) => {
+        openIconDrawer({ name: draft.name, color: itemColor(draft), templates: true, vars: draft._vars }, (doc, svg) => {
           if (doc) setItemDrawing(draft, addDrawing(draft.name, doc, svg));
           draw();
         });
