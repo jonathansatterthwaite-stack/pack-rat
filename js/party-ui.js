@@ -321,7 +321,7 @@ function gmValuesView() {
       onclick: () => { closed ? ui.collapsed.delete(key) : ui.collapsed.add(key); render(); } }, icon("chevron"))];
   };
   const source = (item, player, all) => item !== undefined ? "this item" : player !== undefined ? "the player" : all !== undefined ? "the party" : "the drawing";
-  return h("section", { class: "gm-values" },
+  return [gmControlsSection(), h("section", { class: "gm-values" },
     h("h2", null, "GM values"),
     h("p", { class: "muted small" }, "Numbers you set for drawn icons, e.g. how cursed a blade is. Set a value for the whole party, for a player, or for one item: each item uses the most specific one. Players see the change straight away."),
     !vars.size ? h("div", { class: "empty" }, h("p", null, "No GM values yet. In the icon editor's Variables tab, add one with + GM value (a name starting ",
@@ -357,7 +357,7 @@ function gmValuesView() {
                 }));
             }),
           ]);
-      }));
+      }))];
 }
 
 // Host: remove a player's character who isn't connected. Offers a backup file first.

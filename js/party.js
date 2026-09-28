@@ -266,6 +266,16 @@ const party = {
   // scope: "party" | "character" | "item"; target: "" | charId | "charId/entryUid"; value null clears it.
   async setGm(scope, target, name, value) {
     await this.api("POST", "api/gm", { scope, target, name, value });
+    // Here too straight away: the snapshot saying so can arrive a moment later.
+    const g = this.gm = this.gm || {};
+    let bucket;
+    if (scope === "party") bucket = g.party = g.party || {};
+    else {
+      const group = scope === "character" ? "characters" : "items";
+      g[group] = g[group] || {};
+      bucket = g[group][target] = g[group][target] || {};
+    }
+    if (value == null) delete bucket[name]; else bucket[name] = value;
   },
 
   // ------------------------------------------------------------ document images

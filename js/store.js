@@ -140,6 +140,7 @@ async function moveBrowserDataToPc() {
         addById(base.customItems = base.customItems || [], mine.customItems);
         addById(base.templates = base.templates || [], mine.templates);
         addById(base.iconLibrary = base.iconLibrary || [], mine.iconLibrary);
+        addById(base.gmControls = base.gmControls || [], mine.gmControls);
         // A blank starter character is no longer needed once real ones arrive.
         if (base.characters.length > 1) base.characters = base.characters.filter(c => !isBlankCharacter(c));
         if (!base.characters.some(c => c.id === base.activeId)) base.activeId = base.characters[0]?.id;
@@ -170,6 +171,7 @@ function defaultState() {
     activeId: c.id,
     customItems: [],
     iconLibrary: [], // drawn icons: { id, name, doc, svg, updated } (see the Drawings section of the Custom tab)
+    gmControls: [], // the GM's boards with pins for setting GM values (see gm-controls.js)
     templates: STARTER_TEMPLATES.map(t => ({ ...t })),
     settings: { encumbrance: "standard", coinWeight: true },
   };
@@ -189,6 +191,7 @@ const store = {
     }
     if (!this.state.characters.length) this.state.characters.push(newCharacter());
     if (!Array.isArray(this.state.iconLibrary)) this.state.iconLibrary = [];
+    if (!Array.isArray(this.state.gmControls)) this.state.gmControls = [];
     if (!this.char()) this.state.activeId = this.state.characters[0].id;
 
     // The characters are always this device's own. In a party, the linked ones are also kept

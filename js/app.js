@@ -122,11 +122,14 @@ function commit(fn, msg, undoable = false) {
 
 // ------------------------------------------------------------------ modal
 
-function openModal(title, body, { wide = false, footer = null } = {}) {
+// head: more controls beside the close button. backdrop: an element shown faintly behind the
+// dialog's content (an item's icon as a watermark; see iconFocusSwitch).
+function openModal(title, body, { wide = false, footer = null, head = null, backdrop = null } = {}) {
   const root = document.getElementById("modal-root");
   const close = () => { overlay.remove(); document.body.classList.toggle("modal-open", root.children.length > 0); };
-  const panel = h("div", { class: "modal" + (wide ? " wide" : ""), role: "dialog", "aria-modal": "true", "aria-label": title },
-    h("div", { class: "modal-head" }, h("h2", null, title), iconBtn("x", "Close", () => close())),
+  const panel = h("div", { class: "modal" + (wide ? " wide" : "") + (backdrop ? " has-backdrop" : ""), role: "dialog", "aria-modal": "true", "aria-label": title },
+    backdrop && h("div", { class: "modal-backdrop", "aria-hidden": "true" }, backdrop),
+    h("div", { class: "modal-head" }, h("h2", null, title), head, iconBtn("x", "Close", () => close())),
     h("div", { class: "modal-body" }, body),
     footer && h("div", { class: "modal-foot" }, footer));
   const overlay = h("div", { class: "overlay", onmousedown: e => { if (e.target === overlay) close(); } }, panel);
@@ -319,7 +322,16 @@ const VIEWS = {
   settings: { label: "Settings", icon: "sliders", render: renderSettings },
 };
 
+// Held while something is being dragged (a GM control's pin), so party updates don't redraw it
+// out from under the pointer; one render follows when it's let go.
+let renderHeld = false, renderWanted = false;
+function holdRender(on) {
+  renderHeld = on;
+  if (!on && renderWanted) { renderWanted = false; render(); }
+}
+
 function render() {
+  if (renderHeld) { renderWanted = true; return; }
   const char = store.char();
   // In a party with none of this device's characters playing yet: choose one first.
   const joining = party.active && !party.linked().length;
@@ -341,6 +353,7 @@ function render() {
   // Tiles are laid out now: size them and shrink names to fit (resizes are handled by each grid's observer).
   syncTileSize(main);
   window.scrollTo(0, scroll);
+  refreshLiveIcons(); // live icons outside the view (an open item's details) show the new values
 }
 
 function go(view) {
@@ -990,9 +1003,20 @@ function toggleEquip(entryUid) {
 
 // ------------------------------------------------------------------ entry details
 
+// A details dialog shows the item's icon (or picture) as a watermark behind the details, and a
+// switch in its header to see just the icon: the details fade out and the icon comes up full.
+// The icon is the real one, live drawings included, so it keeps updating either way.
+const iconBackdrop = (item, vars) => itemIcon(item, "details-watermark", vars);
+function iconFocusSwitch() {
+  return h("label", { class: "icon-focus-switch", title: "Show just the icon" }, icon("image"),
+    h("input", { type: "checkbox", role: "switch", class: "switch", "aria-label": "Show just the icon",
+      onchange: e => e.target.closest(".modal").classList.toggle("icon-focus", e.target.checked) }));
+}
+
 // onIcon(id): when given, the item's icon can be changed from its details.
 // srcId: the catalog item an inventory copy came from (older copies take missing fields from it).
-function itemDetails(item, onIcon = null, srcId = item.id, vars = null) {
+// watermarked: the dialog shows the icon behind the details (iconBackdrop), so they leave it out.
+function itemDetails(item, onIcon = null, srcId = item.id, vars = null, watermarked = false) {
   const has = key => hasFeature(item, key, srcId);
   const rows = [];
   const add = (k, v) => { if (v !== undefined && v !== null && v !== "" && v !== false) rows.push([k, v]); };
@@ -1042,8 +1066,8 @@ function itemDetails(item, onIcon = null, srcId = item.id, vars = null) {
   add("Source", item.source);
 
   return h("div", { class: "details" },
-    item.image && storedImage(item.image, "details-image", img => img.remove()),
-    h("div", { class: "details-icon" }, itemIcon(item, "big-icon", vars),
+    !watermarked && item.image && storedImage(item.image, "details-image", img => img.remove()),
+    (!watermarked || onIcon) && h("div", { class: "details-icon" }, !watermarked && itemIcon(item, "big-icon", vars),
       onIcon && h("button", { class: "btn", type: "button", onclick: () => openIconPicker(item.icon, onIcon, item,
         { drawings: drawingLibrary(), onDrawing: d => onIcon(undefined, d) }) }, "Change icon")),
     h("dl", null, rows.map(([k, v]) => [h("dt", null, k), h("dd", null, v)])),
@@ -1190,9 +1214,16 @@ function openEntry(entryUid) {
   // Older inventory copies of catalog containers get their capacity from the catalog.
   const shown = { ...it, holds: containerField(e, "holds"), liquidPints: containerField(e, "liquidPints") };
   const reopen = () => { close(); openEntry(entryUid); };
+  // Live drawings read this copy's values as they are now (it may have changed, or been
+  // replaced by a party update, since the dialog opened).
+  const vars = () => {
+    const c = store.char(), x = c?.items.find(i => i.uid === entryUid);
+    return x ? entryIconVars(c, x) : {};
+  };
   close = openModal(entryName(e), [e.customName && h("p", { class: "muted small" }, it.name),
     readBtn, liquidCap(e) > 0 && liquidControls(e), isDeckEntry(e) && deckSection(e, reopen, () => close()),
-    cardBackButton(e, () => close()), controls, planner?.el, itemDetails(shown, changeIcon, e.srcId, () => entryIconVars(char, e))], { footer, wide: !!planner });
+    cardBackButton(e, () => close()), controls, planner?.el, itemDetails(shown, changeIcon, e.srcId, vars, true)],
+  { footer, wide: !!planner, head: iconFocusSwitch(), backdrop: iconBackdrop(it, vars) });
 }
 
 const LIQUIDS = ["Water", "Wine", "Ale", "Beer", "Mead", "Cider", "Milk", "Juice", "Tea", "Brandy", "Rum", "Whiskey",
@@ -1550,7 +1581,8 @@ function openCatalogItem(item) {
     close();
     openReader(item, isCustom ? { onEdit: () => openItemForm(store.state.customItems.find(i => i.id === item.id) || item) } : {});
   } }, icon(item.imageOnly ? "image" : "book"), item.imageOnly ? "View" : "Read");
-  close = openModal(item.name, [readBtn, controls, planner?.el, itemDetails(item, changeIcon)], { footer, wide: !!planner });
+  close = openModal(item.name, [readBtn, controls, planner?.el, itemDetails(item, changeIcon, item.id, null, true)],
+    { footer, wide: !!planner, head: iconFocusSwitch(), backdrop: iconBackdrop(item) });
 }
 
 // ------------------------------------------------------------------ decks
@@ -2071,6 +2103,7 @@ function knownGmNames() {
   const docs = [...drawingLibrary().map(d => d.doc), ...store.state.customItems.map(i => i.iconDoc),
     ...store.state.characters.flatMap(c => c.items.map(e => e.item.iconDoc))];
   for (const doc of docs) if (doc) for (const name of drawingGmSpecs(doc).keys()) names.add(name);
+  for (const c of store.state.gmControls || []) for (const p of c.pins) for (const n of [p.xVar, p.yVar]) if (n) names.add(n);
   return names;
 }
 
@@ -2151,7 +2184,8 @@ function entryIconVars(char, e) {
 const isLiveDrawing = doc => !!doc && bindingFormulas(doc).length > 0;
 
 // Live icons on screen. Each shows the saved picture first, then is redrawn with its item's values
-// once the editor library has loaded, and again every so often if it uses the time.
+// once the editor library has loaded, again whenever the data changes (refreshLiveIcons), and every
+// so often if it uses the time.
 const liveIcons = new Set();
 let liveTimer = null;
 function liveDrawnIcon(doc, svgText, cls, vars) {
@@ -2159,6 +2193,7 @@ function liveDrawnIcon(doc, svgText, cls, vars) {
   const live = { doc, cls, vars, node, born: Date.now(), seen: false, period: 0, last: 0 };
   loadSvgLay().then(() => {
     redrawLive(live);
+    liveIcons.add(live);
     const { documentUsesTime, normalizeDocument } = window.SvgLayTool;
     const n = normalizedDrawing(doc, normalizeDocument);
     if (!documentUsesTime(n)) return;
@@ -2166,10 +2201,23 @@ function liveDrawnIcon(doc, svgText, cls, vars) {
     // second. Time can also come through a formula variable.
     const smooth = /\b(t|time|now|dayFraction)\b/.test(drawingFormulas(n).join(" "));
     live.period = smooth ? 100 : 1000;
-    liveIcons.add(live);
     if (!liveTimer) liveTimer = setInterval(tickLiveIcons, 100);
   }).catch(() => {});
   return node;
+}
+
+// Still on screen, or about to be? Ones that have gone (or were never shown) are forgotten.
+function keepLive(live, now) {
+  if (live.node.isConnected) return live.seen = true;
+  if (live.seen || now - live.born > 5000) { liveIcons.delete(live); return false; }
+  return true;
+}
+
+// The data changed (an edit, a trade, a GM value): redraw the live icons still showing. The views
+// are redrawn with new icons anyway; this reaches the ones that stay, like an open item's details.
+function refreshLiveIcons() {
+  const now = Date.now();
+  for (const live of liveIcons) if (keepLive(live, now) && live.seen) redrawLive(live);
 }
 
 function redrawLive(live) {
@@ -2181,15 +2229,17 @@ function redrawLive(live) {
   live.last = Date.now();
 }
 
+// The clock: redraws the icons that use the time when they're due, and stops when none are left.
 function tickLiveIcons() {
   if (document.hidden) return;
   const now = Date.now();
+  let ticking = 0;
   for (const live of liveIcons) {
-    if (live.node.isConnected) live.seen = true;
-    else if (live.seen || now - live.born > 5000) { liveIcons.delete(live); continue; } // gone, or never shown
+    if (!keepLive(live, now) || !live.period) continue;
+    ticking++;
     if (live.seen && now - live.last >= live.period) redrawLive(live);
   }
-  if (!liveIcons.size) { clearInterval(liveTimer); liveTimer = null; }
+  if (!ticking) { clearInterval(liveTimer); liveTimer = null; }
 }
 
 // ------------------------------------------------------------------ the drawings library
@@ -2851,7 +2901,7 @@ function renderSettings() {
         : "Everything is saved in this browser only. Export a backup to move data between your PC and phone."),
       h("div", { class: "inline wrap" },
         h("button", { class: "btn", onclick: async () => download(`rpg-inventory-${new Date().toISOString().slice(0, 10)}.json`,
-          { ...s, images: await bundleImages(allImageRefs(s.characters, s.customItems)) }) }, icon("download"), "Export all"),
+          { ...s, images: await bundleImages(allImageRefs(s.characters, s.customItems, (s.gmControls || []).map(c => c.image))) }) }, icon("download"), "Export all"),
         h("button", { class: "btn", onclick: () => fileInput.click() }, icon("upload"), "Import"),
         fileInput,
         !party.active && h("button", { class: "btn danger", onclick: () => confirmDialog("Erase all characters, custom items and templates?", "Erase everything",

@@ -179,9 +179,9 @@ function storedImage(id, cls = "", onMissing = null) {
   return img;
 }
 
-// Every image referenced anywhere in some characters / custom items.
-function allImageRefs(characters, customItems = []) {
-  const ids = new Set();
+// Every image referenced anywhere in some characters / custom items (and other image ids, e.g. GM controls').
+function allImageRefs(characters, customItems = [], more = []) {
+  const ids = new Set(more.filter(Boolean));
   for (const c of characters) for (const e of c.items || []) for (const id of docImageRefs(e.item)) ids.add(id);
   for (const i of customItems) for (const id of docImageRefs(i)) ids.add(id);
   return ids;
