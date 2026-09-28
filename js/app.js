@@ -2785,6 +2785,9 @@ function importFile(file) {
   reader.readAsText(file);
 }
 
+// The user guide: the GitHub project's wiki.
+const GUIDE_URL = "https://github.com/jonathansatterthwaite-stack/pack-rat/wiki";
+
 function renderSettings() {
   const s = store.state;
   const setSetting = (k, v) => commit(st => { st.settings[k] = v; });
@@ -2799,6 +2802,11 @@ function renderSettings() {
     toast(on ? "Player mode on: the catalog and custom items are hidden" : "Player mode off");
   };
   return h("div", { class: "view-settings" },
+    h("section", { class: "help-link" },
+      icon("book"),
+      h("div", null, h("b", null, "User guide"),
+        h("p", { class: "muted small" }, "How everything works, with pictures: containers, sets, drawn icons, parties, shops and GM values.")),
+      h("a", { class: "btn", href: GUIDE_URL, target: "_blank", rel: "noopener" }, "Open the guide")),
     h("section", null,
       h("label", { class: "switch-row" },
         h("span", null, h("b", null, "Player mode"),
@@ -2811,7 +2819,7 @@ function renderSettings() {
       h("div", { class: "group" }, s.characters.map(c => h("div", { class: "row" + (c.id === s.activeId ? " equipped" : "") },
         h("button", { class: "row-main", onclick: () => { commit(st => { st.activeId = c.id; }); go("inventory"); } },
           h("div", { class: "row-title" }, c.name, c.id === s.activeId && h("span", { class: "tag on" }, "active")),
-          h("div", { class: "row-sub" }, `${plural(c.items.length, "entry", "entries")} · ${coinSummary(c.coins)} · STR ${c.str}`)),
+          h("div", { class: "row-sub" }, `${entriesLabel(c)} · ${coinSummary(c.coins)} · STR ${c.str}`)),
         iconBtn("edit", "Rename", () => renamePrompt(c)),
         iconBtn("download", "Export character", async () => download(`${c.name.replace(/\W+/g, "_")}.json`,
           { kind: "character", character: c, templates: s.templates.filter(t => c.items.some(e => e.item.template === t.id)),
@@ -2902,7 +2910,7 @@ function openCharSwitcher() {
   const s = store.state;
   const row = c => h("button", { class: "row row-main switch" + (c.id === s.activeId ? " equipped" : ""),
     onclick: () => { close(); commit(st => { st.activeId = c.id; }); } },
-    icon("user"), h("div", null, h("div", { class: "row-title" }, c.name), h("div", { class: "row-sub" }, plural(c.items.length, "entry", "entries"))));
+    icon("user"), h("div", null, h("div", { class: "row-title" }, c.name), h("div", { class: "row-sub" }, entriesLabel(c))));
   if (!party.active) {
     close = openModal("Characters", h("div", { class: "group" },
       s.characters.map(row),
@@ -2917,7 +2925,7 @@ function openCharSwitcher() {
     others.length > 0 && [h("h4", null, "Also on this device"),
       h("div", { class: "group" }, others.map(c => h("div", { class: "row" },
         icon("user"), h("div", { class: "row-main static" }, h("div", { class: "row-title" }, c.name),
-          h("div", { class: "row-sub" }, plural(c.items.length, "entry", "entries"))),
+          h("div", { class: "row-sub" }, entriesLabel(c))),
         h("button", { class: "btn", onclick: async () => { close(); await party.bring(c.id); } }, icon("users"), "Bring into party"))))],
     h("button", { class: "btn wide", onclick: () => { close(); openJoinModal(); } }, icon("plus"), "New character or take over"),
   ]);

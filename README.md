@@ -4,6 +4,8 @@ A D&D 5e inventory manager that runs in any browser, on PC and phone. It's stati
 
 **Download:** [Windows app](https://github.com/jonathansatterthwaite-stack/pack-rat/releases/latest/download/PackRat.exe) · [Android app](https://github.com/jonathansatterthwaite-stack/pack-rat/releases/latest/download/PackRat.apk) · [Use it in your browser](https://jonathansatterthwaite-stack.github.io/pack-rat/app/) · [All releases](https://github.com/jonathansatterthwaite-stack/pack-rat/releases)
 
+**New to Pack Rat?** The [user guide](https://github.com/jonathansatterthwaite-stack/pack-rat/wiki) explains everything, with screenshots. The app links to it from Settings.
+
 ## Features
 
 - **Character panel** at the top of the inventory (Armor Class, weight carried, coins, abilities). It collapses to a single line with the coins (tap them to open the coin purse) and the pounds carried out of your capacity. Add items from the **Catalog** tab, or make one with **New custom item** there.

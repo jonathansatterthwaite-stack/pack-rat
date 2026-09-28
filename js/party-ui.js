@@ -82,7 +82,7 @@ function joinOptions(onDone = () => {}) {
       h("p", { class: "muted small" }, `Saved on this ${party.app?.android ? "phone" : "device"}. The party gets a live copy: trades and purchases update it here too.`),
       h("div", { class: "group" }, mine.map(c => h("div", { class: "row" },
         h("div", { class: "row-main" }, h("div", { class: "row-title" }, c.name),
-          h("div", { class: "row-sub" }, `${plural(c.items.length, "entry", "entries")} · ${coinSummary(c.coins)}`)),
+          h("div", { class: "row-sub" }, `${entriesLabel(c)} · ${coinSummary(c.coins)}`)),
         h("button", { class: "btn primary", onclick: async () => { if (await party.bring(c.id)) onDone(); } }, icon("users"), "Play"))))),
     h("section", { class: "join-card" },
       h("h3", null, "New character"),
@@ -95,7 +95,7 @@ function joinOptions(onDone = () => {}) {
       h("div", { class: "group" }, others.map(c => h("div", { class: "row" },
         onlineDot(c.online),
         h("div", { class: "row-main" }, h("div", { class: "row-title" }, c.name),
-          h("div", { class: "row-sub" }, c.online ? "Being played right now" : plural(c.items.length, "entry", "entries"))),
+          h("div", { class: "row-sub" }, c.online ? "Being played right now" : entriesLabel(c))),
         h("button", { class: "btn", disabled: c.online, onclick: async () => { if (await party.bring(c.id)) onDone(); } }, "Take over"))))),
   ];
 }
@@ -160,7 +160,7 @@ function undecidedBanner() {
       icon("users"),
       h("div", null,
         h("b", null, `${c.name} changed in two places`),
-        h("p", { class: "muted small" }, `This device has ${plural(c.items.length, "entry", "entries")} and ${coinSummary(c.coins)}; the party's copy has ${plural(p.items.length, "entry", "entries")} and ${coinSummary(p.coins)}. Which should the party use?`)),
+        h("p", { class: "muted small" }, `This device has ${entriesLabel(c)} and ${coinSummary(c.coins)}; the party's copy has ${entriesLabel(p)} and ${coinSummary(p.coins)}. Which should the party use?`)),
       h("button", { class: "btn", onclick: () => party.resolve(id, "party") }, "The party's"),
       h("button", { class: "btn primary", onclick: () => party.resolve(id, "device") }, "This device's"));
   });
@@ -219,7 +219,7 @@ function memberCard(c) {
       onlineDot(c.online),
       h("button", { class: "row-main", onclick: toggle, "aria-expanded": String(!!open) },
         h("div", { class: "row-title" }, c.name),
-        h("div", { class: "row-sub" }, `${plural(c.items.length, "entry", "entries")} · ${coinSummary(c.coins)}`)),
+        h("div", { class: "row-sub" }, `${entriesLabel(c)} · ${coinSummary(c.coins)}`)),
       iconBtn("chevron", open ? "Hide inventory" : "Show inventory", toggle, open ? "flip" : ""),
       h("button", { class: "btn primary", disabled: !store.char(), onclick: () => openTradeBuilder(c.id) }, icon("move"), "Trade"),
       // The host can clear out players who have left (only while they're away).
@@ -268,7 +268,7 @@ function renderParty() {
         onlineDot(true),
         h("button", { class: "row-main", onclick: () => { commit(s => { s.activeId = c.id; }); go("inventory"); } },
           h("div", { class: "row-title" }, c.name, c.id === store.state.activeId && h("span", { class: "tag on" }, "active")),
-          h("div", { class: "row-sub" }, plural(c.items.length, "entry", "entries")))))),
+          h("div", { class: "row-sub" }, entriesLabel(c)))))),
       h("p", { class: "muted small" }, `Saved on this ${party.app?.android ? "phone" : "device"} and shared live with the party.`)),
     history.length > 0 && h("section", null, h("h2", null, "Recent trades"), history.map(tradeCard)));
 }
@@ -378,7 +378,7 @@ function removeMember(c) {
     }
   };
   close = openModal(`Remove ${c.name}?`, h("div", { class: "form" },
-    h("p", null, `${c.name} and everything they carry (${plural(c.items.length, "entry", "entries")}, ${coinSummary(c.coins)}) will be removed from the party. Any trades waiting on them are cancelled.`),
+    h("p", null, `${c.name} and everything they carry (${entriesLabel(c)}, ${coinSummary(c.coins)}) will be removed from the party. Any trades waiting on them are cancelled.`),
     h("p", { class: "muted small" }, "Their own device keeps its copy of the character. You can also download a backup here, which can be imported from Settings."),
     h("button", { class: "btn", type: "button", onclick: backup }, icon("download"), "Download a backup")),
   { footer: [

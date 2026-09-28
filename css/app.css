@@ -219,7 +219,7 @@ input.switch:focus-visible { outline: 3px solid var(--accent-soft); outline-offs
 .feature { padding: 4px 0; border-bottom: 1px solid var(--border); }
 .feature:last-child { border-bottom: 0; }
 .feature > .check { align-items: flex-start; padding: 6px 0; }
-.feature > .check input { margin-top: 2px; }
+.feature > .check input { margin-top: 2px; flex: none; }
 .feature > .check b { margin-right: 4px; }
 .feature > .check .muted { font-weight: 400; font-size: .88rem; }
 .feature-fields { margin: 2px 0 10px 12px; padding-left: 14px; border-left: 2px solid var(--accent-soft); }
@@ -557,6 +557,10 @@ button.tile:hover, .tile:has(.tile-hit:hover) { border-color: var(--muted); bord
 .found-banner > div { flex: 1 1 240px; }
 .found-banner p { margin: 2px 0 0; }
 .found-banner .icon { color: var(--accent); }
+.help-link { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.help-link > div { flex: 1 1 240px; }
+.help-link p { margin: 2px 0 0; }
+.help-link > .icon { color: var(--accent); width: 22px; height: 22px; }
 a.btn { text-decoration: none; }
 
 /* ------------------------------------------------------------ hues */

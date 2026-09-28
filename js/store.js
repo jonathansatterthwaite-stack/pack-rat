@@ -382,6 +382,9 @@ function inDeck(char, e) {
   return !!p && isDeckEntry(p);
 }
 
+// "12 entries": what a character's inventory lists (a deck counts once, not once per card).
+const entriesLabel = char => plural((char.items || []).filter(e => !inDeck(char, e)).length, "entry", "entries");
+
 // ------------------------------------------------------------------ equipment packs
 // A pack's contents: [{ name, qty, place? }]. place is where the item goes when unpacked:
 // "holder" (the container the rest is packed in), "in" (inside it), "strap" (strapped to its
