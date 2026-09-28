@@ -2999,6 +2999,17 @@ function pickBackup() {
 
 // ------------------------------------------------------------------ boot
 
+// In the Windows app, links to the web (the user guide, credits) open in the PC's default browser
+// rather than another app window. (The Android app sends them to the phone's browser itself.)
+document.addEventListener("click", e => {
+  const a = e.target.closest?.("a[href]");
+  if (!a || !party.isApp() || party.app.android || !a.href.startsWith("https:")) return;
+  e.preventDefault();
+  fetch("api/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: a.href }) })
+    .then(r => { if (!r.ok) throw new Error(); })
+    .catch(() => window.open(a.href, "_blank", "noopener"));
+});
+
 // Make unexpected errors visible instead of failing silently (e.g. an old phone browser).
 window.addEventListener("error", e => { if (e.message) toast("Something went wrong: " + e.message); });
 window.addEventListener("unhandledrejection", e => toast("Something went wrong: " + (e.reason?.message || e.reason)));

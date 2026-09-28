@@ -25,6 +25,7 @@ import string
 import sys
 import threading
 import time
+import webbrowser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -587,7 +588,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             token = self.token()
             # Document images load via <img>, which can't send the player header.
-            open_paths = ("/api/info", "/api/presence", "/api/host", "/api/quit")
+            open_paths = ("/api/info", "/api/presence", "/api/host", "/api/quit", "/api/open")
             if not token and path not in open_paths and not path.startswith(("/api/local", "/api/shops")) \
                     and not (method == "GET" and path.startswith("/api/images/")):
                 raise ApiError(401, "Missing player token")
@@ -648,7 +649,7 @@ class Handler(SimpleHTTPRequestHandler):
             if not (self.is_app() and LOCAL_DIR):
                 raise ApiError(403, "Only Pack Rat on this PC can do that")
             return self.local_api(method, parts[1:])
-        if parts[:1] in (["presence"], ["host"], ["quit"]):
+        if parts[:1] in (["presence"], ["host"], ["quit"], ["open"]):
             if not self.is_app():
                 raise ApiError(403, "Only the desktop app can do that")
             if method == "GET" and parts == ["presence"]:
@@ -668,6 +669,14 @@ class Handler(SimpleHTTPRequestHandler):
                 return {"hosting": lan_server is not None}
             if method == "POST" and parts == ["quit"]:
                 threading.Thread(target=shutdown_all, daemon=True).start()
+                return {"ok": True}
+            if method == "POST" and parts == ["open"]:
+                # A link to the web (the user guide, credits) in the PC's default browser: the app's
+                # own window is an Edge app window, which would open it in another one of those.
+                url = str(self.body().get("url") or "")
+                if not re.match(r"^https?://[^\s\x00-\x1f\"<>]+$", url) or len(url) > 2000:
+                    raise ApiError(400, "Not a web address")
+                webbrowser.open(url)
                 return {"ok": True}
         if not party_enabled():
             raise ApiError(404, "No party is being hosted")
