@@ -1909,7 +1909,7 @@ async function openIconDrawer(opts, onSave) {
       h("button", { class: "btn", onclick: close }, "Cancel"),
       h("button", { class: "btn primary", onclick: save }, icon("check"), opts.saveLabel || "Use this icon")),
     h("p", { class: "icon-drawer-hint muted small" },
-      "Build the icon from shapes on layers: add shapes from the library and pick a layer in the strip beside the canvas. Press and hold a shape to move it; drag its handles to resize or rotate it. Modifiers add outlines, effects and masks. Variables make it live: in the Variables tab, bind a layer to one of Pack Rat's item values (“fill” shows how full a container is) or to the time for a clock. Names starting with gm_ (e.g. gm_curse) are GM values, set by the GM from the Party screen: use one in a formula, or add it as a variable to give it a default and range. The Pack Rat item list shows them. It's drawn in one colour; the app colours it like its other icons."),
+      "Build the icon from shapes on layers: add shapes from the library and pick a layer in the strip beside the canvas. Press and hold a shape to move it; drag its handles to resize or rotate it. Modifiers add outlines, effects and masks. Variables make it live: in the Variables tab, bind a layer to one of Pack Rat's item values (“fill” shows how full a container is) or to the time for a clock. GM values (names starting gm_, e.g. gm_curse) are set by the GM from the Party screen: add one with + GM value in the Variables tab, where the Pack Rat item list explains them. It's drawn in one colour; the app colours it like its other icons."),
     host);
   document.body.append(overlay);
   document.body.classList.add("modal-open");
@@ -1925,7 +1925,14 @@ async function openIconDrawer(opts, onSave) {
       // The values Pack Rat fills in for an item: formulas can use them, and the Variables tab lists
       // them (with this copy's real values when editing one in an inventory).
       variableGroups: [iconVariableGroup(opts.vars, opts.doc)],
+      // "+ GM value" beside "+ Add variable": a gm_ variable with a slider (its default and range).
+      variablePresets: [{ id: "packrat-gm", label: "GM value",
+        title: "Add a GM value: a variable the GM sets from the Party screen (GM values tab). Rename it, keeping the gm_ at the start (e.g. gm_curse); its slider is the default and range.",
+        variable: { name: "gm_value", value: 0, min: 0, max: 1, step: 0.01 } }],
+      // The editor's side panels keep the widths you drag them to (on this device).
+      panelWidths: (() => { try { return JSON.parse(readPref("packrat-icon-editor-panels", "null")) || undefined; } catch { return undefined; } })(),
     });
+    editor.on("panelresize", widths => writePref("packrat-icon-editor-panels", JSON.stringify(widths)));
     syncIconVariables(editor, host, opts.vars);
     // Fit the canvas once the window has its final size.
     requestAnimationFrame(() => requestAnimationFrame(() => editor?.fitToView()));
@@ -1961,6 +1968,8 @@ function syncIconVariables(editor, host, vars) {
     if (names !== listed) { listed = names; editor.registerVariables(group); }
     const follow = {};
     for (const v of doc.variables || []) {
+      // A formula variable computes its own value (an override would freeze it).
+      if (v.expression?.trim()) continue;
       if (group.variables.some(g => g.name === v.name) && !(v.name in actual)) follow[v.name] = v.value;
     }
     if (Object.keys(follow).length) editor.setVariables(follow);
@@ -1989,13 +1998,15 @@ const GM_NAME_RE = /\bgm_[A-Za-z0-9_]+\b/g;
 function drawingGmSpecs(doc) {
   const specs = new Map();
   for (const v of doc?.variables || []) if (/^gm_[A-Za-z0-9_]+$/.test(v.name || "")) specs.set(v.name, v);
-  const walk = layers => (layers || []).forEach(l => {
-    for (const b of l.bindings || []) {
-      if (b.enabled === false) continue;
-      for (const name of (b.expression || "").match(GM_NAME_RE) || []) {
-        if (!specs.has(name)) specs.set(name, { name, value: 0, min: 0, max: 1, step: 0.01 });
-      }
+  const used = formula => {
+    for (const name of (formula || "").match(GM_NAME_RE) || []) {
+      if (!specs.has(name)) specs.set(name, { name, value: 0, min: 0, max: 1, step: 0.01 });
     }
+  };
+  // Used in a formula variable (e.g. heat = gm_heat * 2) or a binding.
+  for (const v of doc?.variables || []) used(v.expression);
+  const walk = layers => (layers || []).forEach(l => {
+    for (const b of l.bindings || []) if (b.enabled !== false) used(b.expression);
     if (l.type === "group") walk(l.children);
   });
   walk(doc?.layers);
@@ -2034,6 +2045,11 @@ function iconVariableGroup(vars, doc) {
   };
   return { id: "packrat", title: "Pack Rat item", variables: [
     ...ICON_VARIABLES.map(v => ({ name: v.name, label: v.label, value: value(v.name, v.value) })),
+    // How to make a GM value, listed with the item values (the name "gm_" on its own isn't one).
+    { name: "gm_", value: 0, label: "GM values: variables named gm_ followed by a word, e.g. gm_curse or gm_heat. " +
+      "Add one with + GM value (its slider sets the default and range; rename it, keeping the gm_), or just use a gm_ name in a formula (it starts at 0). " +
+      "Bind layers to it like any other variable. In a party, the GM sets it on the Party screen → GM values tab, for everyone, one player or one item; each item uses the most specific value. " +
+      "The GM values Pack Rat knows of are listed below." },
     ...gmNames.map(name => ({ name, label: gmLabel(name), value: value(name, gmHere.get(name)?.value ?? 0) })),
   ] };
 }
@@ -2104,7 +2120,7 @@ function liveDrawnIcon(doc, svgText, cls, vars) {
     const n = normalizedDrawing(doc, normalizeDocument);
     if (!documentUsesTime(n)) return;
     // Smooth hands and loops ("t", "time", "now") update often; whole hours/minutes/seconds once a second.
-    const formulas = [];
+    const formulas = (n.variables || []).map(v => v.expression || ""); // time can come through a formula variable
     const walk = layers => layers.forEach(l => {
       for (const b of l.bindings || []) if (b.enabled !== false) formulas.push(b.expression || "");
       if (l.type === "group") walk(l.children);
