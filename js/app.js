@@ -858,7 +858,7 @@ function entryTile(char, e, showPath) {
       e.attuned && "attuned", e.charges != null && `${e.charges}/${it.maxCharges} charges`, path].filter(Boolean).join(" · "),
     onclick: () => openEntry(e.uid),
     ondragstart: ev => { ev.dataTransfer.setData("text/entry", e.uid); ev.dataTransfer.effectAllowed = "move"; } },
-    itemIcon(it, "tile-icon"),
+    itemIcon(it, "tile-icon", () => entryIconVars(char, e)),
     h("span", { class: "tile-name" }, entryName(e)),
     minimalCorners(entryTotalValue(char, e), entryTotalWeight(char, e), containerCapacity(char, e) || (e.qty !== 1 ? "×" + e.qty.toLocaleString() : null)));
   el.style.setProperty("--type", itemColor(it));
@@ -876,7 +876,7 @@ function entryRow(char, e, showPath = false) {
   }, n <= 0 ? `Removed ${it.name}` : null, n <= 0);
   return withFill(h("div", { class: "row" + (e.equipped ? " equipped" : ""), draggable: "true",
     ondragstart: ev => { ev.dataTransfer.setData("text/entry", e.uid); ev.dataTransfer.effectAllowed = "move"; } },
-    itemIcon(it, "row-icon"),
+    itemIcon(it, "row-icon", () => entryIconVars(char, e)),
     h("button", { class: "row-main", onclick: () => openEntry(e.uid) },
       h("div", { class: "row-title" }, entryName(e),
         e.equipped && h("span", { class: "tag on" }, it.type === "armor" || it.acBonus ? "worn" : "equipped"),
@@ -971,7 +971,7 @@ function toggleEquip(entryUid) {
 
 // onIcon(id): when given, the item's icon can be changed from its details.
 // srcId: the catalog item an inventory copy came from (older copies take missing fields from it).
-function itemDetails(item, onIcon = null, srcId = item.id) {
+function itemDetails(item, onIcon = null, srcId = item.id, vars = null) {
   const has = key => hasFeature(item, key, srcId);
   const rows = [];
   const add = (k, v) => { if (v !== undefined && v !== null && v !== "" && v !== false) rows.push([k, v]); };
@@ -1022,7 +1022,7 @@ function itemDetails(item, onIcon = null, srcId = item.id) {
 
   return h("div", { class: "details" },
     item.image && storedImage(item.image, "details-image", img => img.remove()),
-    h("div", { class: "details-icon" }, itemIcon(item, "big-icon"),
+    h("div", { class: "details-icon" }, itemIcon(item, "big-icon", vars),
       onIcon && h("button", { class: "btn", type: "button", onclick: () => openIconPicker(item.icon, onIcon, item,
         { drawings: drawingLibrary(), onDrawing: d => onIcon(undefined, d) }) }, "Change icon")),
     h("dl", null, rows.map(([k, v]) => [h("dt", null, k), h("dd", null, v)])),
@@ -1166,7 +1166,7 @@ function openEntry(entryUid) {
   const reopen = () => { close(); openEntry(entryUid); };
   close = openModal(entryName(e), [e.customName && h("p", { class: "muted small" }, it.name),
     readBtn, liquidCap(e) > 0 && liquidControls(e), isDeckEntry(e) && deckSection(e, reopen, () => close()),
-    cardBackButton(e, () => close()), controls, planner?.el, itemDetails(shown, changeIcon, e.srcId)], { footer, wide: !!planner });
+    cardBackButton(e, () => close()), controls, planner?.el, itemDetails(shown, changeIcon, e.srcId, () => entryIconVars(char, e))], { footer, wide: !!planner });
 }
 
 const LIQUIDS = ["Water", "Wine", "Ale", "Beer", "Mead", "Cider", "Milk", "Juice", "Tea", "Brandy", "Rum", "Whiskey",
@@ -1891,16 +1891,22 @@ async function openIconDrawer(opts, onSave) {
   };
   // Start from a copy of a library drawing (a template); undo brings the old canvas back.
   const startFrom = opts.templates && (store.state.iconLibrary || []).length > 0 &&
-    h("button", { class: "btn", onclick: () => pickDrawing("Start from a drawing", d => editor?.loadDocument(clone(d.doc))) }, icon("copy"), h("span", { class: "hide-sm" }, "Start from…"));
+    h("button", { class: "btn", onclick: () => pickDrawing("Start from a drawing", d => {
+      editor?.store.commit(normalizeDocument(clone(d.doc)));
+      editor?.fitToView();
+    }) }, icon("copy"), h("span", { class: "hide-sm" }, "Start from…"));
+  // Add the values Pack Rat fills in (how full, how many, charges…) as variables to bind to.
+  const values = h("button", { class: "btn", onclick: () => editor && openIconVariables(editor) }, icon("sliders"), h("span", { class: "hide-sm" }, "Pack Rat values…"));
   // No Escape-to-close: the editor uses Escape itself, and closing would lose the drawing.
   const overlay = h("div", { class: "reader icon-drawer", role: "dialog", "aria-modal": "true", "aria-label": "Draw an icon" },
     h("div", { class: "reader-bar" },
       h("div", { class: "reader-title" }, opts.title || `Draw an icon${opts.name ? ` for ${opts.name}` : ""}`),
       startFrom,
+      values,
       h("button", { class: "btn", onclick: close }, "Cancel"),
       h("button", { class: "btn primary", onclick: save }, icon("check"), opts.saveLabel || "Use this icon")),
     h("p", { class: "icon-drawer-hint muted small" },
-      "Build the icon from shapes on layers: add shapes from the library and pick a layer in the strip beside the canvas. Press and hold a shape to move it; drag its handles to resize or rotate it. Modifiers add outlines, effects and masks (a layer that cuts the ones below it). It's drawn in one colour; the app colours it like its other icons."),
+      "Build the icon from shapes on layers: add shapes from the library and pick a layer in the strip beside the canvas. Press and hold a shape to move it; drag its handles to resize or rotate it. Modifiers add outlines, effects and masks. Variables make it live: bind a layer to “fill” to show how full a container is (add Pack Rat's values with the button above), or to the time for a clock. It's drawn in one colour; the app colours it like its other icons."),
     host);
   document.body.append(overlay);
   document.body.classList.add("modal-open");
@@ -1924,8 +1930,132 @@ async function openIconDrawer(opts, onSave) {
 
 // A drawing as the SVG the app shows: one colour (currentColor, so it's tinted like the other
 // icons), no background, ids that drawnIcon() makes unique per copy. Needs the editor loaded.
-function drawingSvg(doc) {
-  return window.SvgLayTool.renderDocumentToString(doc, { background: false, colorMode: "monochrome", monoColor: "currentColor", idPrefix: DRAWN_ID_PREFIX });
+function drawingSvg(doc, variables) {
+  const { renderDocumentToString, normalizeDocument } = window.SvgLayTool;
+  return renderDocumentToString(normalizedDrawing(doc, normalizeDocument), {
+    background: false, colorMode: "monochrome", monoColor: "currentColor", idPrefix: DRAWN_ID_PREFIX, variables });
+}
+
+// Stored drawings may be from an older editor version: normalise each once.
+const normalizedDrawings = new WeakMap();
+function normalizedDrawing(doc, normalizeDocument) {
+  let n = normalizedDrawings.get(doc);
+  if (!n) { n = normalizeDocument(doc); normalizedDrawings.set(doc, n); }
+  return n;
+}
+
+// ------------------------------------------------------------------ live drawings (variables)
+// A drawing whose layers are bound to variables is live: Pack Rat fills in values for the item it
+// belongs to (ICON_VARIABLES, by name) and redraws it, and ones bound to the time keep ticking.
+
+const ICON_VARIABLES = [
+  { name: "fill", label: "How full it is, 0 to 1 (a container's contents, or its liquid); over 1 when overfilled", value: 0.5, min: 0, max: 1, step: 0.01 },
+  { name: "used", label: "How much is in it: pounds, or pieces for a quiver or case, or pints of liquid", value: 10, min: 0, max: 30, step: 0.5 },
+  { name: "capacity", label: "How much it holds (same units as used)", value: 30, min: 0, max: 100, step: 1 },
+  { name: "qty", label: "How many in the stack", value: 1, min: 0, max: 20, step: 1 },
+  { name: "charges", label: "Charges left", value: 3, min: 0, max: 10, step: 1 },
+  { name: "maxCharges", label: "Maximum charges", value: 3, min: 0, max: 10, step: 1 },
+  { name: "pieces", label: "Pieces still in a set (cards left in the deck)", value: 54, min: 0, max: 60, step: 1 },
+  { name: "piecesTotal", label: "All the set's pieces (in it or taken out)", value: 54, min: 0, max: 60, step: 1 },
+  { name: "equipped", label: "1 when equipped or worn, else 0", value: 0, min: 0, max: 1, step: 1 },
+  { name: "attuned", label: "1 when attuned, else 0", value: 0, min: 0, max: 1, step: 1 },
+  { name: "worth", label: "Worth in gp, with anything inside", value: 10, min: 0, max: 1000, step: 1 },
+  { name: "weight", label: "Weight in lb, with anything inside", value: 5, min: 0, max: 100, step: 0.5 },
+];
+
+// The values for an inventory entry (only those that apply; the rest keep the drawing's own).
+function entryIconVars(char, e) {
+  const it = e.item;
+  const v = { qty: e.qty, equipped: e.equipped ? 1 : 0, attuned: e.attuned ? 1 : 0,
+    worth: entryTotalValue(char, e) / 100, weight: entryTotalWeight(char, e) };
+  const fill = fillLevel(char, e);
+  if (fill) {
+    v.fill = Math.max(0, fill.ratio);
+    if (fill.kind === "liquid") { v.used = e.liquid?.pints || 0; v.capacity = liquidCap(e); }
+    else if (fill.unit) { v.used = fill.used; v.capacity = fill.limit; }
+    else { v.used = contentsWeight(char, e); v.capacity = it.capacityLb; }
+  }
+  if (hasFeature(it, "charges", e.srcId) && it.maxCharges) { v.charges = e.charges ?? it.maxCharges; v.maxCharges = it.maxCharges; }
+  if (isDeckEntry(e)) { v.pieces = cardsIn(char, e).length; v.piecesTotal = v.pieces + cardsOut(char, e).length; }
+  return v;
+}
+
+// Does a drawing have bindings? (Checked without the editor library.)
+function isLiveDrawing(doc) {
+  const walk = layers => (layers || []).some(l => (l.bindings || []).some(b => b.enabled !== false && (b.expression || "").trim()) || (l.type === "group" && walk(l.children)));
+  return !!doc && walk(doc.layers);
+}
+
+// Live icons on screen. Each shows the saved picture first, then is redrawn with its item's values
+// once the editor library has loaded, and again every so often if it uses the time.
+const liveIcons = new Set();
+let liveTimer = null;
+function liveDrawnIcon(doc, svgText, cls, vars) {
+  const node = drawnIcon(svgText, cls) || iconSvg("image", cls);
+  const live = { doc, cls, vars, node, born: Date.now(), seen: false, period: 0, last: 0 };
+  loadSvgLay().then(() => {
+    redrawLive(live);
+    const { documentUsesTime, normalizeDocument } = window.SvgLayTool;
+    const n = normalizedDrawing(doc, normalizeDocument);
+    if (!documentUsesTime(n)) return;
+    // Smooth hands and loops ("t", "time", "now") update often; whole hours/minutes/seconds once a second.
+    const formulas = [];
+    const walk = layers => layers.forEach(l => {
+      for (const b of l.bindings || []) if (b.enabled !== false) formulas.push(b.expression || "");
+      if (l.type === "group") walk(l.children);
+    });
+    walk(n.layers);
+    const smooth = /\b(t|time|now|dayFraction)\b/.test(formulas.join(" "));
+    live.period = smooth ? 100 : 1000;
+    liveIcons.add(live);
+    if (!liveTimer) liveTimer = setInterval(tickLiveIcons, 100);
+  }).catch(() => {});
+  return node;
+}
+
+function redrawLive(live) {
+  let values;
+  try { values = typeof live.vars === "function" ? live.vars() : live.vars || undefined; } catch { values = undefined; }
+  const next = drawnIcon(drawingSvg(live.doc, values), live.cls, { cache: false });
+  if (!next) return;
+  // Swap the picture inside the same element, so it works whether or not it's on screen yet.
+  live.node.setAttribute("viewBox", next.getAttribute("viewBox") || "0 0 256 256");
+  live.node.replaceChildren(...next.childNodes);
+  live.last = Date.now();
+}
+
+function tickLiveIcons() {
+  if (document.hidden) return;
+  const now = Date.now();
+  for (const live of liveIcons) {
+    if (live.node.isConnected) live.seen = true;
+    else if (live.seen || now - live.born > 5000) { liveIcons.delete(live); continue; } // gone, or never shown
+    if (live.seen && now - live.last >= live.period) redrawLive(live);
+  }
+  if (!liveIcons.size) { clearInterval(liveTimer); liveTimer = null; }
+}
+
+// In the editor: the values Pack Rat fills in, to add to the drawing as variables.
+function openIconVariables(editor) {
+  const { createVariable } = window.SvgLayTool;
+  let close;
+  const has = name => (editor.getDocument().variables || []).some(v => v.name === name);
+  const list = h("div", { class: "group" });
+  const draw = () => setChildren(list, ICON_VARIABLES.map(v => h("div", { class: "row" },
+    h("div", { class: "row-main static" }, h("div", { class: "row-title" }, h("code", null, v.name)), h("div", { class: "row-sub" }, v.label)),
+    has(v.name) ? h("span", { class: "tag on" }, "added")
+      : h("button", { class: "btn", type: "button", onclick: () => {
+        editor.store.commit(doc => ({ ...doc, variables: [...(doc.variables || []), createVariable({ name: v.name, value: v.value, min: v.min, max: v.max, step: v.step })] }));
+        draw();
+      } }, icon("plus"), "Add"))));
+  draw();
+  close = openModal("Pack Rat values", [
+    h("p", { class: "muted small" }, "Pack Rat fills these in for each item in an inventory. Add the ones you want, then bind layers to them in the Variables tab: e.g. a water layer's height to ", h("code", null, "fill * 180"),
+      " with its anchor at the bottom, or a coin's visibility to ", h("code", null, "worth >= 100"), ". The slider values are what the catalog and the library show."),
+    list,
+    h("p", { class: "muted small" }, "The time is always available for clocks: ", h("code", null, "hours12"), ", ", h("code", null, "minutes"), ", ", h("code", null, "seconds"), ", ",
+      h("code", null, "time"), " (seconds since midnight, for smooth hands)… e.g. an hour hand's rotation ", h("code", null, "hours12 * 30 + minutes / 2"), "."),
+  ], { wide: true });
 }
 
 // ------------------------------------------------------------------ the drawings library
@@ -2041,7 +2171,9 @@ function drawingsSection() {
       h("button", { class: "btn", onclick: newOne }, icon("plus"), "New drawing")),
     h("p", { class: "muted small" }, "Icons you've drawn. Give one to an item from its Icon (Choose…), edit one (items using it can update too), or start a new one from a copy."),
     lib.length ? h("div", { class: "drawing-grid" }, lib.map(d => h("div", { class: "drawing-tile" },
-      h("button", { class: "drawing-art", type: "button", title: `Edit “${d.name}”`, onclick: () => edit(d) }, drawnIcon(d.svg, "drawing-svg") || icon("image")),
+      h("button", { class: "drawing-art", type: "button", title: `Edit “${d.name}”`, onclick: () => edit(d) },
+        (isLiveDrawing(d.doc) ? liveDrawnIcon(d.doc, d.svg, "drawing-svg", null) : drawnIcon(d.svg, "drawing-svg")) || icon("image")),
+      isLiveDrawing(d.doc) && h("span", { class: "tag" }, "live"),
       h("b", null, d.name),
       h("small", { class: "muted" }, used(d.id) ? `Used by ${plural(used(d.id), "item")}` : "Not used yet"),
       h("div", { class: "tpl-actions" },

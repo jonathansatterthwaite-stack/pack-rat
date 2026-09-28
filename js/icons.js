@@ -155,12 +155,12 @@ function iconSvg(id, cls = "") {
 const DRAWN_ID_PREFIX = "pr-drawn-";
 const drawnIconCache = new Map();
 let drawnIconSeq = 0;
-function drawnIcon(svgText, cls = "") {
-  let clean = drawnIconCache.get(svgText);
+function drawnIcon(svgText, cls = "", { cache = true } = {}) {
+  let clean = cache ? drawnIconCache.get(svgText) : undefined;
   if (clean === undefined) {
     clean = typeof DOMPurify !== "undefined" && typeof svgText === "string"
       ? DOMPurify.sanitize(svgText, { USE_PROFILES: { svg: true, svgFilters: true } }) : "";
-    drawnIconCache.set(svgText, clean);
+    if (cache) drawnIconCache.set(svgText, clean); // live renders change every time: not cached
   }
   if (!clean) return null;
   const box = document.createElement("div");
@@ -175,9 +175,11 @@ function drawnIcon(svgText, cls = "") {
 }
 
 // Icon tinted with the item type's colour: the item's own image (a playing card's face…), else the
-// icon drawn for it, else its chosen or automatic icon.
-function itemIcon(item, cls = "") {
-  const drawn = item.iconSvg && !item.image ? drawnIcon(item.iconSvg, cls) : null;
+// icon drawn for it, else its chosen or automatic icon. vars: for a drawing with variables, a
+// function giving the values Pack Rat fills in (see entryIconVars), e.g. how full a container is.
+function itemIcon(item, cls = "", vars = null) {
+  const drawn = item.iconSvg && !item.image
+    ? (isLiveDrawing(item.iconDoc) ? liveDrawnIcon(item.iconDoc, item.iconSvg, cls, vars) : drawnIcon(item.iconSvg, cls)) : null;
   if (drawn) {
     drawn.style.color = itemColor(item);
     return drawn;

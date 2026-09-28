@@ -246,6 +246,7 @@ svg.drawn-icon { overflow: visible; }
 .drawing-art:hover { border-color: var(--accent); }
 .drawing-art .drawing-svg { width: 100%; height: 100%; }
 .drawing-tile .tpl-actions { flex-wrap: wrap; }
+.drawing-tile > .tag { align-self: flex-start; }
 .danger-link { color: var(--bad) !important; }
 .icon-grid-head { grid-column: 1 / -1; font-size: .8rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); padding: 4px 2px 0; }
 .icon-tile.drawing svg { width: 34px; height: 34px; color: var(--text); }
