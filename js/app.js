@@ -1909,7 +1909,7 @@ async function openIconDrawer(opts, onSave) {
       h("button", { class: "btn", onclick: close }, "Cancel"),
       h("button", { class: "btn primary", onclick: save }, icon("check"), opts.saveLabel || "Use this icon")),
     h("p", { class: "icon-drawer-hint muted small" },
-      "Build the icon from shapes on layers: add shapes from the library and pick a layer in the strip beside the canvas. Press and hold a shape to move it; drag its handles to resize or rotate it. Modifiers add outlines, effects and masks. Variables make it live: in the Variables tab, bind a layer to one of Pack Rat's item values (“fill” shows how full a container is) or to the time for a clock. A variable you add whose name starts with gm_ (e.g. gm_curse) is a GM value: in a party the GM sets it from the Party screen. It's drawn in one colour; the app colours it like its other icons."),
+      "Build the icon from shapes on layers: add shapes from the library and pick a layer in the strip beside the canvas. Press and hold a shape to move it; drag its handles to resize or rotate it. Modifiers add outlines, effects and masks. Variables make it live: in the Variables tab, bind a layer to one of Pack Rat's item values (“fill” shows how full a container is) or to the time for a clock. Names starting with gm_ (e.g. gm_curse) are GM values, set by the GM from the Party screen: use one in a formula, or add it as a variable to give it a default and range. The Pack Rat item list shows them. It's drawn in one colour; the app colours it like its other icons."),
     host);
   document.body.append(overlay);
   document.body.classList.add("modal-open");
@@ -1924,8 +1924,9 @@ async function openIconDrawer(opts, onSave) {
       },
       // The values Pack Rat fills in for an item: formulas can use them, and the Variables tab lists
       // them (with this copy's real values when editing one in an inventory).
-      variableGroups: [iconVariableGroup(opts.vars)],
+      variableGroups: [iconVariableGroup(opts.vars, opts.doc)],
     });
+    syncIconVariables(editor, host, opts.vars);
     // Fit the canvas once the window has its final size.
     requestAnimationFrame(() => requestAnimationFrame(() => editor?.fitToView()));
   } catch (e) {
@@ -1944,19 +1945,97 @@ function drawingSvg(doc, variables) {
     variables: { ...iconVariableDefaults(n), ...(variables || {}) } });
 }
 
-// Pack Rat's values that a drawing uses without declaring them get a default (so formulas work in
-// the catalog and the library too); a variable the drawing declares itself keeps its slider value.
-function iconVariableDefaults(doc) {
-  const declared = new Set((doc.variables || []).map(v => v.name));
-  return Object.fromEntries(ICON_VARIABLES.filter(v => !declared.has(v.name)).map(v => [v.name, v.value]));
-}
-
-// Pack Rat's values as a variable group for the editor's Variables tab.
-function iconVariableGroup(vars) {
+// The editor's app values win over a drawing's own variables of the same name. Keep them in step:
+// a value the drawing declares follows its slider unless this inventory copy has a real value for it,
+// and gm_ names added while drawing join the list. Held while a pointer is down, so redrawing the
+// Variables panel doesn't interrupt dragging a slider.
+function syncIconVariables(editor, host, vars) {
   let actual = {};
   try { actual = (typeof vars === "function" ? vars() : vars) || {}; } catch {}
-  return { id: "packrat", title: "Pack Rat item",
-    variables: ICON_VARIABLES.map(v => ({ name: v.name, label: v.label, value: v.name in actual ? actual[v.name] : v.value })) };
+  let listed = "", held = false, pending = false;
+  const sync = () => {
+    pending = false;
+    const doc = editor.getDocument();
+    const group = iconVariableGroup(vars, doc);
+    const names = group.variables.map(v => v.name).join();
+    if (names !== listed) { listed = names; editor.registerVariables(group); }
+    const follow = {};
+    for (const v of doc.variables || []) {
+      if (group.variables.some(g => g.name === v.name) && !(v.name in actual)) follow[v.name] = v.value;
+    }
+    if (Object.keys(follow).length) editor.setVariables(follow);
+  };
+  host.addEventListener("pointerdown", () => { held = true; }, true);
+  const release = () => { if (held) { held = false; if (pending) sync(); } };
+  window.addEventListener("pointerup", release, true);
+  window.addEventListener("pointercancel", release, true);
+  editor.on("change", () => { if (held) pending = true; else sync(); });
+  sync();
+}
+
+// Pack Rat's values that a drawing uses without declaring them get a default (so formulas work in
+// the catalog and the library too); a variable the drawing declares itself keeps its slider value.
+// GM values used in formulas but not declared start at 0.
+function iconVariableDefaults(doc) {
+  const declared = new Set((doc.variables || []).map(v => v.name));
+  const out = Object.fromEntries(ICON_VARIABLES.filter(v => !declared.has(v.name)).map(v => [v.name, v.value]));
+  for (const [name, spec] of drawingGmSpecs(doc)) if (!declared.has(name)) out[name] = spec.value;
+  return out;
+}
+
+// GM values (see party.gmValues) are variables named gm_…: declared in a drawing (with a slider
+// giving the default and range), or just used in its formulas (default 0, range 0–1).
+const GM_NAME_RE = /\bgm_[A-Za-z0-9_]+\b/g;
+function drawingGmSpecs(doc) {
+  const specs = new Map();
+  for (const v of doc?.variables || []) if (/^gm_[A-Za-z0-9_]+$/.test(v.name || "")) specs.set(v.name, v);
+  const walk = layers => (layers || []).forEach(l => {
+    for (const b of l.bindings || []) {
+      if (b.enabled === false) continue;
+      for (const name of (b.expression || "").match(GM_NAME_RE) || []) {
+        if (!specs.has(name)) specs.set(name, { name, value: 0, min: 0, max: 1, step: 0.01 });
+      }
+    }
+    if (l.type === "group") walk(l.children);
+  });
+  walk(doc?.layers);
+  return specs;
+}
+
+// Every GM value name Pack Rat knows of: set by the GM in the party, or used by a drawing on
+// this device (the library, custom items, characters' items).
+function knownGmNames() {
+  const names = new Set();
+  const g = party.active ? party.gm || {} : {};
+  for (const bucket of [g.party, ...Object.values(g.characters || {}), ...Object.values(g.items || {})]) {
+    for (const name of Object.keys(bucket || {})) names.add(name);
+  }
+  const docs = [...drawingLibrary().map(d => d.doc), ...store.state.customItems.map(i => i.iconDoc),
+    ...store.state.characters.flatMap(c => c.items.map(e => e.item.iconDoc))];
+  for (const doc of docs) if (doc) for (const name of drawingGmSpecs(doc).keys()) names.add(name);
+  return names;
+}
+
+// Pack Rat's values as a variable group for the editor's Variables tab: the item values, then the
+// GM values (this drawing's, and every other one Pack Rat knows of, so names stay consistent).
+// actual: the real values for the inventory copy being edited, if any. A value the drawing declares
+// itself shows its slider value (see openIconDrawer, which keeps the two in step).
+function iconVariableGroup(vars, doc) {
+  let actual = {};
+  try { actual = (typeof vars === "function" ? vars() : vars) || {}; } catch {}
+  const declared = new Map((doc?.variables || []).map(v => [v.name, v.value]));
+  const value = (name, fallback) => name in actual ? actual[name] : declared.has(name) ? declared.get(name) : fallback;
+  const gmHere = drawingGmSpecs(doc);
+  const gmNames = [...new Set([...gmHere.keys(), ...knownGmNames()])].sort();
+  const gmLabel = name => {
+    const where = name in actual ? `this item's GM value (${actual[name]})` : party.active ? "not set by the GM for this item" : "set by the GM in a party";
+    return `GM value: the GM sets it for the party, a player or an item (Party screen → GM values); ${where}.` +
+      (gmHere.has(name) ? " This drawing uses it." : " Used by other drawings.");
+  };
+  return { id: "packrat", title: "Pack Rat item", variables: [
+    ...ICON_VARIABLES.map(v => ({ name: v.name, label: v.label, value: value(v.name, v.value) })),
+    ...gmNames.map(name => ({ name, label: gmLabel(name), value: value(name, gmHere.get(name)?.value ?? 0) })),
+  ] };
 }
 
 // Stored drawings may be from an older editor version: normalise each once.

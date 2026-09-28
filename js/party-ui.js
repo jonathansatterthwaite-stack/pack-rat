@@ -275,13 +275,14 @@ function renderParty() {
 
 // ------------------------------------------------------------------ GM values
 
-// The gm_… variables of the drawn icons carried in the party: name → { spec, chars: charId → { char, items } }.
+// The gm_… variables of the drawn icons carried in the party (declared, or only used in formulas):
+// name → { spec, chars: charId → { char, items } }.
 function gmVariablesInParty() {
   const vars = new Map();
   for (const c of party.chars) {
     for (const e of c.items || []) {
-      for (const v of e.item.iconDoc?.variables || []) {
-        if (!/^gm_[A-Za-z0-9_]+$/.test(v.name || "")) continue;
+      if (!e.item.iconDoc) continue;
+      for (const v of drawingGmSpecs(e.item.iconDoc).values()) {
         let g = vars.get(v.name);
         if (!g) vars.set(v.name, g = { spec: v, chars: new Map() });
         let cg = g.chars.get(c.id);
