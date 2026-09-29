@@ -1,6 +1,12 @@
 # Planned updates
 ## System wide
-Default Adventurer character (the character generated when the app is first launched) should start with some items and settings that showcase some of the app features.
+Default Adventurer character (the character generated when the app is first launched) should start with some items and settings that showcase some of the app features:
+- A partially filled container with an image that changes based on capacity used.
+- A compass that points to a location on a map.
+- Two stacks of items that show the number of items in the image.
+- A totem that wiggles when the player is near a location.
+
+Allow GM to create treasure and/or treasure tables. Let them put loot in containers and present it to player.
 
 Move to a system agnostic spec. Create rules package system that allows rule settings to be imported, exported, edited, saved, enabled and disabled. Change DnD 5e rules into a package. Look at applying more universal terminology to app, consider allowing the rules package to include a terminology key that replaces instances of the name with the chosen name.
 
