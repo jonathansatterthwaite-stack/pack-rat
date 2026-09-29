@@ -1,12 +1,16 @@
 # Planned updates
 ## System wide
-Move to a system agnostic spec. Create rules package system that allows rule settings to be imported, exported, edited, saved, enabled and disabled. Change DnD 5e rules into a package.
+Default Adventurer character (the character generated when the app is first launched) should start with some items and settings that showcase some of the app features.
 
-Add campaign selection.
+Move to a system agnostic spec. Create rules package system that allows rule settings to be imported, exported, edited, saved, enabled and disabled. Change DnD 5e rules into a package. Look at applying more universal terminology to app, consider allowing the rules package to include a terminology key that replaces instances of the name with the chosen name.
+
+Add campaign selection. Create a campaign management screen.
 
 Add a file management view. For characters, rule packages, campaigns, SVG arrangements, etc. A place to view and manage any data that is not inherently part of the app itself.
 
 Add a mode to allow GMs to set up GM features without hosting a server. Make it so that the host and designated GM do not have to be the same user, create GM role that is independent from a character. GM role could have expanded information on players and I can hide player specific tabs/info that a GM would not need.
+
+Consider rolling custom tab into Catalog tab as a sub tab.
 
 ## Interactivity
 gm_ variables are still displayed incorrectly in the SVG editor. It shouldn't list created gm variables, only instructions on how to utilise them.
@@ -14,6 +18,12 @@ gm_ variables are still displayed incorrectly in the SVG editor. It shouldn't li
 Investigate alternative ways to handle gm_ variables:
 - Could the gm_ prefix be handled in the background without presenting this to the user for easier management
 - Think about how to incorporate this into functions, the "+ add gm variable" is a good way to label them for the app. Need a way to define a gm_ variable when binding it to a layer/group. Could use square brackets around the name.
+
+Add more GM control options:
+- Independent sliders, toggle switches, buttons, dropdowns.
+- Map these to a grid structure (with tabs) so GM can create their own control panel.
+- Current image grids should be something that can be zoomed into for more detailed control.
+- Allow features of shops to be mapped to variables, opening times, prices, available items, etc.
 
 ## Items/Catalog
 Standardise template structure. Currently, some templates seem to have built in sub categories whilst others don't amongst other inconsistencies. We should build it so that every current template could be built from fresh. When creating templates there should not be a Base Type field after standardization. Base type field can be replaced with the ability to start with a copy of an existing template.
