@@ -8,6 +8,10 @@ Standardise template structure. Currently, some templates seem to have built in 
 
 Move all instructional info to the wiki and turn the README into a concise and summarized, informatic style page that easily and quickly communicates the projects purpose and it's best features.
 
+Add campaign selection.
+
+Add a mode to allow GMs to set up GM features without hosting a server. Make it so that the host and designated GM do not have to be the same user, create GM role that is independent from a character. GM role could have expanded information on players and I can hide player specific tabs/info that a GM would not need.
+
 ## SVG tool updates
 - Update SVG tool to allow app to add use it's own library of shapes.
 - Add a feature for monochrome and grayscale shapes to use outlines as clip masks.
