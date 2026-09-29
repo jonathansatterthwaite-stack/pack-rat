@@ -37,10 +37,18 @@ Move all instructional info to the wiki and turn the README into a concise and s
 Add character emblems generated with SVG tool. Add some SVG templates for easy character creation, like this. Potential to set zones for where equipped armour icons will render onto the character. Add other template SVG's that can be used to make character look more personal: hairstyles, beards, accessories, etc. </br>
 <img src="https://cdn-icons-png.flaticon.com/512/30/30712.png" alt="Dice" width="80" height="80">
 
-## SVG tool updates (external tool)
-Update SVG tool to allow app to add use it's own library of shapes.
+Investigate more options for how to display items and options.
 
-Add a feature for monochrome and grayscale shapes to use outlines as clip masks.
+When opening details and switching to image view for an item I need to check to make sure the image is aligned and scaled correctly.
+
+## SVG tool updates (external tool)
+Update SVG tool to allow app to add use it's own library of shapes. Add options for previously created shapes to be added to a new image as a grouped layer.
+
+An option for the canvas height and width to be locked by the app. Investigate into giving the option for an app to set and lock any field in the SVG tool.
+
+Add a feature for monochrome and grayscale shapes to use outlines as clip masks. Investigate changing from monochrome mode to grayscale.
+
+Designating masks could be done using the colour field or as an aspect of it. Investigate masks that are linked to the layer they are intended to effect.
 
 Investigate if an outline can be rendered around grouped shapes, so it can omit edges and corners that clip.
 
