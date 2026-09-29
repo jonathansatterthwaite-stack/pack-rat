@@ -25,7 +25,7 @@ Move all instructional info to the wiki and turn the README into a concise and s
 Add character emblems generated with SVG tool. Add some SVG templates for easy character creation, like this. Potential to set zones for where equipped armour icons will render onto the character. Add other template SVG's that can be used to make character look more personal: hairstyles, beards, accessories, etc. </br>
 <img src="https://cdn-icons-png.flaticon.com/512/30/30712.png" alt="Dice" width="80" height="80">
 
-## SVG tool updates
+## SVG tool updates (external tool)
 Update SVG tool to allow app to add use it's own library of shapes.
 
 Add a feature for monochrome and grayscale shapes to use outlines as clip masks.
