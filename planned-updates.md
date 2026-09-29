@@ -6,6 +6,8 @@ Add character emblems generated with SVG tool. Add some SVG templates for easy c
 
 Standardise template structure. Currently, some templates seem to have built in sub categories whilst others don't amongst other inconsistencies. We should build it so that every current template could be built from fresh. When creating templates there should not be a Base Type field after standardization. Base type field can be replaced with the ability to start with a copy of an existing template.
 
+Move all instructional info to the wiki and turn the README into a concise and summarized, informatic style page that easily and quickly communicates the projects purpose and it's best features.
+
 ## SVG tool updates
 - Update SVG tool to allow app to add use it's own library of shapes.
 - Add a feature for monochrome and grayscale shapes to use outlines as clip masks.
