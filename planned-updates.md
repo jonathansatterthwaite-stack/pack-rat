@@ -18,6 +18,8 @@ Investigate alternative ways to handle gm_ variables:
 ## Items/Catalog
 Standardise template structure. Currently, some templates seem to have built in sub categories whilst others don't amongst other inconsistencies. We should build it so that every current template could be built from fresh. When creating templates there should not be a Base Type field after standardization. Base type field can be replaced with the ability to start with a copy of an existing template.
 
+Turn all images into SVG layer versions. Remove all game-icons.net versions.
+
 ## Documentation
 Move all instructional info to the wiki and turn the README into a concise and summarized, informatic style page that easily and quickly communicates the projects purpose and it's best features.
 
@@ -31,3 +33,7 @@ Update SVG tool to allow app to add use it's own library of shapes.
 Add a feature for monochrome and grayscale shapes to use outlines as clip masks.
 
 Investigate if an outline can be rendered around grouped shapes, so it can omit edges and corners that clip.
+
+Consider live images with animations. Investigate if having too many of these can cause slow down. Add a delta time variable for app animations to match in app fps and tick speed. Optimizations:
+- Limit calculations to only images that are visible, an item that is off screen does not need to animate.
+- If total calculations start to effect app speed the animation/tick speed should be throttled. This should make it so only animations slow down and not the user experience.
