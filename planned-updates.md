@@ -61,3 +61,5 @@ Investigate if an outline can be rendered around grouped shapes, so it can omit 
 Consider live images with animations. Investigate if having too many of these can cause slow down. Add a delta time variable for app animations to match in app fps and tick speed. Optimizations:
 - Limit calculations to only images that are visible, an item that is off screen does not need to animate.
 - If total calculations start to effect app speed the animation/tick speed should be throttled. This should make it so only animations slow down and not the user experience.
+
+svg animations seem to update only on release of a gm_ control. Other variables update while controls are being moved.
