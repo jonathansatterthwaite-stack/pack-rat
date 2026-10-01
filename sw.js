@@ -1,8 +1,8 @@
 // Offline support: serve the app shell from cache, refresh it in the background.
 // Bump VERSION when shipping changes so clients pick them up.
-const VERSION = "packrat-v63";
+const VERSION = "packrat-v65";
 const SHELL = [
-  "./", "index.html", "manifest.webmanifest", "css/app.css", "js/vendor/qrcode.min.js", "js/vendor/marked.min.js", "js/vendor/purify.min.js", "js/vendor/jsQR.js", "js/vendor/svg-lay-tool.js", "js/documents.js", "js/shops.js",
+  "./", "index.html", "manifest.webmanifest", "css/app.css", "js/vendor/qrcode.min.js", "js/vendor/marked.min.js", "js/vendor/purify.min.js", "js/vendor/jsQR.js", "js/vendor/svg-lay-tool.js", "js/documents.js", "js/shops.js", "js/files.js",
   "js/srd-data.js", "js/templates.js", "js/icons-data.js", "js/icons.js", "js/store.js", "js/party.js", "js/party-ui.js", "js/gm-controls.js", "js/app.js",
   "icons/icon.svg", "icons/icon-192.png", "icons/icon-512.png", "icons/maskable-512.png",
 ];

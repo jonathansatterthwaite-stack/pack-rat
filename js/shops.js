@@ -1,18 +1,19 @@
 // Shops: curated item lists with prices and (optionally) limited stock.
 //
 // Where they live:
-// - In a party: on the party host's server. The host curates; players see open shops in the
-//   party snapshot and buy through the server (coins, item and stock change together).
-// - Windows/Android app not in a party: on its own server, ready for when it hosts one.
-// - Plain web version with no server: in this browser (store.state.shops).
+// - In a party: on the party host's server. GMs curate; players see open shops in the party
+//   snapshot and buy through the server (coins, item and stock change together).
+// - Otherwise: in the campaign (store.state.shops), where a GM prepares them; they go to the
+//   party when the campaign is loaded into it.
 
 const shopStore = {
   all: [],        // manager's full list from the server
   loaded: false,
   tried: false,     // the Shops tab asked for the list at least once
 
-  server() { return party.active || !!party.app?.canManageShops; },
-  canManage() { return party.active ? !!party.info?.canManageShops : true; },
+  // In a party, shops are the host's (and GMs manage them); otherwise they're the campaign's own.
+  server() { return party.active; },
+  canManage() { return party.active ? party.isGm() : true; },
   base() { return party.active ? party.base : ""; },
 
   list() {
@@ -696,4 +697,18 @@ function discardDialog(shop, b) {
       h("input", { type: "number", min: 1, max: b.qty, value: qty, inputmode: "numeric", oninput: e => { qty = Math.max(1, Math.min(b.qty, Math.floor(+e.target.value || 1))); } })),
     h("p", { class: "muted small" }, "They're removed from the stockroom for good. The shop keeps the money it paid.")),
   { footer: [h("button", { class: "btn", onclick: () => close() }, "Cancel"), h("button", { class: "btn danger", onclick: go }, icon("trash"), "Throw out")] });
+}
+
+// The Windows and Android apps used to keep shops on their own server even outside a party. The
+// first time this version runs there, a campaign with no shops of its own takes those (once).
+async function adoptAppShops() {
+  if (party.active || !party.app?.canManageShops || readPref("packrat-app-shops-adopted", "")) return;
+  try {
+    const shops = (await apiRequest("api/shops", "GET")).shops || [];
+    writePref("packrat-app-shops-adopted", "1");
+    if (shops.length && !store.state.shops?.length) {
+      store.update(s => { s.shops = shops.map(({ rev, ...sh }) => sh); });
+      toast(`Your ${plural(shops.length, "shop")} now belong to ${store.campaign().name}`);
+    }
+  } catch {}
 }

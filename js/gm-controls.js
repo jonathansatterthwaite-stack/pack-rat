@@ -12,9 +12,29 @@ const PIN_COLORS = ["#c0392b", "#2e86de", "#27ae60", "#e67e22", "#8e44ad", "#16a
 
 const gmControls = () => store.state.gmControls || [];
 
+// ------------------------------------------------------------------ who's the GM, and where GM values go
+// A device is the GM in a party when the host has made it one (party.isGm); outside a party when
+// it's set to the GM role (Settings), to prepare: then GM values are the campaign's presets, which
+// go to the party when the campaign is loaded into one.
+
+const isGmDevice = () => party.active ? party.isGm() : ui.role === "gm";
+const gmValuesNow = () => party.active ? party.gm || {} : store.state.gmValues || {};
+
+async function setGmValue(scope, target, name, value) {
+  if (party.active) return party.setGm(scope, target, name, value);
+  store.update(s => { s.gmValues = putGmValue(s.gmValues || {}, scope, target, name, value); });
+}
+
+// The GM values that apply to an item: in a party the host's, else this campaign's presets.
+function gmValuesFor(charId, entryUid) {
+  if (party.active) return party.gmValues(charId, entryUid);
+  const g = store.state?.gmValues || {};
+  return { ...(g.party || {}), ...(g.characters?.[charId] || {}), ...(g.items?.[`${charId}/${entryUid}`] || {}) };
+}
+
 // A GM value where a pin applies: that level's own, else the levels above it (as items see them).
 function gmValueAt(scope, target, name) {
-  const g = party.gm || {};
+  const g = gmValuesNow();
   const charId = scope === "item" ? target.split("/")[0] : target;
   for (const level of [scope === "item" && g.items?.[target], scope !== "party" && g.characters?.[charId], g.party]) {
     if (level && name in level) return level[name];
@@ -44,6 +64,20 @@ function pinValues(pin) {
     const v = gmValueAt(pin.scope, pin.target, n);
     return `${n} = ${v === undefined ? "not set" : v}`;
   }).join(" · ");
+}
+
+// ------------------------------------------------------------------ the GM tab: Players · GM values
+// In a party: the players (gmPlayersView) and the GM values with their controls. Preparing outside
+// one: the campaign's starting GM values and controls.
+
+const GM_TABS = [["players", "Players"], ["values", "GM values"]];
+
+function renderGm() {
+  const tabs = party.active ? GM_TABS : GM_TABS.filter(([k]) => k !== "players");
+  const tab = tabs.some(([k]) => k === ui.gmTab) ? ui.gmTab : tabs[0][0];
+  return h("div", { class: "view-gm view-party" },
+    tabs.length > 1 && subTabs("GM", tabs, tab, k => { ui.gmTab = k; render(); }),
+    tab === "players" ? gmPlayersView() : gmValuesView());
 }
 
 // ------------------------------------------------------------------ the Controls section (GM values tab)
@@ -106,8 +140,8 @@ function gmPin(board, pin) {
     timer = null;
     last = Date.now();
     const sets = [];
-    if (pin.xVar) sets.push(party.setGm(pin.scope, pin.target, pin.xVar, axisValue(x, pin.xRange)));
-    if (pin.yVar) sets.push(party.setGm(pin.scope, pin.target, pin.yVar, axisValue(y, pin.yRange)));
+    if (pin.xVar) sets.push(setGmValue(pin.scope, pin.target, pin.xVar, axisValue(x, pin.xRange)));
+    if (pin.yVar) sets.push(setGmValue(pin.scope, pin.target, pin.yVar, axisValue(y, pin.yRange)));
     return Promise.all(sets).catch(e => toast(e.message));
   };
   const soon = () => { if (!timer) timer = setTimeout(send, Math.max(0, 150 - (Date.now() - last))); };

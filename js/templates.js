@@ -194,7 +194,7 @@ const GROUP_BY_ID = Object.fromEntries(TYPE_GROUPS.map(g => [g.id, g]));
 const GROUP_OF = Object.fromEntries(TYPE_GROUPS.flatMap(g => g.types.map(t => [t, g.id])));
 const groupOf = type => GROUP_BY_ID[GROUP_OF[type]] || GROUP_BY_ID.gear;
 
-// A hue chosen in the app (Custom → Templates → Colour), else the group's default.
+// A hue chosen in the app (Catalog → Templates → Colour), else the group's default.
 function groupHue(groupId) {
   const chosen = typeof store !== "undefined" ? store.state?.settings?.groupHues?.[groupId] : undefined;
   return chosen ?? GROUP_BY_ID[groupId]?.hue ?? 0;

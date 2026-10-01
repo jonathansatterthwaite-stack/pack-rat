@@ -1,6 +1,6 @@
 // State, persistence and game-rule calculations.
 
-const STORAGE_KEY = "rpg-inventory-v1";
+const STORAGE_KEY = "rpg-inventory-v1"; // the old single bundle: read once to make the first campaign (see DATA_KEY)
 const COIN_VALUES = { pp: 1000, gp: 100, ep: 50, sp: 10, cp: 1 };
 const COIN_ORDER = ["pp", "gp", "ep", "sp", "cp"];
 
@@ -116,39 +116,39 @@ async function moveBrowserDataToPc() {
     if (localStorage.getItem(MOVED_FLAG)) return;
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
-      if (k === STORAGE_KEY || k.startsWith("packrat-")) keys.push(k);
+      if (k === STORAGE_KEY || k.startsWith("packrat-")) keys.push(k); // (DATA_KEY starts with packrat- too)
     }
   } catch {
     return; // no browser storage to move
   }
+  // This browser's data (either format) is merged into the PC's, which is upgraded first if it's
+  // still in the old format. The old key itself is copied as it was, as a backup.
+  const parse = raw => { try { return raw ? JSON.parse(raw) : null; } catch { return null; } };
+  const asData = (v2, v1) => v2 ? normalizeData(v2) : v1 ? migrateV1(v1) : null;
+  const mine = asData(parse(localStorage.getItem(DATA_KEY)), parse(localStorage.getItem(STORAGE_KEY)));
   let moved = 0;
-  for (const k of keys) {
-    const value = localStorage.getItem(k);
-    if (k === STORAGE_KEY) {
-      const theirs = kv.get(STORAGE_KEY);
-      const mine = JSON.parse(value);
-      if (!theirs) {
-        mine.characters = (mine.characters || []).filter(c => !isBlankCharacter(c) || mine.characters.length === 1);
-        kv.set(k, JSON.stringify(mine));
-        moved += mine.characters.filter(c => !isBlankCharacter(c)).length;
-      } else {
-        const base = JSON.parse(theirs);
-        const addById = (list, extra) => {
-          for (const x of extra || []) if (!list.some(y => y.id === x.id)) { list.push(x); moved++; }
-        };
-        addById(base.characters, (mine.characters || []).filter(c => !isBlankCharacter(c)));
-        addById(base.customItems = base.customItems || [], mine.customItems);
-        addById(base.templates = base.templates || [], mine.templates);
-        addById(base.iconLibrary = base.iconLibrary || [], mine.iconLibrary);
-        addById(base.gmControls = base.gmControls || [], mine.gmControls);
-        // A blank starter character is no longer needed once real ones arrive.
-        if (base.characters.length > 1) base.characters = base.characters.filter(c => !isBlankCharacter(c));
-        if (!base.characters.some(c => c.id === base.activeId)) base.activeId = base.characters[0]?.id;
-        kv.set(k, JSON.stringify(base));
+  if (mine) {
+    const theirs = asData(parse(kv.get(DATA_KEY)), parse(kv.get(STORAGE_KEY)));
+    let merged;
+    if (!theirs) {
+      merged = mine;
+      moved = mine.campaigns.reduce((n, c) => n + c.characters.filter(x => !isBlankCharacter(x)).length, 0);
+    } else {
+      // Old-format browser data has no campaigns of its own: it joins the PC's current campaign
+      // and that campaign's home package, rather than arriving as a second "My campaign".
+      if (!localStorage.getItem(DATA_KEY)) {
+        const camp = theirs.campaigns.find(c => c.id === theirs.activeCampaign) || theirs.campaigns[0];
+        mine.campaigns[0].id = camp.id;
+        if (camp.home) mine.packages[0].id = camp.home;
       }
-    } else if (kv.get(k) == null) {
-      kv.set(k, value); // preferences and party identity, unless the PC already has its own
+      moved = mergeData(theirs, mine);
+      merged = theirs;
     }
+    kv.set(DATA_KEY, JSON.stringify(merged));
+  }
+  for (const k of keys) {
+    if (k === DATA_KEY) continue;
+    if (kv.get(k) == null) kv.set(k, localStorage.getItem(k)); // preferences, party identity, the old data as a backup
   }
   await moveBrowserImagesToPc();
   await kv.flush();
@@ -163,44 +163,150 @@ function newCharacter(name) {
   };
 }
 
-function defaultState() {
+// ------------------------------------------------------------------ campaigns and rule packages
+//
+// Everything saved (DATA_KEY):
+//   { version: 2, activeCampaign, campaigns: [campaign], packages: [package], iconLibrary: [drawing] }
+// A campaign is one game: its characters, shops, the GM's controls and preset GM values, and its
+// rules settings. Rule packages (custom items and templates) and the drawings library are shared;
+// each campaign picks the packages it uses, and new custom items go into its home package.
+// The old single bundle (STORAGE_KEY) is read once to make the first campaign and left as it was.
+
+const DATA_KEY = "packrat-data-v2";
+
+function newCampaign(name = "My campaign", packages = []) {
   const c = newCharacter("Adventurer");
-  return {
-    version: 1,
-    characters: [c],
-    activeId: c.id,
-    customItems: [],
-    iconLibrary: [], // drawn icons: { id, name, doc, svg, updated } (see the Drawings section of the Custom tab)
-    gmControls: [], // the GM's boards with pins for setting GM values (see gm-controls.js)
-    templates: STARTER_TEMPLATES.map(t => ({ ...t })),
-    settings: { encumbrance: "standard", coinWeight: true },
+  return { id: "cmp" + uid(), name, notes: "", created: Date.now(), packages, home: packages[0] || null,
+    settings: { encumbrance: "standard", coinWeight: true }, characters: [c], activeId: c.id,
+    shops: [], gmControls: [], gmValues: {} };
+}
+
+function newPackage(name = "My homebrew") {
+  return { id: "pkg" + uid(), name, notes: "", customItems: [], templates: [] };
+}
+
+function defaultData() {
+  const pkg = newPackage();
+  pkg.templates = STARTER_TEMPLATES.map(t => ({ ...t }));
+  const camp = newCampaign("My campaign", [pkg.id]);
+  return { version: 2, activeCampaign: camp.id, campaigns: [camp], packages: [pkg], iconLibrary: [] };
+}
+
+// The old single bundle -> one campaign and one package (nothing dropped).
+function migrateV1(old, name = "My campaign", pkgName = "My homebrew") {
+  const pkg = newPackage(pkgName);
+  pkg.customItems = old.customItems || [];
+  pkg.templates = old.templates || [];
+  const camp = newCampaign(name, [pkg.id]);
+  Object.assign(camp, {
+    settings: { encumbrance: "standard", coinWeight: true, ...(old.settings || {}) },
+    characters: old.characters?.length ? old.characters : camp.characters,
+    activeId: old.activeId, shops: old.shops || [], gmControls: old.gmControls || [],
+  });
+  return normalizeData({ version: 2, activeCampaign: camp.id, campaigns: [camp], packages: [pkg], iconLibrary: old.iconLibrary || [] });
+}
+
+// Fill in anything missing (older saves, imports, hand edits), so the rest of the app can rely on it.
+function normalizeData(d) {
+  d = d && typeof d === "object" ? d : {};
+  d.version = 2;
+  if (!Array.isArray(d.packages)) d.packages = [];
+  if (!Array.isArray(d.iconLibrary)) d.iconLibrary = [];
+  for (const p of d.packages) {
+    p.customItems = Array.isArray(p.customItems) ? p.customItems : [];
+    p.templates = Array.isArray(p.templates) ? p.templates : [];
+    p.name = p.name || "Rule package";
+  }
+  if (!Array.isArray(d.campaigns) || !d.campaigns.length) d.campaigns = [newCampaign("My campaign", d.packages.map(p => p.id))];
+  for (const c of d.campaigns) {
+    c.id = c.id || "cmp" + uid();
+    c.name = c.name || "Campaign";
+    c.settings = { encumbrance: "standard", coinWeight: true, ...(c.settings || {}) };
+    for (const k of ["characters", "shops", "gmControls"]) if (!Array.isArray(c[k])) c[k] = [];
+    if (!c.characters.length) c.characters.push(newCharacter("Adventurer"));
+    if (!c.characters.some(x => x.id === c.activeId)) c.activeId = c.characters[0].id;
+    if (!c.gmValues || typeof c.gmValues !== "object") c.gmValues = {};
+    c.packages = (Array.isArray(c.packages) ? c.packages : []).filter(id => d.packages.some(p => p.id === id));
+    if (!c.packages.includes(c.home)) c.home = c.packages[0] || null;
+  }
+  if (!d.campaigns.some(c => c.id === d.activeCampaign)) d.activeCampaign = d.campaigns[0].id;
+  return d;
+}
+
+// Merge another device's data into ours: campaigns, their characters, packages and drawings by id.
+// Returns how many characters and items came across.
+function mergeData(base, extra) {
+  let added = 0;
+  const addById = (list, more, count = true) => {
+    for (const x of more || []) if (!list.some(y => y.id === x.id)) { list.push(x); if (count) added++; }
   };
+  for (const c of extra.campaigns) {
+    const same = base.campaigns.find(x => x.id === c.id);
+    if (!same) { base.campaigns.push(c); added += c.characters.filter(x => !isBlankCharacter(x)).length; continue; }
+    addById(same.characters, c.characters.filter(x => !isBlankCharacter(x)));
+    addById(same.shops, c.shops, false);
+    addById(same.gmControls, c.gmControls, false);
+    // A blank starter character is no longer needed once real ones arrive.
+    if (same.characters.length > 1) same.characters = same.characters.filter(x => !isBlankCharacter(x));
+    if (!same.characters.some(x => x.id === same.activeId)) same.activeId = same.characters[0]?.id;
+  }
+  for (const p of extra.packages) {
+    const same = base.packages.find(x => x.id === p.id);
+    if (!same) { base.packages.push(p); added += p.customItems.length; continue; }
+    addById(same.customItems, p.customItems);
+    addById(same.templates, p.templates, false);
+  }
+  addById(base.iconLibrary, extra.iconLibrary, false);
+  normalizeData(base);
+  return added;
+}
+
+// store.state: the active campaign seen as one flat object, the way the app has always used it
+// (characters, activeId, shops, gmControls, gmValues and settings are the campaign's; customItems
+// and templates its home package's; iconLibrary the shared library's). Reading and assigning go
+// straight through to the saved data, so `s.characters = s.characters.filter(…)` just works.
+function campaignView() {
+  const view = {};
+  const pass = (key, owner) => Object.defineProperty(view, key, {
+    enumerable: true, get: () => owner()[key], set: v => { owner()[key] = v; } });
+  for (const k of ["characters", "activeId", "shops", "gmControls", "gmValues", "settings"]) pass(k, () => store.campaign());
+  for (const k of ["customItems", "templates"]) pass(k, () => store.homePackage());
+  pass("iconLibrary", () => store.data);
+  return view;
 }
 
 const store = {
-  state: null,
+  data: null,    // everything saved (see above)
+  state: null,   // the active campaign's view of it (campaignView)
   listeners: [],
 
   load() {
+    let data = null;
+    const raw = kv.get(DATA_KEY);
     try {
-      const raw = kv.get(STORAGE_KEY);
-      this.state = raw ? JSON.parse(raw) : defaultState();
+      data = raw ? JSON.parse(raw) : null;
     } catch (e) {
-      console.warn("Could not load saved data", e);
-      this.state = defaultState();
+      console.warn("Could not read saved data; keeping a copy and starting again", e);
+      kv.set(DATA_KEY + "-unreadable", raw);
     }
-    if (!this.state.characters.length) this.state.characters.push(newCharacter());
-    if (!Array.isArray(this.state.iconLibrary)) this.state.iconLibrary = [];
-    if (!Array.isArray(this.state.gmControls)) this.state.gmControls = [];
-    if (!this.char()) this.state.activeId = this.state.characters[0].id;
-
+    if (!data) {
+      let old = null;
+      try { old = JSON.parse(kv.get(STORAGE_KEY) || "null"); } catch {}
+      data = old ? migrateV1(old) : defaultData();
+      this.data = normalizeData(data);
+      this.state = this.state || campaignView();
+      this.save();
+    } else {
+      this.data = normalizeData(data);
+      this.state = this.state || campaignView();
+    }
     // The characters are always this device's own. In a party, the linked ones are also kept
     // in step with the host (party.link / party.sync).
-    if (reclassifyAll({ characters: this.state.characters, shops: this.state.shops })) this.save();
+    if (reclassifyAll({ characters: this.data.campaigns.flatMap(c => c.characters), shops: this.data.campaigns.flatMap(c => c.shops) })) this.save();
   },
 
   save() {
-    kv.set(STORAGE_KEY, JSON.stringify(this.state));
+    kv.set(DATA_KEY, JSON.stringify(this.data));
     party.sync(this.state.characters);
   },
 
@@ -213,18 +319,50 @@ const store = {
 
   subscribe(fn) { this.listeners.push(fn); },
 
+  // ---- campaigns
+  campaigns() { return this.data.campaigns; },
+  campaign() { return this.data.campaigns.find(c => c.id === this.data.activeCampaign) || this.data.campaigns[0]; },
+
+  // ---- rule packages
+  packages() { return this.data.packages; },
+  // The packages the active campaign uses, and the one its new custom items and templates go into
+  // (made if it has none).
+  enabledPackages() { const ids = this.campaign().packages; return this.data.packages.filter(p => ids.includes(p.id)); },
+  homePackage() {
+    const camp = this.campaign();
+    let pkg = this.data.packages.find(p => p.id === camp.home);
+    if (!pkg) {
+      pkg = this.enabledPackages()[0];
+      if (!pkg) { pkg = newPackage(`${camp.name} homebrew`); this.data.packages.push(pkg); camp.packages.push(pkg.id); }
+      camp.home = pkg.id;
+    }
+    return pkg;
+  },
+  // Custom items: the ones this campaign uses, or every package's (to find one an item came from).
+  customItems() { return this.enabledPackages().flatMap(p => p.customItems); },
+  allCustomItems() { return this.data.packages.flatMap(p => p.customItems); },
+  findCustom(id) { return this.allCustomItems().find(i => i.id === id); },
+  packageOf(itemId) { return this.data.packages.find(p => p.customItems.some(i => i.id === itemId)); },
+  templatePackage(tplId) { return this.data.packages.find(p => p.templates.some(t => t.id === tplId)); },
+
   // The active character; if it's gone (deleted, e.g. in another window), the first one.
   char() { return this.state.characters.find(c => c.id === this.state.activeId) || this.state.characters[0]; },
 
-  catalog() { return [...this.state.customItems, ...SRD_ITEMS]; },
+  catalog() { return [...this.customItems(), ...SRD_ITEMS]; },
 
-  findItem(id) { return this.state.customItems.find(i => i.id === id) || SRD_BY_ID.get(id); },
+  findItem(id) { return this.findCustom(id) || SRD_BY_ID.get(id); },
 
-  templates() { return [...BUILTIN_TEMPLATES.filter(t => !t.hidden), ...this.state.templates]; },
+  // Templates for new items: the built-in ones and those of the packages in use. Any package's
+  // template is still found by id, so items made with one keep their fields.
+  templates() { return [...BUILTIN_TEMPLATES.filter(t => !t.hidden), ...this.enabledPackages().flatMap(p => p.templates)]; },
+  allTemplates() { return this.data.packages.flatMap(p => p.templates); },
 
   template(id) {
-    return this.state.templates.find(t => t.id === id) || BUILTIN_TEMPLATES.find(t => t.id === id);
+    return this.allTemplates().find(t => t.id === id) || BUILTIN_TEMPLATES.find(t => t.id === id);
   },
+
+  // Start again: one empty campaign (the drawings library and rule packages go too).
+  reset() { this.data = defaultData(); },
 };
 
 const SRD_BY_ID = new Map(SRD_ITEMS.map(i => [i.id, i]));
@@ -399,7 +537,7 @@ const PACK_PLACES = [["holder", "Holds the rest"], ["in", "Inside"], ["strap", "
 
 // Items named in a pack: the player's custom items first, then the catalog.
 function findItemByName(name) {
-  return store.state?.customItems.find(i => i.name === name) || SRD_BY_NAME.get(name) || null;
+  return store.data && store.customItems().find(i => i.name === name) || SRD_BY_NAME.get(name) || null;
 }
 
 // The rows to unpack, each with its item and place filled in.

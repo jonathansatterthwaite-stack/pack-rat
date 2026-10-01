@@ -15,6 +15,7 @@ server while the player chooses to host a party.
 """
 import base64
 import copy
+import hashlib
 import json
 import math
 import os
@@ -104,8 +105,30 @@ def party_enabled():
 
 # ------------------------------------------------------------------ persistence
 
+# Each campaign the GM loads has its own party save (party-data/campaigns/<id>.json); the file
+# active-campaign says which is current. party.json is the party from before campaigns.
+CAMPAIGN_ID = re.compile(r"^[A-Za-z0-9_-]{1,60}$")
+HOST_LEVEL = ("partyId", "gms", "devices")  # the host's, whatever the campaign
+
+
+def campaign_file(cid):
+    return os.path.join(DATA_DIR, "campaigns", f"{cid}.json")
+
+
+def pointer_file():
+    return os.path.join(DATA_DIR, "active-campaign")
+
+
 def load():
-    global state
+    global state, DATA_FILE
+    DATA_FILE = os.path.join(DATA_DIR, "party.json")
+    try:
+        with open(pointer_file(), encoding="utf8") as f:
+            cid = f.read().strip()
+        if CAMPAIGN_ID.match(cid) and os.path.exists(campaign_file(cid)):
+            DATA_FILE = campaign_file(cid)
+    except OSError:
+        pass
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, encoding="utf8") as f:
             state = json.load(f)
@@ -119,11 +142,67 @@ def load():
 
 
 def save():
-    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
     tmp = DATA_FILE + ".tmp"
     with open(tmp, "w", encoding="utf8") as f:
         json.dump(state, f, ensure_ascii=False)
     os.replace(tmp, DATA_FILE)
+
+
+def clean_gm_values(raw):
+    """GM values sent by a GM's campaign: {party: {name: n}, characters: {id: {…}}, items: {"id/uid": {…}}}."""
+    def bucket(b):
+        return {k: v for k, v in (b or {}).items() if isinstance(k, str) and GM_NAME.match(k)
+                and isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and abs(v) <= 1e9} \
+            if isinstance(b, dict) else {}
+    raw = raw if isinstance(raw, dict) else {}
+    out = {"party": bucket(raw.get("party"))}
+    for group in ("characters", "items"):
+        g = raw.get(group) if isinstance(raw.get(group), dict) else {}
+        out[group] = {str(t)[:200]: bucket(b) for t, b in list(g.items())[:2000] if bucket(b)}
+    return out
+
+
+def switch_campaign(cid, name, shops, gm_values):
+    """Call with `cond` held. Saves the current campaign's party and makes `cid` current: its own
+    save if it has one, else a fresh party with the GM's shops and GM values. The first campaign
+    loaded takes over a party from before campaigns (party.json is left as it was, as a backup)."""
+    global state, DATA_FILE
+    current = state.get("campaign") or {}
+    host_level = {k: state[k] for k in HOST_LEVEL if k in state}
+    if current.get("id") == cid:
+        state["campaign"] = {"id": cid, "name": name}
+        save()
+        return
+    save()
+    target = campaign_file(cid)
+    if os.path.exists(target):
+        with open(target, encoding="utf8") as f:
+            new = json.load(f)
+    elif not current and (state["characters"] or state.get("shops") or state.get("gm")):
+        # Taking over the party from before campaigns: it keeps what it has, and gains the GM's
+        # shops (ones it hasn't got) and GM values (where it has none of its own).
+        new = state
+        have = {sh.get("id") for sh in new.setdefault("shops", [])}
+        new["shops"] += [sh for sh in shops if sh["id"] not in have]
+        old_gm = new.get("gm") or {}
+        new["gm"] = {"party": {**gm_values.get("party", {}), **(old_gm.get("party") or {})}}
+        for group in ("characters", "items"):
+            merged = {t: dict(b) for t, b in gm_values.get(group, {}).items()}
+            for t, b in (old_gm.get(group) or {}).items():
+                merged[t] = {**merged.get(t, {}), **b}
+            new["gm"][group] = merged
+    else:
+        new = {"characters": {}, "trades": [], "shops": shops, "gm": gm_values}
+    new.update(host_level)
+    new["campaign"] = {"id": cid, "name": name}
+    for k, v in (("characters", {}), ("trades", []), ("shops", []), ("gm", {})):
+        new.setdefault(k, v)
+    state = new
+    DATA_FILE = target
+    save()
+    with open(pointer_file(), "w", encoding="utf8") as f:
+        f.write(cid)
 
 
 def changed(persist=True):
@@ -149,14 +228,45 @@ def public_char(c, token):
     return out
 
 
-def snapshot(token):
+# ------------------------------------------------------------------ roles
+# The host (the device running the party) can stop it, choose GMs and remove players. GMs run the
+# game: shops, GM values, the players' details. Until the host makes some device a GM, the host is.
+# Devices are known by their player token; other devices only ever see a hash of it.
+
+def role_of(token, host):
+    gms = state.get("gms") or []
+    if token and token in gms:
+        return "gm"
+    return "gm" if host and not gms else "player"
+
+
+def device_id(token):
+    return hashlib.sha256(("packrat-device:" + token).encode()).hexdigest()[:16]
+
+
+def device_list(me):
+    """The devices in the party, for the host: names, who's online, what they play, GM or not."""
+    chars = state["characters"].values()
+    names = state.get("devices") or {}
+    gms = state.get("gms") or []
+    tokens = list(dict.fromkeys([*names, *(c["owner"] for c in chars), *gms]))
+    return [{"id": device_id(t), "name": (names.get(t) or {}).get("name") or "Unnamed device",
+             "online": online.get(t, 0) > 0, "characters": [c["name"] for c in chars if c["owner"] == t],
+             "gm": t in gms, "self": t == me} for t in tokens if t]
+
+
+def snapshot(token, host=False):
     chars = state["characters"]
     mine = {cid for cid, c in chars.items() if c["owner"] == token}
     trades = [dict(t, fromMine=t["from"] in mine, toMine=t["to"] in mine)
               for t in state["trades"] if t["from"] in mine or t["to"] in mine]
-    return {"characters": [public_char(c, token) for c in chars.values()], "trades": trades,
+    snap = {"characters": [public_char(c, token) for c in chars.values()], "trades": trades,
             "shops": [public_shop(sh) for sh in state.get("shops", []) if sh.get("open")],
-            "gm": state.get("gm") or {}}
+            "gm": state.get("gm") or {}, "role": role_of(token, host), "isHost": host,
+            "campaign": state.get("campaign")}
+    if host:
+        snap["devices"] = device_list(token)
+    return snap
 
 
 _own_ips = {"at": 0, "ips": set()}
@@ -625,6 +735,10 @@ class Handler(SimpleHTTPRequestHandler):
         """Request from the computer running this server (the host curates shops)."""
         return self.client_address[0] in own_ips()
 
+    def is_gm(self, token):
+        """The GM role (see role_of): runs shops and GM values."""
+        return role_of(token, self.is_host_pc()) == "gm"
+
     def is_app(self):
         """Request from this PC (the app's window, or a browser on it) rather than another player's device."""
         return DESKTOP and self.client_address[0] in own_ips()
@@ -643,8 +757,12 @@ class Handler(SimpleHTTPRequestHandler):
                     "defaultPort": lan_port or DEFAULT_LAN_PORT}
         if parts[:1] == ["shops"]:
             return self.shops_api(method, parts[1:], token)
+        if parts == ["gm-role"]:
+            return self.gm_role_api(method, token)
+        if parts == ["campaign"]:
+            return self.campaign_api(method, token)
         if parts[:1] == ["gm"]:
-            return self.gm_api(method, parts[1:])
+            return self.gm_api(method, parts[1:], token)
         if parts[:1] == ["local"]:
             if not (self.is_app() and LOCAL_DIR):
                 raise ApiError(403, "Only Pack Rat on this PC can do that")
@@ -686,7 +804,7 @@ class Handler(SimpleHTTPRequestHandler):
             return self.events(token)
         if method == "GET" and parts == ["state"]:
             with cond:
-                return snapshot(token)
+                return snapshot(token, self.is_host_pc())
         if method == "POST" and parts == ["leave"]:
             # Leave party: close this player's live connection now, so they show as away at once.
             with cond:
@@ -808,9 +926,16 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
         self.close_connection = True
+        host = self.is_host_pc()
+        name = (parse_qs(urlparse(self.path).query).get("device") or [""])[0].strip()[:40]
         with cond:
             online[token] = online.get(token, 0) + 1
-            changed(persist=False)
+            devices = state.setdefault("devices", {})
+            if name and (devices.get(token) or {}).get("name") != name:
+                devices[token] = {"name": name}
+                changed()
+            else:
+                changed(persist=False)
         last = -1
         try:
             while True:
@@ -824,7 +949,7 @@ class Handler(SimpleHTTPRequestHandler):
                     data = None
                     if version != last:
                         last = version
-                        data = json.dumps(snapshot(token), ensure_ascii=False)
+                        data = json.dumps(snapshot(token, host), ensure_ascii=False)
                 self.wfile.write(f"event: state\ndata: {data}\n\n".encode("utf8") if data else b": ping\n\n")
                 self.wfile.flush()
         except OSError:
@@ -851,7 +976,7 @@ class Handler(SimpleHTTPRequestHandler):
         POST   /api/shops/<id>/backroom {bid, action: shelve|discard, qty, price}  host: manage the stockroom
         POST   /api/shops/<id>/receive {srcId, item, qty}  host selling a solo character's item
         """
-        host = self.is_host_pc()
+        host = self.is_gm(token)  # "host" below: whoever runs the shops (a GM)
         body = self.body() if method in ("POST", "PUT") else {}
         with cond:
             shops = state.setdefault("shops", [])
@@ -1029,7 +1154,7 @@ class Handler(SimpleHTTPRequestHandler):
         PUT  /api/local {set: {key: value or null}, client}  (per-key, last write wins)
         GET/POST /api/local/images... -> this PC's document images"""
         if parts[:1] == ["images"]:
-            return self.images(method, parts, os.path.join(LOCAL_DIR, "images"))
+            return self.images(method, parts, os.path.join(LOCAL_DIR, "images"), own=True)
         if method == "GET" and not parts:
             with cond:
                 return {"rev": local["rev"], "data": local["data"]}
@@ -1051,7 +1176,54 @@ class Handler(SimpleHTTPRequestHandler):
                 return {"rev": local["rev"]}
         raise ApiError(404, "Unknown endpoint")
 
-    def gm_api(self, method, parts):
+    def campaign_api(self, method, token):
+        """POST /api/campaign {id, name, shops, gmValues}: a GM loads one of their campaigns into the
+        party (see switch_campaign). Shops and GM values seed a campaign the party hasn't played yet."""
+        if method != "POST":
+            raise ApiError(404, "Unknown endpoint")
+        if not party_enabled():
+            raise ApiError(404, "No party is being hosted")
+        if not self.is_gm(token):
+            raise ApiError(403, "Only a GM can choose the campaign")
+        body = self.body()
+        cid, name = str(body.get("id") or ""), str(body.get("name") or "").strip()[:80] or "Campaign"
+        if not CAMPAIGN_ID.match(cid):
+            raise ApiError(400, "Not a campaign")
+        shops = []
+        for raw in (body.get("shops") or [])[:100]:
+            shop = clean_shop(raw)
+            shop["id"] = str((raw or {}).get("id") or new_id("s"))[:40]
+            shop["rev"] = 1
+            shop["backroom"] = []
+            shops.append(shop)
+        with cond:
+            switch_campaign(cid, name, shops, clean_gm_values(body.get("gmValues")))
+            changed(persist=False)
+        print(f"  * The GM loaded the campaign {name}")
+        return {"ok": True}
+
+    def gm_role_api(self, method, token):
+        """POST /api/gm-role {device, gm}: the host makes a device a GM (gm true) or not. device is the
+        id from the host's device list. With no GMs, the host is the GM."""
+        if method != "POST":
+            raise ApiError(404, "Unknown endpoint")
+        if not self.is_host_pc():
+            raise ApiError(403, "Only the host can choose GMs")
+        body = self.body()
+        with cond:
+            target = next((t for t in [*(state.get("devices") or {}), *(c["owner"] for c in state["characters"].values()),
+                                       *(state.get("gms") or [])] if t and device_id(t) == body.get("device")), None)
+            if not target:
+                raise ApiError(404, "No such device")
+            gms = state.setdefault("gms", [])
+            if body.get("gm") and target not in gms:
+                gms.append(target)
+            elif not body.get("gm") and target in gms:
+                gms.remove(target)
+            changed()
+        return {"ok": True}
+
+    def gm_api(self, method, parts, token):
         """GM values: numbers the host (the GM) sets for drawn icons' `gm_…` variables, for the whole
         party, one character or one item. Items use the most specific value set; every player gets
         them in the state snapshot. Stored as {"party": {name: v}, "characters": {charId: {…}},
@@ -1062,8 +1234,8 @@ class Handler(SimpleHTTPRequestHandler):
         """
         if method != "POST" or parts:
             raise ApiError(404, "Unknown endpoint")
-        if not self.is_host_pc():
-            raise ApiError(403, "Only the GM (the host) can set GM values")
+        if not self.is_gm(token):
+            raise ApiError(403, "Only a GM can set GM values")
         body = self.body()
         scope, target, name, value = body.get("scope"), str(body.get("target") or ""), body.get("name"), body.get("value")
         if scope not in ("party", "character", "item") or not isinstance(name, str) \
@@ -1088,7 +1260,7 @@ class Handler(SimpleHTTPRequestHandler):
             changed()
         return {"ok": True}
 
-    def images(self, method, parts, folder):
+    def images(self, method, parts, folder, own=False):
         """Document images: the party's (party-data/images) or this PC's own (my-data/images)."""
         if method == "POST" and len(parts) == 1:
             body = self.body()
@@ -1124,6 +1296,22 @@ class Handler(SimpleHTTPRequestHandler):
                     self.wfile.write(raw)
                     return None
             raise ApiError(404, "No such image")
+        # This PC's own pictures can also be listed and deleted (Settings → Files); the party's can't.
+        if own and method == "GET" and len(parts) == 1:
+            out = []
+            if os.path.isdir(folder):
+                for name in sorted(os.listdir(folder)):
+                    image_id, _, ext = name.partition(".")
+                    if re.fullmatch(r"[a-z0-9]{6,40}", image_id) and ext in IMAGE_TYPES.values():
+                        out.append({"id": image_id, "bytes": os.path.getsize(os.path.join(folder, name))})
+            return {"images": out}
+        if own and method == "DELETE" and len(parts) == 2 and re.fullmatch(r"[a-z0-9]{6,40}", parts[1]):
+            with cond:
+                for ext in IMAGE_TYPES.values():
+                    path = os.path.join(folder, f"{parts[1]}.{ext}")
+                    if os.path.exists(path):
+                        os.remove(path)
+            return {"ok": True}
         raise ApiError(404, "Unknown endpoint")
 
     def presence_stream(self):

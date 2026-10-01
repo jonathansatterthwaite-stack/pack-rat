@@ -62,6 +62,34 @@ const imageStore = {
     }
   },
 
+  // Every picture saved on this device: [{ id, bytes }].
+  async list() {
+    if (kv.remote) {
+      try {
+        const res = await fetch("api/local/images", { cache: "no-store" });
+        return res.ok ? (await res.json()).images || [] : [];
+      } catch {
+        return [];
+      }
+    }
+    return (await browserImages()).map(({ id, data }) => ({ id, bytes: Math.round((data || "").length * 0.75) }));
+  },
+
+  async remove(id) {
+    imageSrcCache.delete(id);
+    if (kv.remote) {
+      await fetch("api/local/images/" + id, { method: "DELETE" });
+      return;
+    }
+    const db = await this.db();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction("images", "readwrite");
+      tx.objectStore("images").delete(id);
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+  },
+
   // A src for an image: this device's copy, else the party host's.
   async src(id) {
     const local = await this.get(id);

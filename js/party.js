@@ -68,6 +68,29 @@ async function apiRequest(url, method, body, token) {
   return data;
 }
 
+// Set (or, with value null, clear) one GM value in a set of them: { party, characters, items }.
+// The same shape is kept by the party host and, for preparing, in a campaign. Returns the set.
+function putGmValue(g, scope, target, name, value) {
+  let bucket;
+  if (scope === "party") bucket = g.party = g.party || {};
+  else {
+    const group = scope === "character" ? "characters" : "items";
+    g[group] = g[group] || {};
+    bucket = g[group][target] = g[group][target] || {};
+  }
+  if (value == null) delete bucket[name]; else bucket[name] = value;
+  return g;
+}
+
+// What this device is called in a party (the host sees devices by name when choosing GMs).
+function deviceName() {
+  const saved = (kv.get("packrat-device-name") || "").trim();
+  if (saved) return saved;
+  const ua = navigator.userAgent;
+  return party.app?.android ? "Android phone" : party.app?.desktop ? "Windows PC"
+    : /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android phone" : "Browser";
+}
+
 const party = {
   app: null,          // this page's own server (/api/info), if it has one
   info: null,         // the party server's /api/info
@@ -129,8 +152,7 @@ const party = {
     const snap = await this.api("GET", "api/state");
     this.chars = snap.characters;
     this.trades = snap.trades;
-    this.shops = snap.shops || [];
-    this.gm = snap.gm || {};
+    this.takeRoles(snap);
     this.active = true;
     return true;
   },
@@ -255,7 +277,67 @@ const party = {
   // Numbers the GM (the host) sets for drawn icons' gm_… variables: for the whole party, one
   // character or one item. An item uses the most specific one set.
 
-  isGm() { return this.active && !!this.info?.canManageShops; },
+  isGm() { return this.active && this.role === "gm"; },
+  // The device running the party: it can stop it, choose GMs and remove players.
+  isHost() { return this.active && !!this.isHostDevice; },
+
+  takeRoles(snap) {
+    this.shops = snap.shops || [];
+    this.gm = snap.gm || {};
+    // A host from before roles doesn't say: then, as it did, the host device is the GM.
+    const oldHost = snap.role === undefined && !!this.info?.canManageShops;
+    this.role = snap.role || (oldHost ? "gm" : "player");
+    this.isHostDevice = snap.isHost !== undefined ? !!snap.isHost : oldHost;
+    this.devices = snap.devices || [];
+    this.campaign = snap.campaign || null;
+  },
+
+  // Host: make a device a GM, or not.
+  async setGmRole(deviceId, gm) {
+    try { await this.api("POST", "api/gm-role", { device: deviceId, gm }); } catch (e) { toast(e.message); }
+  },
+
+  // ------------------------------------------------------------ campaigns
+  // The GM loads one of their campaigns into the party; every device then plays that campaign:
+  // it switches to its own campaign of the same id (making one if it has none), with the characters
+  // it has there.
+
+  async loadCampaign(camp) {
+    await this.api("POST", "api/campaign", { id: camp.id, name: camp.name, shops: camp.shops, gmValues: camp.gmValues });
+  },
+
+  // Called once the device's data is loaded and after each snapshot. Returns true if it switched.
+  followCampaign() {
+    const pc = this.campaign;
+    if (!this.active || !pc || pc.id === store.campaign().id) return false;
+    // Let go of the characters linked in the campaign we're leaving: they stay in the party's save
+    // of it (and on this device), just not playing now. (Without this, saving would remove them.)
+    for (const t of this.timers.values()) clearTimeout(t);
+    this.synced = new Map();
+    this.undecided = new Set();
+    let camp = store.campaigns().find(c => c.id === pc.id);
+    if (!camp) {
+      camp = newCampaign(pc.name, [...store.campaign().packages]);
+      camp.id = pc.id;
+      store.data.campaigns.push(camp);
+    } else if (camp.name !== pc.name) camp.name = pc.name;
+    // My characters in this campaign's party that this device keeps in another campaign (a party
+    // from before campaigns, taken over by this one) move here, rather than being copied.
+    const mineHere = new Set(this.owned().map(c => c.id));
+    for (const other of store.campaigns()) {
+      if (other === camp) continue;
+      const moving = other.characters.filter(c => mineHere.has(c.id));
+      if (!moving.length) continue;
+      other.characters = other.characters.filter(c => !mineHere.has(c.id));
+      camp.characters = [...camp.characters.filter(c => !isBlankCharacter(c) && !mineHere.has(c.id)), ...moving];
+    }
+    normalizeData(store.data);
+    store.data.activeCampaign = camp.id;
+    camp.lastPlayed = Date.now();
+    this.link();
+    toast(`Now playing ${pc.name}`);
+    return true;
+  },
 
   // The GM values that apply to one item: party-wide, then its character's, then its own.
   gmValues(charId, entryUid) {
@@ -267,15 +349,7 @@ const party = {
   async setGm(scope, target, name, value) {
     await this.api("POST", "api/gm", { scope, target, name, value });
     // Here too straight away: the snapshot saying so can arrive a moment later.
-    const g = this.gm = this.gm || {};
-    let bucket;
-    if (scope === "party") bucket = g.party = g.party || {};
-    else {
-      const group = scope === "character" ? "characters" : "items";
-      g[group] = g[group] || {};
-      bucket = g[group][target] = g[group][target] || {};
-    }
-    if (value == null) delete bucket[name]; else bucket[name] = value;
+    this.gm = putGmValue(this.gm || {}, scope, target, name, value);
   },
 
   // ------------------------------------------------------------ document images
@@ -307,7 +381,8 @@ const party = {
 
   connect() {
     this.events?.close();
-    const es = this.events = new EventSource(this.url("api/events?player=" + encodeURIComponent(this.token)));
+    const es = this.events = new EventSource(this.url("api/events?player=" + encodeURIComponent(this.token)
+      + "&device=" + encodeURIComponent(deviceName())));
     es.addEventListener("state", e => {
       this.connected = true;
       this.applySnapshot(JSON.parse(e.data));
@@ -326,7 +401,7 @@ const party = {
     this.unreachable = null;
     clearInterval(this.retryTimer);
     await this.start(base, info);
-    this.link();
+    if (!this.followCampaign()) this.link();
     this.connect();
     if (quiet) toast(`Reconnected to the party at ${base.replace(/^https?:\/\/|\/$/g, "")}`);
     else ui.view = "party";
@@ -361,7 +436,7 @@ const party = {
     kv.remove(JOINED_KEY);
     clearInterval(this.retryTimer);
     for (const t of this.timers.values()) clearTimeout(t);
-    Object.assign(this, { active: false, connected: false, base: "", info: null, token: null, chars: [], trades: [], shops: [], gm: {}, unreachable: null });
+    Object.assign(this, { active: false, connected: false, base: "", info: null, token: null, chars: [], trades: [], shops: [], gm: {}, role: "player", isHostDevice: false, devices: [], campaign: null, unreachable: null });
     this.synced = new Map();
     this.undecided = new Set();
     this.uploaded = new Set();
@@ -376,11 +451,11 @@ const party = {
     const before = this.trades;
     this.chars = snap.characters;
     this.trades = snap.trades;
-    this.shops = snap.shops || [];
-    this.gm = snap.gm || {};
+    this.takeRoles(snap);
     const local = store.state.characters;
     let conflict = false, replaced = false;
 
+    if (this.followCampaign()) { cancelUndo(); render(); return; }
     for (const c of this.owned()) {
       const s = this.synced.get(c.id);
       if (!s) {

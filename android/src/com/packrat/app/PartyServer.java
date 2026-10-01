@@ -60,7 +60,9 @@ public class PartyServer {
     static final String[] NO_TOKEN = {"/api/info", "/api/presence", "/api/host", "/api/quit"};
 
     private final AssetManager assets;
-    private final File dataFile;
+    private final File dataDir;
+    /** The current party save: party.json, or the current campaign's (see switchCampaign). */
+    private File dataFile;
     private volatile Listener listener;
 
     // Everything below is guarded by `lock` (like `cond` in server.py).
@@ -70,6 +72,13 @@ public class PartyServer {
     private JSONArray shops = new JSONArray();
     /** GM values (see gm_api in server.py): {party: {name: v}, characters: {id: {…}}, items: {"charId/uid": {…}}}. */
     private JSONObject gm = new JSONObject();
+    /** Host-level (kept whatever the campaign): tokens of the devices the host has made GMs, and devices' names. */
+    private JSONArray gms = new JSONArray();
+    private JSONObject devices = new JSONObject();
+    /** The campaign this party save belongs to, {id, name}; null for the party from before campaigns. */
+    private JSONObject campaign = null;
+    static final java.util.regex.Pattern CAMPAIGN_ID = java.util.regex.Pattern.compile("[A-Za-z0-9_-]{1,60}");
+    static final java.util.regex.Pattern GM_NAME = java.util.regex.Pattern.compile("gm_[A-Za-z0-9_]{1,40}");
     private long version = 0;
     private final Map<String, Integer> online = new HashMap<>();
 
@@ -83,6 +92,7 @@ public class PartyServer {
     public PartyServer(AssetManager assets, File dataDir) {
         this.assets = assets;
         dataDir.mkdirs();
+        this.dataDir = dataDir;
         this.dataFile = new File(dataDir, "party.json");
         // This phone's own characters, settings and images, next to party-data (like the
         // Windows app's my-data): kept in a file so they don't depend on the WebView's
@@ -135,7 +145,7 @@ public class PartyServer {
     /** GET /api/local -> {rev, data}; PUT {set: {key: value or null}}; /api/local/images/... */
     private JSONObject localApi(Request req, List<String> parts, OutputStream out) throws ApiError, IOException, JSONException {
         if (!req.fromApp) throw new ApiError(403, "Only Pack Rat on this phone can do that");
-        if (parts.size() >= 2 && parts.get(1).equals("images")) return images(req, parts.subList(1, parts.size()), out, new File(localDir, "images"));
+        if (parts.size() >= 2 && parts.get(1).equals("images")) return images(req, parts.subList(1, parts.size()), out, new File(localDir, "images"), true);
         if (parts.size() != 1) throw new ApiError(404, "Unknown endpoint");
         synchronized (lock) {
             if (req.method.equals("GET")) {
@@ -247,18 +257,38 @@ public class PartyServer {
 
     // ------------------------------------------------------------------ persistence
 
+    private File campaignFile(String cid) { return new File(new File(dataDir, "campaigns"), cid + ".json"); }
+
+    private File pointerFile() { return new File(dataDir, "active-campaign"); }
+
     private void load() {
+        dataFile = new File(dataDir, "party.json");
+        if (pointerFile().exists()) {
+            try (InputStream in = new java.io.FileInputStream(pointerFile())) {
+                String cid = new String(readAll(in), StandardCharsets.UTF_8).trim();
+                if (CAMPAIGN_ID.matcher(cid).matches() && campaignFile(cid).exists()) dataFile = campaignFile(cid);
+            } catch (IOException ignored) {}
+        }
         if (!dataFile.exists()) return;
         try (InputStream in = new java.io.FileInputStream(dataFile)) {
-            JSONObject data = new JSONObject(new String(readAll(in), StandardCharsets.UTF_8));
-            characters = data.optJSONObject("characters") != null ? data.getJSONObject("characters") : new JSONObject();
-            trades = data.optJSONArray("trades") != null ? data.getJSONArray("trades") : new JSONArray();
-            shops = data.optJSONArray("shops") != null ? data.getJSONArray("shops") : new JSONArray();
-            gm = data.optJSONObject("gm") != null ? data.getJSONObject("gm") : new JSONObject();
-            partyId = data.optString("partyId", "");
+            readState(new JSONObject(new String(readAll(in), StandardCharsets.UTF_8)), true);
         } catch (Exception e) {
             // Corrupt file: keep a copy and start fresh rather than refusing to run.
             dataFile.renameTo(new File(dataFile.getPath() + ".broken-" + System.currentTimeMillis()));
+        }
+    }
+
+    /** Take a party save's contents; hostLevel: also its party id, GMs and device names. */
+    private void readState(JSONObject data, boolean hostLevel) {
+        characters = data.optJSONObject("characters") != null ? data.optJSONObject("characters") : new JSONObject();
+        trades = data.optJSONArray("trades") != null ? data.optJSONArray("trades") : new JSONArray();
+        shops = data.optJSONArray("shops") != null ? data.optJSONArray("shops") : new JSONArray();
+        gm = data.optJSONObject("gm") != null ? data.optJSONObject("gm") : new JSONObject();
+        campaign = data.optJSONObject("campaign");
+        if (hostLevel) {
+            partyId = data.optString("partyId", "");
+            gms = data.optJSONArray("gms") != null ? data.optJSONArray("gms") : new JSONArray();
+            devices = data.optJSONObject("devices") != null ? data.optJSONObject("devices") : new JSONObject();
         }
     }
 
@@ -270,6 +300,10 @@ public class PartyServer {
             data.put("shops", shops);
             data.put("gm", gm);
             data.put("partyId", partyId);
+            data.put("gms", gms);
+            data.put("devices", devices);
+            if (campaign != null) data.put("campaign", campaign);
+            dataFile.getParentFile().mkdirs();
             File tmp = new File(dataFile.getPath() + ".tmp");
             try (OutputStream out = new FileOutputStream(tmp)) {
                 out.write(data.toString().getBytes(StandardCharsets.UTF_8));
@@ -294,6 +328,69 @@ public class PartyServer {
         return sb.toString();
     }
 
+    // ------------------------------------------------------------------ roles (see role_of in server.py)
+
+    private boolean isGmToken(String token) {
+        for (int i = 0; i < gms.length(); i++) if (gms.optString(i).equals(token)) return true;
+        return false;
+    }
+
+    /** "gm" for a device the host made a GM, and for the host while it hasn't made any; else "player". */
+    private String roleOf(String token, boolean host) {
+        if (!token.isEmpty() && isGmToken(token)) return "gm";
+        return host && gms.length() == 0 ? "gm" : "player";
+    }
+
+    private boolean isGm(Request req, String token) { return roleOf(token, req.fromHostDevice()).equals("gm"); }
+
+    static String deviceId(String token) {
+        try {
+            byte[] d = java.security.MessageDigest.getInstance("SHA-256").digest(("packrat-device:" + token).getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < 8; i++) sb.append(String.format("%02x", d[i]));
+            return sb.toString();
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** Every device token the party knows: named devices, characters' owners and GMs. */
+    private List<String> knownTokens() throws JSONException {
+        java.util.LinkedHashSet<String> tokens = new java.util.LinkedHashSet<>();
+        Iterator<String> it = devices.keys();
+        while (it.hasNext()) tokens.add(it.next());
+        it = characters.keys();
+        while (it.hasNext()) tokens.add(characters.getJSONObject(it.next()).optString("owner"));
+        for (int i = 0; i < gms.length(); i++) tokens.add(gms.optString(i));
+        tokens.remove("");
+        return new ArrayList<>(tokens);
+    }
+
+    /** The devices in the party, for the host: names, who's online, what they play, GM or not. Never tokens. */
+    private JSONArray deviceList(String me) throws JSONException {
+        JSONArray out = new JSONArray();
+        for (String t : knownTokens()) {
+            JSONObject d = new JSONObject();
+            JSONObject named = devices.optJSONObject(t);
+            String name = named == null ? "" : named.optString("name");
+            d.put("id", deviceId(t));
+            d.put("name", name.isEmpty() ? "Unnamed device" : name);
+            Integer n = online.get(t);
+            d.put("online", n != null && n > 0);
+            JSONArray playing = new JSONArray();
+            Iterator<String> it = characters.keys();
+            while (it.hasNext()) {
+                JSONObject c = characters.getJSONObject(it.next());
+                if (c.optString("owner").equals(t)) playing.put(c.optString("name"));
+            }
+            d.put("characters", playing);
+            d.put("gm", isGmToken(t));
+            d.put("self", t.equals(me));
+            out.put(d);
+        }
+        return out;
+    }
+
     // ------------------------------------------------------------------ views
 
     private JSONObject publicChar(JSONObject c, String token) throws JSONException {
@@ -306,7 +403,7 @@ public class PartyServer {
         return out;
     }
 
-    private JSONObject snapshot(String token) throws JSONException {
+    private JSONObject snapshot(String token, boolean host) throws JSONException {
         Set<String> mine = new HashSet<>();
         JSONArray chars = new JSONArray();
         Iterator<String> it = characters.keys();
@@ -333,6 +430,10 @@ public class PartyServer {
         for (int i = 0; i < shops.length(); i++) if (shops.getJSONObject(i).optBoolean("open")) openShops.put(publicShop(shops.getJSONObject(i)));
         snap.put("shops", openShops);
         snap.put("gm", new JSONObject(gm.toString()));
+        snap.put("role", roleOf(token, host));
+        snap.put("isHost", host);
+        snap.put("campaign", campaign == null ? JSONObject.NULL : new JSONObject(campaign.toString()));
+        if (host) snap.put("devices", deviceList(token));
         return snap;
     }
 
@@ -705,10 +806,10 @@ public class PartyServer {
         return e;
     }
 
-    /** GM values: see gm_api() in server.py. POST /api/gm {scope, target, name, value|null}, host only. */
-    private JSONObject gmApi(Request req, List<String> parts) throws ApiError, JSONException {
+    /** GM values: see gm_api() in server.py. POST /api/gm {scope, target, name, value|null}, GMs only. */
+    private JSONObject gmApi(Request req, List<String> parts, String token) throws ApiError, JSONException {
         if (!req.method.equals("POST") || !parts.isEmpty()) throw new ApiError(404, "Unknown endpoint");
-        if (!req.fromHostDevice()) throw new ApiError(403, "Only the GM (the host) can set GM values");
+        if (!isGm(req, token)) throw new ApiError(403, "Only a GM can set GM values");
         JSONObject body = req.json();
         String scope = body.optString("scope"), target = body.isNull("target") ? "" : body.optString("target", ""), name = body.optString("name");
         boolean scopeOk = scope.equals("party") || scope.equals("character") || scope.equals("item");
@@ -747,7 +848,7 @@ public class PartyServer {
 
     /** See shops_api() in server.py for the endpoints. */
     private JSONObject shopsApi(Request req, List<String> parts, String token) throws ApiError, JSONException {
-        boolean host = req.fromHostDevice();
+        boolean host = isGm(req, token); // "host" below: whoever runs the shops (a GM)
         JSONObject body = (req.method.equals("POST") || req.method.equals("PUT")) ? req.json() : new JSONObject();
         synchronized (lock) {
             if (req.method.equals("GET") && parts.isEmpty()) {
@@ -1332,7 +1433,7 @@ public class PartyServer {
             return info; // readable from any page (see corsHeaders): apps check an address before joining
         }
         if (p0.equals("shops")) return shopsApi(req, parts.subList(1, parts.size()), token);
-        if (p0.equals("gm")) return gmApi(req, parts.subList(1, parts.size()));
+        if (p0.equals("gm")) return gmApi(req, parts.subList(1, parts.size()), token);
         if (p0.equals("presence") || p0.equals("host") || p0.equals("quit")) {
             if (!req.fromApp) throw new ApiError(403, "Only the app on the hosting device can do that");
             if (m.equals("GET") && p0.equals("presence")) {
@@ -1368,10 +1469,13 @@ public class PartyServer {
         // The phone's own data works whether or not a party is running.
         if (p0.equals("local")) return localApi(req, parts, out);
         if (!partyEnabled()) throw new ApiError(404, "No party is being hosted");
-        if (p0.equals("images")) return images(req, parts, out, new File(dataFile.getParentFile(), "images"));
+        if (p0.equals("images")) return images(req, parts, out, new File(dataDir, "images"), false);
+
+        if (m.equals("POST") && p0.equals("gm-role") && parts.size() == 1) return gmRoleApi(req);
+        if (m.equals("POST") && p0.equals("campaign") && parts.size() == 1) return campaignApi(req, token);
 
         if (m.equals("GET") && p0.equals("events") && parts.size() == 1) {
-            eventStream(token, out);
+            eventStream(req, token, out);
             return null;
         }
         if (m.equals("POST") && p0.equals("leave") && parts.size() == 1) {
@@ -1388,7 +1492,7 @@ public class PartyServer {
             return r;
         }
         if (m.equals("GET") && p0.equals("state") && parts.size() == 1) {
-            synchronized (lock) { return snapshot(token); }
+            synchronized (lock) { return snapshot(token, req.fromHostDevice()); }
         }
 
         if (p0.equals("characters")) {
@@ -1568,7 +1672,7 @@ public class PartyServer {
     }
 
     /** Images used in documents: the party's (party-data/images) or this phone's own (my-data/images), as <id>.<ext>. */
-    private JSONObject images(Request req, List<String> parts, OutputStream out, File folder) throws ApiError, IOException {
+    private JSONObject images(Request req, List<String> parts, OutputStream out, File folder, boolean own) throws ApiError, IOException {
         if (req.method.equals("POST") && parts.size() == 1) {
             JSONObject body = req.json();
             String id = body.optString("id"), data = body.optString("data");
@@ -1610,7 +1714,176 @@ public class PartyServer {
             }
             throw new ApiError(404, "No such image");
         }
+        // This phone's own pictures can also be listed and deleted (Settings → Files); the party's can't.
+        if (own && req.method.equals("GET") && parts.size() == 1) {
+            JSONArray list = new JSONArray();
+            File[] files = folder.listFiles();
+            if (files != null) {
+                Arrays.sort(files);
+                for (File f : files) {
+                    String[] bits = f.getName().split("\\.", 2);
+                    if (bits.length == 2 && IMAGE_ID.matcher(bits[0]).matches()) {
+                        try { list.put(new JSONObject().put("id", bits[0]).put("bytes", f.length())); } catch (JSONException ignored) {}
+                    }
+                }
+            }
+            try { return new JSONObject().put("images", list); } catch (JSONException e) { throw new IOException(e); }
+        }
+        if (own && req.method.equals("DELETE") && parts.size() == 2 && IMAGE_ID.matcher(parts.get(1)).matches()) {
+            synchronized (lock) {
+                for (String[] t : IMAGE_TYPES) new File(folder, parts.get(1) + "." + t[1]).delete();
+            }
+            try { return new JSONObject().put("ok", true); } catch (JSONException e) { throw new IOException(e); }
+        }
         throw new ApiError(404, "Unknown endpoint");
+    }
+
+    // ------------------------------------------------------------------ GMs and campaigns
+
+    /** POST /api/gm-role {device, gm}: the host makes a device a GM, or not (see gm_role_api in server.py). */
+    private JSONObject gmRoleApi(Request req) throws ApiError, JSONException {
+        if (!req.fromHostDevice()) throw new ApiError(403, "Only the host can choose GMs");
+        JSONObject body = req.json();
+        synchronized (lock) {
+            String target = null;
+            for (String t : knownTokens()) if (deviceId(t).equals(body.optString("device"))) target = t;
+            if (target == null) throw new ApiError(404, "No such device");
+            boolean make = body.optBoolean("gm");
+            if (make && !isGmToken(target)) gms.put(target);
+            if (!make) {
+                JSONArray kept = new JSONArray();
+                for (int i = 0; i < gms.length(); i++) if (!gms.optString(i).equals(target)) kept.put(gms.optString(i));
+                gms = kept;
+            }
+            changed(true);
+        }
+        return new JSONObject().put("ok", true);
+    }
+
+    /** GM values a GM's campaign brings (see clean_gm_values in server.py). */
+    private static JSONObject cleanGmValues(JSONObject raw) throws JSONException {
+        JSONObject out = new JSONObject();
+        out.put("party", cleanGmBucket(raw == null ? null : raw.optJSONObject("party")));
+        for (String group : new String[]{"characters", "items"}) {
+            JSONObject g = raw == null ? null : raw.optJSONObject(group), kept = new JSONObject();
+            if (g != null) {
+                Iterator<String> it = g.keys();
+                for (int n = 0; it.hasNext() && n < 2000; n++) {
+                    String t = it.next();
+                    JSONObject b = cleanGmBucket(g.optJSONObject(t));
+                    if (b.length() > 0) kept.put(cut(t, 200), b);
+                }
+            }
+            out.put(group, kept);
+        }
+        return out;
+    }
+
+    private static JSONObject cleanGmBucket(JSONObject b) throws JSONException {
+        JSONObject out = new JSONObject();
+        if (b == null) return out;
+        Iterator<String> it = b.keys();
+        while (it.hasNext()) {
+            String k = it.next();
+            Object v = b.opt(k);
+            if (GM_NAME.matcher(k).matches() && v instanceof Number && !(v instanceof Boolean)) {
+                double d = ((Number) v).doubleValue();
+                if (!Double.isNaN(d) && !Double.isInfinite(d) && Math.abs(d) <= 1e9) out.put(k, v);
+            }
+        }
+        return out;
+    }
+
+    /** A's GM values with B's on top (B wins where both have one). */
+    private static JSONObject mergeBuckets(JSONObject a, JSONObject b) throws JSONException {
+        JSONObject out = new JSONObject();
+        for (JSONObject src : new JSONObject[]{a, b}) {
+            if (src == null) continue;
+            Iterator<String> it = src.keys();
+            while (it.hasNext()) { String k = it.next(); out.put(k, src.get(k)); }
+        }
+        return out;
+    }
+
+    /** POST /api/campaign {id, name, shops, gmValues}: a GM loads one of their campaigns (see campaign_api in server.py). */
+    private JSONObject campaignApi(Request req, String token) throws ApiError, JSONException {
+        if (!isGm(req, token)) throw new ApiError(403, "Only a GM can choose the campaign");
+        JSONObject body = req.json();
+        String cid = body.optString("id"), name = cut(body.optString("name").trim(), 80);
+        if (name.isEmpty()) name = "Campaign";
+        if (!CAMPAIGN_ID.matcher(cid).matches()) throw new ApiError(400, "Not a campaign");
+        JSONArray seedShops = new JSONArray();
+        JSONArray raw = body.optJSONArray("shops");
+        for (int i = 0; raw != null && i < raw.length() && i < 100; i++) {
+            JSONObject r = raw.optJSONObject(i);
+            JSONObject shop = cleanShop(r);
+            String id = r == null ? "" : r.optString("id");
+            shop.put("id", id.isEmpty() ? newId("s") : cut(id, 40));
+            shop.put("rev", 1);
+            shop.put("backroom", new JSONArray());
+            seedShops.put(shop);
+        }
+        JSONObject seedGm = cleanGmValues(body.optJSONObject("gmValues"));
+        synchronized (lock) {
+            switchCampaign(cid, name, seedShops, seedGm);
+            changed(false);
+        }
+        return new JSONObject().put("ok", true);
+    }
+
+    /** Call with `lock` held: save this campaign's party and make `cid` current (see switch_campaign in server.py). */
+    private void switchCampaign(String cid, String name, JSONArray seedShops, JSONObject seedGm) throws JSONException {
+        String current = campaign == null ? "" : campaign.optString("id");
+        JSONObject named = new JSONObject().put("id", cid).put("name", name);
+        if (current.equals(cid)) {
+            campaign = named;
+            save();
+            return;
+        }
+        save();
+        File target = campaignFile(cid);
+        if (target.exists()) {
+            try (InputStream in = new java.io.FileInputStream(target)) {
+                readState(new JSONObject(new String(readAll(in), StandardCharsets.UTF_8)), false);
+            } catch (IOException e) {
+                throw new JSONException("Couldn't read the campaign's party: " + e.getMessage());
+            }
+        } else if (campaign == null && (characters.length() > 0 || shops.length() > 0 || gm.length() > 0)) {
+            // The party from before campaigns becomes this one's (party.json stays as a backup). It
+            // keeps what it has, and gains the GM's shops (ones it hasn't got) and GM values (where
+            // it has none of its own).
+            Set<String> have = new HashSet<>();
+            for (int i = 0; i < shops.length(); i++) have.add(shops.getJSONObject(i).optString("id"));
+            for (int i = 0; i < seedShops.length(); i++) if (!have.contains(seedShops.getJSONObject(i).optString("id"))) shops.put(seedShops.getJSONObject(i));
+            JSONObject merged = new JSONObject();
+            merged.put("party", mergeBuckets(seedGm.optJSONObject("party"), gm.optJSONObject("party")));
+            for (String group : new String[]{"characters", "items"}) {
+                JSONObject seed = seedGm.optJSONObject(group), old = gm.optJSONObject(group), out = new JSONObject();
+                for (JSONObject src : new JSONObject[]{seed, old}) {
+                    if (src == null) continue;
+                    Iterator<String> it = src.keys();
+                    while (it.hasNext()) {
+                        String t = it.next();
+                        out.put(t, mergeBuckets(out.optJSONObject(t), src.optJSONObject(t)));
+                    }
+                }
+                merged.put(group, out);
+            }
+            gm = merged;
+        } else {
+            characters = new JSONObject();
+            trades = new JSONArray();
+            shops = seedShops;
+            gm = seedGm;
+        }
+        campaign = named;
+        dataFile = target;
+        save();
+        try (OutputStream out = new FileOutputStream(pointerFile())) {
+            out.write(cid.getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            android.util.Log.e("PackRat", "Could not note the campaign", e);
+        }
     }
 
     // ------------------------------------------------------------------ live updates (Server-Sent Events)
@@ -1624,11 +1897,24 @@ public class PartyServer {
     /** Tokens whose player chose Leave party: their live connections close now. */
     private final Set<String> leaving = new HashSet<>();
 
-    private void eventStream(String token, OutputStream out) throws IOException, JSONException {
+    private void eventStream(Request req, String token, OutputStream out) throws IOException, JSONException {
         startStream(out);
+        boolean host = req.fromHostDevice();
+        String name = "";
+        for (String kv : req.query.split("&")) {
+            if (kv.startsWith("device=")) {
+                try { name = cut(URLDecoder.decode(kv.substring(7), "UTF-8").trim(), 40); } catch (Exception ignored) {}
+            }
+        }
         synchronized (lock) {
             online.put(token, online.getOrDefault(token, 0) + 1);
-            changed(false);
+            JSONObject named = devices.optJSONObject(token);
+            if (!name.isEmpty() && (named == null || !name.equals(named.optString("name")))) {
+                devices.put(token, new JSONObject().put("name", name));
+                changed(true);
+            } else {
+                changed(false);
+            }
         }
         long last = -1;
         try {
@@ -1642,7 +1928,7 @@ public class PartyServer {
                     if (leaving.contains(token)) break;
                     if (version != last) {
                         last = version;
-                        data = snapshot(token).toString();
+                        data = snapshot(token, host).toString();
                     }
                 }
                 String msg = data != null ? "event: state\ndata: " + data + "\n\n" : ": ping\n\n";

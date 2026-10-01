@@ -98,7 +98,8 @@ function toast(msg, undoState) {
   const el = document.getElementById("toast");
   el.replaceChildren(h("span", null, msg), !undoState ? "" : h("button", {
     class: "link", onclick: () => {
-      store.update(s => Object.assign(s, JSON.parse(undoState)));
+      store.data = normalizeData(JSON.parse(undoState));
+      store.update(() => {});
       el.classList.remove("show");
     },
   }, "Undo"));
@@ -115,7 +116,7 @@ function cancelUndo() {
 
 // Mutate the active character and optionally offer undo.
 function commit(fn, msg, undoable = false) {
-  const before = undoable ? JSON.stringify(store.state) : null;
+  const before = undoable ? JSON.stringify(store.data) : null;
   store.update(s => fn(s, store.char()));
   if (msg) toast(msg, before);
 }
@@ -174,7 +175,10 @@ const ui = {
   sort: readPref("packrat-sort", "smart"),
   sortReverse: readPref("packrat-sort-rev", "") === "1",
   combatOpen: readPref("packrat-combat", "1") === "1",
-  partyTab: "party", // the GM's Party screen: "party" or "gm" (GM values)
+  gmTab: "players", // the GM tab's sub-tab: "players" or "values"
+  settingsTab: "settings", // Settings · Campaigns · Files
+  catTab: "items", // Catalog: Items · My items · Drawings · Templates
+  role: readPref("packrat-role", "player"), // "gm" to prepare GM things outside a party (see isGmDevice)
   statsOpen: readPref("packrat-stats", "1") === "1",
   playerMode: readPref("packrat-player-mode", "") === "1",
 };
@@ -206,6 +210,7 @@ function applyPrefs() {
   ui.combatOpen = readPref("packrat-combat", "1") === "1";
   ui.statsOpen = readPref("packrat-stats", "1") === "1";
   ui.playerMode = readPref("packrat-player-mode", "") === "1";
+  ui.role = readPref("packrat-role", "player");
 }
 
 // Another Pack Rat window on this PC saved changes: show them here too.
@@ -316,11 +321,26 @@ function fitTileNames(box) {
 const VIEWS = {
   inventory: { label: "Inventory", icon: "bag", render: renderInventory },
   catalog: { label: "Catalog", icon: "book", render: renderCatalog, builder: true },
-  custom: { label: "Custom", icon: "wand", render: renderCustom, builder: true },
   shops: { label: "Shops", icon: "cart", render: renderShops },
+  gm: { label: "GM", icon: "shield", render: renderGm, gmOnly: true },
   party: { label: "Party", icon: "users", render: renderParty, partyOnly: true },
-  settings: { label: "Settings", icon: "sliders", render: renderSettings },
+  settings: { label: "Settings", icon: "sliders", render: renderSettingsTabs },
 };
+
+// Player mode (Settings) hides making and editing items; a GM always has them.
+const playerOnly = () => ui.playerMode && !isGmDevice();
+
+// Does this GM play characters too? If not, the Inventory tab would only ever be empty.
+const gmHasCharacters = () => party.active ? party.linked().length > 0 : store.state.characters.some(c => !isBlankCharacter(c));
+
+function viewVisible(key) {
+  const v = VIEWS[key];
+  if (v.partyOnly && !party.active) return false;
+  if (v.builder && playerOnly()) return false;
+  if (v.gmOnly && !isGmDevice()) return false;
+  if (key === "inventory" && (isGmDevice() || party.isHost()) && !gmHasCharacters()) return false;
+  return true;
+}
 
 // Held while something is being dragged (a GM control's pin), so party updates don't redraw it
 // out from under the pointer; one render follows when it's let go.
@@ -333,16 +353,19 @@ function holdRender(on) {
 function render() {
   if (renderHeld) { renderWanted = true; return; }
   const char = store.char();
-  // In a party with none of this device's characters playing yet: choose one first.
-  const joining = party.active && !party.linked().length;
-  if (VIEWS[ui.view].partyOnly && !party.active) ui.view = "inventory";
-  if (VIEWS[ui.view].builder && ui.playerMode) ui.view = "inventory"; // player mode: no catalog or custom items
-  document.getElementById("char-name").textContent = joining ? "Join the party" : char ? char.name : "";
+  // In a party with none of this device's characters playing yet: choose one first (a GM or the
+  // host needn't: they have the party to run).
+  const joining = party.active && !party.linked().length && !party.isGm() && !party.isHost();
+  if (!viewVisible(ui.view)) ui.view = isGmDevice() && viewVisible("gm") ? "gm" : Object.keys(VIEWS).find(viewVisible);
+  // A GM who plays no character is just the GM.
+  document.getElementById("char-name").textContent = joining ? "Join the party"
+    : isGmDevice() && !gmHasCharacters() ? "Game master" : char ? char.name : "";
+  document.getElementById("campaign-name").textContent = store.campaign().name;
   document.getElementById("nav").hidden = joining;
   const offers = party.active ? party.incoming().length : 0;
   document.querySelectorAll("[data-view]").forEach(b => {
     b.classList.toggle("active", b.dataset.view === ui.view);
-    b.hidden = (VIEWS[b.dataset.view].partyOnly && !party.active) || (VIEWS[b.dataset.view].builder && ui.playerMode);
+    b.hidden = !viewVisible(b.dataset.view);
     const badge = b.querySelector(".badge");
     if (badge) { badge.textContent = offers; badge.hidden = !offers; }
   });
@@ -655,7 +678,7 @@ function inventoryTree(char) {
     return [h("div", { class: "empty" },
       icon("bag", "big"),
       h("p", null, "Your pack is empty."),
-      !ui.playerMode && h("button", { class: "btn primary", onclick: () => go("catalog") }, "Browse the catalog"),
+      !playerOnly() && h("button", { class: "btn primary", onclick: () => go("catalog") }, "Browse the catalog"),
       !party.active && isFreshData() && h("p", { class: "muted small" }, "Moving from another device? ",
         h("button", { class: "link", onclick: pickBackup }, "Import a backup"), " exported from Pack Rat's Settings."))];
   }
@@ -1186,8 +1209,8 @@ function openEntry(entryUid) {
     planner && h("button", { class: "btn primary", onclick: unpack }, icon("package"), "Unpack"),
     h("button", { class: "btn", onclick: () => { close(); openSell(e.uid); } }, icon("coins"), "Sell"),
     // Player mode: no editing items (a copy can still be renamed with its display name).
-    !ui.playerMode && h("button", { class: "btn", onclick: () => { close(); openItemForm(it, { entryUid: e.uid }); } }, icon("edit"), "Edit"),
-    !ui.playerMode && h("button", { class: "btn", title: "Save a copy of this item as a reusable custom item", onclick: () => {
+    !playerOnly() && h("button", { class: "btn", onclick: () => { close(); openItemForm(it, { entryUid: e.uid }); } }, icon("edit"), "Edit"),
+    !playerOnly() && h("button", { class: "btn", title: "Save a copy of this item as a reusable custom item", onclick: () => {
       commit(s => s.customItems.unshift({ ...clone(it), id: "custom-" + uid(), source: it.source || "Homebrew" }), `Saved “${it.name}” to custom items`);
     } }, icon("copy"), "Save as custom"),
     party.active && party.others().length > 0 &&
@@ -1444,7 +1467,24 @@ function catalogFiltered(t = ui.catType, q = ui.catSearch, sub = ui.catSub) {
   });
 }
 
+const CATALOG_TABS = [["items", "Items"], ["mine", "My items"], ["drawings", "Drawings"], ["templates", "Templates"]];
+
 function renderCatalog() {
+  const tab = CATALOG_TABS.some(([k]) => k === ui.catTab) ? ui.catTab : "items";
+  return h("div", { class: "view-catalog-tabs" },
+    subTabs("Catalog", CATALOG_TABS, tab, k => { ui.catTab = k; render(); }),
+    tab === "items" ? catalogItemsView()
+      : h("div", { class: "view-custom" }, tab === "mine" ? myItemsSection() : tab === "drawings" ? drawingsSection() : templatesSection()));
+}
+
+// A row of sub-tabs at the top of a screen.
+function subTabs(label, tabs, active, onPick) {
+  return h("div", { class: "seg sub-tabs", role: "tablist", "aria-label": label },
+    tabs.map(([k, text]) => h("button", { type: "button", role: "tab", class: active === k ? "active" : "", "aria-selected": String(active === k),
+      onclick: () => onPick(k) }, text)));
+}
+
+function catalogItemsView() {
   const tiles = viewPrefs().layout === "tiles";
   const list = tiles ? tilesBox("cat-tiles") : h("div", { class: "cat-list" });
   const count = h("span", { class: "muted small" });
@@ -1569,17 +1609,17 @@ function openCatalogItem(item) {
   // Custom items can change their icon right here; catalog items via "Customize".
   const changeIcon = isCustom ? (id, drawing) => {
     close();
-    commit(s => {
-      const x = s.customItems.find(i => i.id === item.id);
+    commit(() => {
+      const x = store.findCustom(item.id);
       if (drawing) return setItemDrawing(x, drawing);
       if (id) x.icon = id; else delete x.icon;
       setItemDrawing(x, null); // a chosen icon replaces a drawing
     }, "Icon changed");
-    openCatalogItem(store.state.customItems.find(i => i.id === item.id));
+    openCatalogItem(store.findCustom(item.id));
   } : null;
   const readBtn = item.type === "document" && h("button", { class: "btn primary read-btn", onclick: () => {
     close();
-    openReader(item, isCustom ? { onEdit: () => openItemForm(store.state.customItems.find(i => i.id === item.id) || item) } : {});
+    openReader(item, isCustom ? { onEdit: () => openItemForm(store.findCustom(item.id) || item) } : {});
   } }, icon(item.imageOnly ? "image" : "book"), item.imageOnly ? "View" : "Read");
   close = openModal(item.name, [readBtn, controls, planner?.el, itemDetails(item, changeIcon, item.id, null, true)],
     { footer, wide: !!planner, head: iconFocusSwitch(), backdrop: iconBackdrop(item) });
@@ -1812,7 +1852,10 @@ function packPlanner(pack, char) {
 
 function deleteCustom(item) {
   confirmDialog(`Delete the custom item “${item.name}”? Copies already in inventories are kept.`, "Delete",
-    () => commit(s => { s.customItems = s.customItems.filter(i => i.id !== item.id); }, `Deleted ${item.name}`, true));
+    () => commit(() => {
+      const pkg = store.packageOf(item.id);
+      if (pkg) pkg.customItems = pkg.customItems.filter(i => i.id !== item.id);
+    }, `Deleted ${item.name}`, true));
 }
 
 // ------------------------------------------------------------------ trinket roller
@@ -1856,7 +1899,7 @@ function openItemForm(item, opts = {}) {
   // The saved item this form edits (not saved with it): lets a drawing tell "this item" from others.
   Object.defineProperty(draft, "_self", { enumerable: false, value: opts.entryUid
     ? store.char()?.items.find(x => x.uid === opts.entryUid)?.item
-    : store.state.customItems.find(i => i.id === draft.id) });
+    : store.findCustom(draft.id) });
   // An inventory copy: its drawing is edited with the copy's own values (how full it is…).
   Object.defineProperty(draft, "_vars", { enumerable: false, value: opts.entryUid ? () => {
     const c = store.char(), e = c?.items.find(x => x.uid === opts.entryUid);
@@ -1892,13 +1935,15 @@ function openItemForm(item, opts = {}) {
       const { id, ...snap } = draft;
       commit((s, c) => { c.items.find(x => x.uid === opts.entryUid).item = snap; }, `Updated ${draft.name}`, true);
     } else {
-      const isEdit = draft.id && store.state.customItems.some(i => i.id === draft.id);
-      if (!draft.id || !isEdit) draft.id = "custom-" + uid();
+      // Saved back into the rule package it's in; a new one goes into the chosen package, else
+      // the campaign's home package.
+      const pkg = draft.id && store.packageOf(draft.id);
+      if (!pkg) draft.id = "custom-" + uid();
       draft.source = draft.source || "Homebrew";
-      commit(s => {
-        if (isEdit) s.customItems = s.customItems.map(i => i.id === draft.id ? draft : i);
-        else s.customItems.unshift(draft);
-      }, `${isEdit ? "Saved" : "Created"} ${draft.name}`, true);
+      commit(() => {
+        if (pkg) pkg.customItems = pkg.customItems.map(i => i.id === draft.id ? draft : i);
+        else (store.data.packages.find(p => p.id === opts.package) || store.homePackage()).customItems.unshift(draft);
+      }, `${pkg ? "Saved" : "Created"} ${draft.name}`, true);
     }
     close();
   }
@@ -2096,11 +2141,11 @@ const drawingFormulas = doc => [...(doc?.variables || []).map(v => v.expression 
 // this device (the library, custom items, characters' items).
 function knownGmNames() {
   const names = new Set();
-  const g = party.active ? party.gm || {} : {};
+  const g = gmValuesNow();
   for (const bucket of [g.party, ...Object.values(g.characters || {}), ...Object.values(g.items || {})]) {
     for (const name of Object.keys(bucket || {})) names.add(name);
   }
-  const docs = [...drawingLibrary().map(d => d.doc), ...store.state.customItems.map(i => i.iconDoc),
+  const docs = [...drawingLibrary().map(d => d.doc), ...store.allCustomItems().map(i => i.iconDoc),
     ...store.state.characters.flatMap(c => c.items.map(e => e.item.iconDoc))];
   for (const doc of docs) if (doc) for (const name of drawingGmSpecs(doc).keys()) names.add(name);
   for (const c of store.state.gmControls || []) for (const p of c.pins) for (const n of [p.xVar, p.yVar]) if (n) names.add(n);
@@ -2175,8 +2220,7 @@ function entryIconVars(char, e) {
   }
   if (hasFeature(it, "charges", e.srcId) && it.maxCharges) { v.charges = e.charges ?? it.maxCharges; v.maxCharges = it.maxCharges; }
   if (isDeckEntry(e)) { v.pieces = cardsIn(char, e).length; v.piecesTotal = v.pieces + cardsOut(char, e).length; }
-  // In a party: the GM's values for this item (its own, else its character's, else the party's).
-  if (party.active && char?.id) Object.assign(v, party.gmValues(char.id, e.uid));
+  if (char?.id) Object.assign(v, gmValuesFor(char.id, e.uid)); // the GM's values (or, preparing offline, the presets)
   return v;
 }
 
@@ -2255,9 +2299,10 @@ function setItemDrawing(it, d) {
   else { delete it.iconDoc; delete it.iconSvg; delete it.iconLib; }
 }
 
-// Custom items and every inventory copy (all characters) that use a library drawing.
-function drawingUsers(s, id) {
-  return [...s.customItems, ...s.characters.flatMap(c => c.items.map(e => e.item))].filter(it => it.iconLib === id);
+// Custom items (every rule package) and inventory copies (every campaign) that use a library drawing.
+function drawingUsers(id) {
+  return [...store.allCustomItems(), ...store.data.campaigns.flatMap(cp => cp.characters.flatMap(c => c.items.map(e => e.item)))]
+    .filter(it => it.iconLib === id);
 }
 
 function addDrawing(name, doc, svg) {
@@ -2273,7 +2318,7 @@ function updateDrawing(id, doc, svg) {
     const d = s.iconLibrary.find(x => x.id === id);
     if (!d) return;
     Object.assign(d, { doc, svg, updated: Date.now() });
-    for (const it of drawingUsers(s, id)) { setItemDrawing(it, d); n++; }
+    for (const it of drawingUsers(id)) { setItemDrawing(it, d); n++; }
   }, null);
   return n;
 }
@@ -2292,7 +2337,7 @@ function editItemDrawing(it, done) {
   const d = findDrawing(it.iconLib);
   openIconDrawer({ doc: d?.doc || it.iconDoc, name: it.name, color: itemColor(it), vars: it._vars }, (doc, svg) => {
     if (!doc) { setItemDrawing(it, null); return done(); }
-    const others = d ? drawingUsers(store.state, d.id).filter(u => u !== it._self).length : 0;
+    const others = d ? drawingUsers(d.id).filter(u => u !== it._self).length : 0;
     const asNew = () => { setItemDrawing(it, addDrawing(it.name, doc, svg)); done(); };
     const everywhere = () => {
       const n = updateDrawing(d.id, doc, svg);
@@ -2313,7 +2358,7 @@ function editItemDrawing(it, done) {
 
 // Drawings made before the library existed: add the ones on custom items to it.
 function adoptItemDrawings() {
-  const loose = store.state.customItems.filter(it => it.iconSvg && it.iconDoc && !findDrawing(it.iconLib));
+  const loose = store.allCustomItems().filter(it => it.iconSvg && it.iconDoc && !findDrawing(it.iconLib));
   if (!loose.length) return;
   commit(s => {
     for (const it of loose) {
@@ -2324,11 +2369,11 @@ function adoptItemDrawings() {
   }, null);
 }
 
-// The library, in the Custom tab: draw new ones, edit (updating the items that use them), rename,
+// The library, in Catalog → Drawings: draw new ones, edit (updating the items that use them), rename,
 // start a new drawing from a copy, delete (items keep their copies).
 function drawingsSection() {
   const lib = drawingLibrary();
-  const used = id => drawingUsers(store.state, id).length;
+  const used = id => drawingUsers(id).length;
   const edit = d => openIconDrawer({ doc: d.doc, title: `Edit “${d.name}”`, color: "var(--accent)", saveLabel: "Save" }, (doc, svg) => {
     if (!doc) return toast("A drawing needs at least one shape");
     const n = updateDrawing(d.id, doc, svg);
@@ -2346,7 +2391,7 @@ function drawingsSection() {
     input.focus(); input.select();
   };
   const remove = d => confirmDialog(`Delete the drawing “${d.name}”?${used(d.id) ? ` The ${plural(used(d.id), "item")} using it keep their icon.` : ""}`, "Delete",
-    () => commit(s => { s.iconLibrary = s.iconLibrary.filter(x => x.id !== d.id); for (const it of drawingUsers(s, d.id)) delete it.iconLib; }, `Deleted “${d.name}”`, true));
+    () => commit(s => { s.iconLibrary = s.iconLibrary.filter(x => x.id !== d.id); for (const it of drawingUsers(d.id)) delete it.iconLib; }, `Deleted “${d.name}”`, true));
   const newOne = () => openIconDrawer({ title: "New drawing", color: "var(--accent)", templates: true, saveLabel: "Save" }, (doc, svg) => {
     if (doc) { addDrawing("", doc, svg); toast("Saved a new drawing"); }
   });
@@ -2608,7 +2653,7 @@ function chooseTemplate(onPick) {
   const order = t => TYPE_GROUPS.findIndex(g => g.types.includes(t.type));
   const builtins = store.templates().filter(t => t.builtin).sort((a, b) => order(a) - order(b));
   close = openModal("Choose a template", [
-    h("div", { class: "tpl-grid" }, [...builtins, ...store.state.templates].map(tile)),
+    h("div", { class: "tpl-grid" }, [...builtins, ...store.templates().filter(t => !t.builtin)].map(tile)),
     h("p", { class: "muted small" }, "Need different fields? ",
       h("button", { class: "link", onclick: () => { close(); openTemplateEditor(null); } }, "Create a template"), "."),
   ], { wide: true });
@@ -2616,17 +2661,29 @@ function chooseTemplate(onPick) {
 
 // ------------------------------------------------------------------ custom view
 
-function renderCustom() {
-  const items = store.state.customItems;
-  const usage = id => store.state.customItems.filter(i => i.template === id).length;
-  return h("div", { class: "view-custom" },
-    h("section", null,
-      h("div", { class: "section-head" }, h("h2", null, "My items"),
-        h("button", { class: "btn primary", onclick: () => openItemForm(null) }, icon("plus"), "New item")),
-      items.length ? h("div", { class: "group" }, items.map(catalogRow))
-        : h("div", { class: "empty" }, h("p", null, "No custom items yet. Make a homebrew weapon, a family heirloom, or a +1 version of an existing item (open any catalog item → Customize)."))),
-    drawingsSection(),
-    h("section", null,
+// Your own items, by the rule packages this campaign uses (new ones go into the package they're made in).
+function myItemsSection() {
+  const camp = store.campaign(), pkgs = store.enabledPackages();
+  const home = store.homePackage();
+  return h("section", null,
+    h("div", { class: "section-head" }, h("h2", null, "My items"),
+      h("button", { class: "btn primary", onclick: () => openItemForm(null, { package: home.id }) }, icon("plus"), "New item")),
+    h("p", { class: "muted small" }, `Custom items come in rule packages: ${camp.name} uses ${plural(pkgs.length, "package")}. `,
+      h("button", { class: "link", onclick: () => { ui.settingsTab = "campaigns"; go("settings"); } }, "Choose packages"), "."),
+    pkgs.map(pkg => h("div", { class: "group package-group" },
+      h("div", { class: "group-head" }, h("h3", null, pkg.name),
+        pkg.id === home.id && h("span", { class: "tag" }, "new items go here"),
+        h("span", { class: "muted small" }, plural(pkg.customItems.length, "item")),
+        pkgs.length > 1 && h("button", { class: "btn", onclick: () => openItemForm(null, { package: pkg.id }) }, icon("plus"), "New")),
+      pkg.customItems.length ? pkg.customItems.map(catalogRow)
+        : h("p", { class: "muted pad" }, "No items yet. Make a homebrew weapon, a family heirloom, or a +1 version of an existing item (open any catalog item → Customize)."))));
+}
+
+// Templates: the built-in types by group, and the templates of the packages in use.
+function templatesSection() {
+  const usage = id => store.customItems().filter(i => i.template === id).length;
+  const several = store.enabledPackages().length > 1;
+  return h("section", null,
       h("div", { class: "section-head" }, h("h2", null, "Templates"),
         h("button", { class: "btn", onclick: () => openTemplateEditor(null) }, icon("plus"), "New template")),
       h("p", { class: "muted small" }, "Templates decide which fields an item has. Your templates build on a base type (which controls how the app treats the item — e.g. Armor counts toward AC, Containers can hold things) and add your own fields."),
@@ -2655,13 +2712,14 @@ function renderCustom() {
                 h("button", { class: "link", onclick: () => extendTemplate(tpls[0]) }, "Extend"),
               ]));
         }),
-        store.state.templates.map(t => h("div", { class: "tpl-tile static" },
+        store.templates().filter(t => !t.builtin).map(t => h("div", { class: "tpl-tile static" },
           h("span", { class: "tpl-swatch", style: { background: templateColor(t) } }),
           h("b", null, t.name),
-          h("small", { class: "muted" }, `Based on ${TYPE_LABELS[t.type]} · +${plural((t.fields || []).length, "field")} · ${plural(usage(t.id), "item")}`),
+          h("small", { class: "muted" }, `Based on ${TYPE_LABELS[t.type]} · +${plural((t.fields || []).length, "field")} · ${plural(usage(t.id), "item")}`
+            + (several ? ` · ${store.templatePackage(t.id)?.name || ""}` : "")),
           h("div", { class: "tpl-actions" },
             h("button", { class: "link", onclick: () => openItemForm(newItemFrom(t)) }, "New item"),
-            h("button", { class: "link", onclick: () => openTemplateEditor(t) }, "Edit")))))));
+            h("button", { class: "link", onclick: () => openTemplateEditor(t) }, "Edit"))))));
 }
 
 // Pick a hue: a rainbow slider and quick swatches, with a live preview of the shades
@@ -2767,8 +2825,10 @@ function openTemplateEditor(tpl) {
     delete draft.builtin;
     if (isNew) draft.id = "tpl-" + uid();
     close();
-    commit(s => {
-      s.templates = isNew ? [...s.templates, draft] : s.templates.map(t => t.id === draft.id ? draft : t);
+    const pkg = !isNew && store.templatePackage(draft.id);
+    commit(() => {
+      if (pkg) pkg.templates = pkg.templates.map(t => t.id === draft.id ? draft : t);
+      else store.homePackage().templates.push(draft);
     }, `Saved template ${draft.name}`, true);
   };
 
@@ -2790,7 +2850,10 @@ function openTemplateEditor(tpl) {
     !isNew && h("button", { class: "btn danger", onclick: () => {
       confirmDialog(`Delete template “${tpl.name}”? Items using it keep their data but lose the extra fields in the editor.`, "Delete", () => {
         close();
-        commit(s => { s.templates = s.templates.filter(t => t.id !== tpl.id); }, `Deleted template ${tpl.name}`, true);
+        commit(() => {
+          const pkg = store.templatePackage(tpl.id);
+          if (pkg) pkg.templates = pkg.templates.filter(t => t.id !== tpl.id);
+        }, `Deleted template ${tpl.name}`, true);
       });
     } }, icon("trash"), "Delete"),
     h("button", { class: "btn", onclick: () => close() }, "Cancel"),
@@ -2809,25 +2872,80 @@ function download(filename, data) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+// ------------------------------------------------------------------ backups and other files
+// Pack Rat files: everything ("packrat-data"), or one campaign, character, rule package or drawing.
+// Older backups (one bundle with characters at the top) still import, as a campaign of their own.
+
+const today = () => new Date().toISOString().slice(0, 10);
+const safeName = name => (name || "pack-rat").replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "_") || "pack-rat";
+const campaignImageRefs = camps => allImageRefs(camps.flatMap(c => c.characters), [], camps.flatMap(c => c.gmControls.map(g => g.image)));
+
+async function exportAll() {
+  const d = store.data;
+  download(`pack-rat-${today()}.json`, { kind: "packrat-data", ...d,
+    images: await bundleImages(new Set([...campaignImageRefs(d.campaigns), ...allImageRefs([], store.allCustomItems())])) });
+}
+
+// Bring in any Pack Rat file. fileName names a campaign made from an older whole backup.
+async function importData(data, fileName = "Imported") {
+  if (!data || typeof data !== "object") throw new Error("Unrecognised file");
+  await storeBundledImages(data.images);
+  delete data.images;
+  const label = (fileName || "Imported").replace(/\.json$/i, "");
+  const takeTemplates = tpls => { for (const t of tpls || []) if (!store.template(t.id)) store.homePackage().templates.push(t); };
+  const takeDrawings = list => { for (const d of list || []) if (!findDrawing(d.id)) store.data.iconLibrary.push(d); };
+  if (data.kind === "character" && data.character) {
+    commit(s => {
+      const c = { ...cleanChar(data.character), id: uid() }; // no party-server fields (owner, rev…)
+      reclassifyAll({ characters: [c] });
+      s.characters.push(c); s.activeId = c.id;
+      takeTemplates(data.templates);
+    }, `Imported ${data.character.name}`, true);
+  } else if (data.kind === "campaign" && data.campaign) {
+    commit(() => {
+      const camp = { ...data.campaign, id: "cmp" + uid() };
+      for (const p of data.packages || []) if (!store.data.packages.some(x => x.id === p.id)) store.data.packages.push(p);
+      takeDrawings(data.drawings);
+      reclassifyAll({ characters: camp.characters || [], shops: camp.shops || [] });
+      store.data.campaigns.push(camp);
+      normalizeData(store.data);
+    }, `Imported the campaign ${data.campaign.name}`, true);
+  } else if (data.kind === "package" && data.package) {
+    commit(() => {
+      const taken = store.data.packages.some(p => p.id === data.package.id);
+      const pkg = { ...data.package, id: taken ? "pkg" + uid() : data.package.id };
+      takeDrawings(data.drawings);
+      store.data.packages.push(pkg);
+      store.campaign().packages.push(pkg.id); // this campaign uses it straight away
+      normalizeData(store.data);
+    }, `Imported the rule package ${data.package.name}`, true);
+  } else if (data.kind === "drawing" && data.drawing) {
+    commit(() => { store.data.iconLibrary.unshift({ ...data.drawing, id: "d" + uid() }); }, `Imported the drawing ${data.drawing.name}`, true);
+  } else if (data.kind === "packrat-data" || Array.isArray(data.campaigns)) {
+    if (party.active) throw new Error("leave the party before restoring a full backup (single characters can be imported any time)");
+    delete data.kind;
+    const d = normalizeData(data);
+    d.campaigns.forEach(c => reclassifyAll(c));
+    commit(() => { store.data = d; }, "Restored everything from the backup", true);
+  } else if (Array.isArray(data.characters)) {
+    // A backup from before campaigns: it becomes a campaign (and rule package) of its own.
+    if (party.active) throw new Error("leave the party before importing a whole backup (single characters can be imported any time)");
+    reclassifyAll(data); // backups from before catalog items moved type
+    const d = migrateV1(data, label, `${label} homebrew`);
+    commit(() => {
+      store.data.packages.push(...d.packages);
+      takeDrawings(d.iconLibrary);
+      store.data.campaigns.push(d.campaigns[0]);
+      store.data.activeCampaign = d.campaigns[0].id;
+    }, `Imported the backup as the campaign “${label}”`, true);
+  } else throw new Error("Unrecognised file");
+}
+
 function importFile(file) {
   const reader = new FileReader();
   reader.onload = async () => {
     try {
-      const data = JSON.parse(reader.result);
-      await storeBundledImages(data.images);
-      delete data.images;
-      if (data.kind === "character" && data.character) {
-        commit(s => {
-          const c = { ...cleanChar(data.character), id: uid() }; // no party-server fields (owner, rev…)
-          reclassifyAll({ characters: [c] });
-          s.characters.push(c); s.activeId = c.id;
-          for (const t of data.templates || []) if (!s.templates.some(x => x.id === t.id)) s.templates.push(t);
-        }, `Imported ${data.character.name}`, true);
-      } else if (Array.isArray(data.characters)) {
-        if (party.active) throw new Error("leave the party before restoring a full backup (single characters can be imported any time)");
-        reclassifyAll(data); // backups from before catalog items moved type
-        commit(s => Object.assign(s, data), "Imported all data", true);
-      } else throw new Error("Unrecognised file");
+      await importData(JSON.parse(reader.result), file.name);
     } catch (e) {
       toast("Import failed: " + e.message);
     }
@@ -2851,16 +2969,36 @@ function renderSettings() {
     render();
     toast(on ? "Player mode on: the catalog and custom items are hidden" : "Player mode off");
   };
+  // Role: a GM prepares campaigns' shops, GM values and controls without hosting (and gets the GM
+  // tab); in a party, the host decides who's GM. Per device.
+  const setRole = role => {
+    ui.role = role;
+    writePref("packrat-role", role);
+    render();
+    toast(role === "gm" ? "GM role: the GM tab has your GM values and controls" : "Player role");
+  };
+  const roleBox = h("section", { class: "role-box" },
+    h("div", { class: "switch-row" },
+      h("span", null, h("b", null, "Role on this device"),
+        h("span", { class: "muted small" }, party.active
+          ? (party.isGm() ? "You're a GM in this party." : "In a party, the host decides who's a GM.")
+          : "As GM, prepare each campaign's shops, GM values and controls without hosting a party. In a party, the host chooses the GM.")),
+      h("div", { class: "seg seg-field", role: "radiogroup", "aria-label": "Role" },
+        [["player", "Player"], ["gm", "GM"]].map(([k, label]) => h("button", { type: "button", role: "radio", class: ui.role === k ? "active" : "",
+          "aria-checked": String(ui.role === k), disabled: party.active, onclick: () => setRole(k) }, label)))),
+    h("p", { class: "muted small device-line" }, "In parties this device is called ", h("b", null, deviceName()), ". ",
+      h("button", { class: "link", onclick: renameDevice }, "Rename")));
   return h("div", { class: "view-settings" },
+    roleBox,
     h("section", { class: "help-link" },
       icon("book"),
       h("div", null, h("b", null, "User guide"),
         h("p", { class: "muted small" }, "How everything works, with pictures: containers, sets, drawn icons, parties, shops and GM values.")),
       h("a", { class: "btn", href: GUIDE_URL, target: "_blank", rel: "noopener" }, "Open the guide")),
-    h("section", null,
+    ui.role !== "gm" && h("section", null,
       h("label", { class: "switch-row" },
         h("span", null, h("b", null, "Player mode"),
-          h("span", { class: "muted small" }, "Hides the Catalog and Custom tabs and item editing, for players whose gear comes from the DM, shops and trades. Items can still be renamed (Display name) and written in.")),
+          h("span", { class: "muted small" }, "Hides the Catalog tab and item editing, for players whose gear comes from the DM, shops and trades. Items can still be renamed (Display name) and written in.")),
         h("input", { type: "checkbox", role: "switch", class: "switch", checked: ui.playerMode, onchange: ev => setPlayerMode(ev.target.checked) }))),
     partySettings(),
     h("section", null,
@@ -2872,14 +3010,14 @@ function renderSettings() {
           h("div", { class: "row-sub" }, `${entriesLabel(c)} · ${coinSummary(c.coins)} · STR ${c.str}`)),
         iconBtn("edit", "Rename", () => renamePrompt(c)),
         iconBtn("download", "Export character", async () => download(`${c.name.replace(/\W+/g, "_")}.json`,
-          { kind: "character", character: c, templates: s.templates.filter(t => c.items.some(e => e.item.template === t.id)),
+          { kind: "character", character: c, templates: store.allTemplates().filter(t => c.items.some(e => e.item.template === t.id)),
             images: await bundleImages(allImageRefs([c])) })),
         iconBtn("copy", "Duplicate", () => commit(st => { st.characters.push({ ...clone(c), id: uid(), name: c.name + " (copy)" }); }, `Duplicated ${c.name}`)),
         (s.characters.length > 1 || party.active) && iconBtn("trash", "Delete", () => confirmDialog(
           party.isLinked(c.id) ? `Delete ${c.name} from this device? They also leave the party, and their inventory is deleted from the host.` : `Delete ${c.name} and their whole inventory?`, "Delete",
           () => commit(st => { st.characters = st.characters.filter(x => x.id !== c.id); if (st.activeId === c.id) st.activeId = st.characters[0]?.id; }, `Deleted ${c.name}`, true)), "danger-hover"))))),
     h("section", null,
-      h("h2", null, "Rules"),
+      h("h2", null, `Rules for ${store.campaign().name}`),
       h("div", { class: "form grid" },
         h("label", { class: "field" }, h("span", null, "Encumbrance"),
           h("select", { onchange: e => setSetting("encumbrance", e.target.value) },
@@ -2900,12 +3038,11 @@ function renderSettings() {
         ? "Party characters are saved on the host computer. Custom items, templates and settings stay in this browser."
         : "Everything is saved in this browser only. Export a backup to move data between your PC and phone."),
       h("div", { class: "inline wrap" },
-        h("button", { class: "btn", onclick: async () => download(`rpg-inventory-${new Date().toISOString().slice(0, 10)}.json`,
-          { ...s, images: await bundleImages(allImageRefs(s.characters, s.customItems, (s.gmControls || []).map(c => c.image))) }) }, icon("download"), "Export all"),
+        h("button", { class: "btn", onclick: exportAll }, icon("download"), "Export all"),
         h("button", { class: "btn", onclick: () => fileInput.click() }, icon("upload"), "Import"),
         fileInput,
         !party.active && h("button", { class: "btn danger", onclick: () => confirmDialog("Erase all characters, custom items and templates?", "Erase everything",
-          () => commit(st => Object.assign(st, defaultState()), "All data reset", true)) }, icon("trash"), "Reset"))),
+          () => commit(() => store.reset(), "All data reset", true)) }, icon("trash"), "Reset"))),
     h("section", { class: "credits muted small" },
       h("p", null, "Includes material from the System Reference Document 5.1 by Wizards of the Coast LLC, licensed under ",
         h("a", { href: "https://creativecommons.org/licenses/by/4.0/legalcode", target: "_blank", rel: "noopener" }, "CC BY 4.0"), "."),
@@ -2961,8 +3098,11 @@ function openCharSwitcher() {
   const row = c => h("button", { class: "row row-main switch" + (c.id === s.activeId ? " equipped" : ""),
     onclick: () => { close(); commit(st => { st.activeId = c.id; }); } },
     icon("user"), h("div", null, h("div", { class: "row-title" }, c.name), h("div", { class: "row-sub" }, entriesLabel(c))));
+  const campaignLine = h("button", { class: "campaign-line", type: "button", onclick: () => { close(); openCampaignSwitcher(); } },
+    icon("book"), h("span", null, h("span", { class: "muted small" }, "Campaign"), h("b", null, store.campaign().name)),
+    !party.active && h("span", { class: "link" }, "Change"));
   if (!party.active) {
-    close = openModal("Characters", h("div", { class: "group" },
+    close = openModal("Characters", h("div", { class: "group" }, campaignLine,
       s.characters.map(row),
       h("button", { class: "btn wide", onclick: () => { close(); newCharPrompt(); } }, icon("plus"), "New character")));
     return;
@@ -2970,6 +3110,7 @@ function openCharSwitcher() {
   // In a party: switch between the characters playing; others on this device can be brought in.
   const others = bringableCharacters();
   close = openModal("Characters", [
+    campaignLine,
     h("h4", null, "Playing in this party"),
     h("div", { class: "group" }, party.linked().map(row)),
     others.length > 0 && [h("h4", null, "Also on this device"),
@@ -2985,7 +3126,7 @@ function openCharSwitcher() {
 
 // Nothing saved yet in this copy: only blank starter characters, no custom items.
 function isFreshData() {
-  return store.state.characters.every(isBlankCharacter) && !store.state.customItems.length;
+  return store.campaigns().every(c => c.characters.every(isBlankCharacter)) && !store.allCustomItems().length;
 }
 
 // A copy with nothing saved (e.g. the web app opened from a file, or a different address) looks
@@ -3074,6 +3215,7 @@ async function boot() {
   applyPrefs(); // saved preferences may live in the PC's shared file
   store.load();
   adoptItemDrawings(); // drawn icons from before the drawings library
+  adoptAppShops(); // shops the app's own server kept before campaigns
   store.subscribe(render);
   const nav = document.getElementById("nav");
   nav.replaceChildren(...Object.entries(VIEWS).map(([k, v]) =>
@@ -3082,8 +3224,9 @@ async function boot() {
   document.getElementById("char-switch").addEventListener("click", openCharSwitcher);
   const hash = location.hash.slice(1);
   if (VIEWS[hash]) ui.view = hash;
+  else if (hash === "custom") { ui.view = "catalog"; ui.catTab = "mine"; } // the Custom tab's place before
   if (party.active) {
-    party.link();
+    if (!party.followCampaign()) party.link(); // play the campaign the GM has loaded
     party.connect();
   }
   render();

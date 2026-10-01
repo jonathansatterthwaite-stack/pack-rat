@@ -96,6 +96,13 @@ button { cursor: pointer; }
   padding: 6px 12px; font-weight: 600;
 }
 .char-switch span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40vw; }
+.char-switch { padding-top: 3px; padding-bottom: 3px; border-radius: 14px; }
+.char-switch-text { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.15; min-width: 0; }
+.char-switch-text small { font-size: .68rem; font-weight: 600; color: var(--muted); letter-spacing: .02em; }
+.campaign-line { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 14px; border: 0; border-bottom: 1px solid var(--border);
+  background: var(--accent-soft); text-align: left; color: var(--text); }
+.campaign-line > span:nth-child(2) { display: flex; flex-direction: column; flex: 1; }
+.campaign-line .icon { color: var(--accent); }
 .nav { display: flex; gap: 4px; margin-left: auto; }
 .nav-btn {
   display: flex; align-items: center; gap: 6px; border: 0; background: none;
@@ -241,6 +248,10 @@ svg.drawn-icon { overflow: visible; }
 /* The GM's Party screen: tabs, and GM values as a hierarchy (value → player → item). */
 .party-tabs { margin-bottom: 14px; }
 .seg.party-tabs button { width: auto; padding: 0 16px; white-space: nowrap; font-weight: 600; }
+/* Sub-tabs at the top of a screen (Catalog: Items, My items…; Settings: Settings, Campaigns, Files) */
+.seg.sub-tabs { display: flex; width: fit-content; max-width: 100%; overflow-x: auto; margin-bottom: 14px; }
+.seg.sub-tabs button { width: auto; padding: 0 16px; white-space: nowrap; font-weight: 600; flex: none; }
+.package-group .group-head h3 { flex: 1; text-align: left; }
 .gm-var .gm-level { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .gm-var .collapse { flex: none; }
 .gm-var .group-head h3 { flex: 1; text-align: left; }
@@ -956,3 +967,55 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
   body.modal-open #toast { bottom: auto; top: calc(12px + env(safe-area-inset-top)); transform: translate(-50%, -20px); }
   body.modal-open #toast.show { transform: translate(-50%, 0); }
 }
+
+/* Settings → Campaigns */
+.campaign-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.campaign-card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+.campaign-card.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.campaign-head { display: flex; align-items: center; gap: 8px; }
+.campaign-head h3 { flex: 1; font-size: 1.1rem; }
+.campaign-notes { margin: 0; white-space: pre-wrap; }
+.campaign-facts { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; margin: 0; font-size: .9rem; }
+.campaign-facts dt { color: var(--muted); }
+.campaign-facts dd { margin: 0; }
+.campaign-actions { margin-top: auto; }
+.campaign-actions .icon-btn { margin-left: auto; }
+.pkg-choice .row { gap: 10px; }
+.pkg-choice .grow { flex: 1; }
+/* Settings → Files */
+.files-section { margin-bottom: 12px; }
+.files-section .group-head h3 { flex: 1; text-align: left; }
+.files-section .collapse { flex: 1; }
+.file-row { align-items: center; }
+.file-row > .icon, .file-thumb { width: 26px; height: 26px; flex: none; color: var(--muted); }
+.file-thumb .file-svg { width: 26px; height: 26px; color: var(--accent); }
+.file-size { flex: none; min-width: 56px; text-align: right; }
+.file-actions { display: flex; gap: 2px; flex: none; }
+.picture-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px; padding: 0 14px 14px; }
+.picture-tile { margin: 0; display: flex; flex-direction: column; gap: 4px; }
+.picture-thumb { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px; background: var(--bg); box-shadow: 0 0 0 1px var(--border); }
+.picture-tile.unused .picture-thumb { opacity: .55; outline: 2px dashed var(--warn); outline-offset: -2px; }
+@media (max-width: 560px) {
+  .file-row { flex-wrap: wrap; }
+  .file-actions { width: 100%; justify-content: flex-end; }
+}
+/* The GM tab: players at a glance */
+.gm-players .search { margin: 8px 0 14px; }
+.gm-player-card { margin-bottom: 12px; }
+.gm-player-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.gm-player-name { flex: 1; display: flex; align-items: center; gap: 8px; font-size: 1.05rem; }
+.gm-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; padding: 10px 14px; }
+.gm-stat { display: flex; flex-direction: column; gap: 1px; padding: 6px 10px; border-radius: 10px; background: var(--bg); }
+.gm-stat small { color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; }
+.gm-stat b { font-size: 1.05rem; }
+.gm-stat.warn { background: color-mix(in srgb, var(--warn) 18%, var(--bg)); }
+.gm-attacks { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px 10px; }
+.gm-inv { list-style: none; margin: 0; padding: 4px 0 10px; border-top: 1px solid var(--border); }
+.gm-inv-row { display: flex; align-items: center; gap: 8px; padding: 4px 14px; font-size: .92rem; }
+.gm-inv-row.hit { background: var(--accent-soft); }
+.gm-inv-row .row-icon.small { width: 20px; height: 20px; }
+.role-box .seg-field button { width: auto; padding: 0 18px; }
+/* The Party tab: the campaign being played, the host's devices */
+.campaign-banner { margin-bottom: 14px; }
+.devices-card { margin-bottom: 18px; }
+.device-line { margin: 8px 0 0; }

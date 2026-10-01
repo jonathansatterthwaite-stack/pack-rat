@@ -146,6 +146,11 @@ function renderJoin() {
       h("h2", null, "You've joined a party"),
       h("p", { class: "muted" }, "Choose who you're playing. Your characters stay saved on this device; the party shares a live copy so everyone can trade.")),
     joinOptions(),
+    h("section", { class: "join-card" },
+      h("h3", null, "I'm the GM"),
+      h("p", { class: "muted small" }, "A GM doesn't need a character. Ask the host to make this device a GM: on their Party tab it's listed as ",
+        h("b", null, deviceName()), ". This screen moves on by itself once they have."),
+      h("button", { class: "btn", onclick: renameDevice }, icon("edit"), "Rename this device")),
     party.isJoinedElsewhere() && h("p", { class: "muted small center" },
       h("button", { class: "link", onclick: confirmLeave }, "Leave this party")));
 }
@@ -164,6 +169,23 @@ function undecidedBanner() {
       h("button", { class: "btn", onclick: () => party.resolve(id, "party") }, "The party's"),
       h("button", { class: "btn primary", onclick: () => party.resolve(id, "device") }, "This device's"));
   });
+}
+
+// What the host sees this device as. Reconnects so the host sees the new name.
+function renameDevice() {
+  let name = deviceName(), close;
+  const ok = () => {
+    close();
+    const v = name.trim().slice(0, 40);
+    kv.set("packrat-device-name", v);
+    if (party.active) party.connect();
+    render();
+  };
+  close = openModal("This device's name", h("form", { class: "form", onsubmit: e => { e.preventDefault(); ok(); } },
+    h("p", { class: "muted small" }, "In a party, the host sees devices by name when choosing who's a GM."),
+    h("label", { class: "field" }, h("span", null, "Name"),
+      h("input", { type: "text", value: name, maxlength: 40, placeholder: "e.g. Jo's laptop", oninput: e => { name = e.target.value; } }))),
+  { footer: [h("button", { class: "btn", onclick: () => close() }, "Cancel"), h("button", { class: "btn primary", onclick: ok }, "Save")] });
 }
 
 function confirmLeave() {
@@ -223,25 +245,61 @@ function memberCard(c) {
       iconBtn("chevron", open ? "Hide inventory" : "Show inventory", toggle, open ? "flip" : ""),
       h("button", { class: "btn primary", disabled: !store.char(), onclick: () => openTradeBuilder(c.id) }, icon("move"), "Trade"),
       // The host can clear out players who have left (only while they're away).
-      party.info?.canManageShops && !c.online && iconBtn("trash", `Remove ${c.name} from the party`, () => removeMember(c), "danger-hover")),
+      party.isHost() && !c.online && iconBtn("trash", `Remove ${c.name} from the party`, () => removeMember(c), "danger-hover")),
     open && (c.items.length
       ? h("ul", { class: "member-items" }, byName(c.items.filter(e => !inDeck(c, e))).map(e =>
         h("li", null, itemIcon(e.item, "row-icon small"), e.qty > 1 ? `${e.qty} × ` : "", entryName(e), h("span", { class: "muted" }, where(e)))))
       : h("p", { class: "muted pad" }, "Nothing carried.")));
 }
 
+// The campaign the party is playing, and for a GM, loading another of theirs.
+function campaignCard() {
+  const pc = party.campaign;
+  const mine = store.campaigns().filter(c => c.id !== pc?.id);
+  const load = async camp => {
+    try { await party.loadCampaign(camp); } catch (e) { toast(e.message); }
+  };
+  const picker = () => {
+    let close;
+    close = openModal("Load a campaign", [
+      h("p", { class: "muted small" }, "Everyone switches to it: players' devices play their characters from it (or bring new ones). "
+        + "A campaign the party hasn't played yet starts with its shops and GM values from your device."),
+      h("div", { class: "group" }, mine.map(c => h("button", { class: "row row-main switch", onclick: () => { close(); load(c); } },
+        icon("book"), h("div", null, h("div", { class: "row-title" }, c.name),
+          h("div", { class: "row-sub" }, [plural(c.shops.length, "shop"), c.notes].filter(Boolean).join(" · ")))))),
+    ]);
+  };
+  return h("section", { class: "found-banner campaign-banner" },
+    icon("book"),
+    h("div", null,
+      h("b", null, pc ? pc.name : "No campaign chosen"),
+      h("p", { class: "muted small" }, pc ? "The campaign this party is playing." : party.isGm()
+        ? "Load one of your campaigns: the party then keeps a save of its own for it, and players play their characters from it."
+        : "The GM hasn't chosen a campaign yet.")),
+    party.isGm() && mine.length > 0 && h("button", { class: "btn" + (pc ? "" : " primary"), onclick: picker }, pc ? "Load another" : "Load a campaign"));
+}
+
+// The host's devices: who's here, and who's a GM. With no GM chosen, the host is the GM.
+function devicesCard() {
+  const gms = party.devices.filter(d => d.gm);
+  return h("section", { class: "devices-card" },
+    h("div", { class: "section-head" }, h("h2", null, "Devices"),
+      h("span", { class: "muted small" }, gms.length ? plural(gms.length, "GM") : "You're the GM until you choose one")),
+    h("p", { class: "muted small" }, "Make a device a GM to let it run the shops, GM values and controls and see everyone's details. As host you keep stopping the party, choosing GMs and removing players."),
+    h("div", { class: "group" }, party.devices.map(d => h("div", { class: "row" },
+      onlineDot(d.online),
+      h("div", { class: "row-main static" },
+        h("div", { class: "row-title" }, d.name, d.self && h("span", { class: "tag" }, "this device"), d.gm && h("span", { class: "tag on" }, "GM")),
+        h("div", { class: "row-sub" }, d.characters.length ? "Plays " + d.characters.join(", ") : "No character")),
+      h("button", { class: "btn" + (d.gm ? "" : " primary"), onclick: () => party.setGmRole(d.id, !d.gm) }, d.gm ? "Revoke GM" : "Make GM")))));
+}
+
 function renderParty() {
-  // The GM (the host) has a second tab: GM values.
-  const gmTabs = party.isGm() && h("div", { class: "seg party-tabs", role: "tablist", "aria-label": "Party screen" },
-    [["party", "Party"], ["gm", "GM values"]].map(([k, label]) => h("button", { type: "button", role: "tab",
-      class: ui.partyTab === k ? "active" : "", "aria-selected": String(ui.partyTab === k), onclick: () => { ui.partyTab = k; render(); } }, label)));
-  if (gmTabs && ui.partyTab === "gm") return h("div", { class: "view-party" }, gmTabs, gmValuesView());
   const incoming = party.incoming();
   const outgoing = party.trades.filter(t => t.status === "pending" && t.fromMine);
   const history = party.trades.filter(t => t.status !== "pending").slice(0, 10);
   const others = party.others();
   return h("div", { class: "view-party" },
-    gmTabs,
     h("section", { class: "party-banner" },
       h("div", { class: "section-head" },
         h("h2", null, "Party"),
@@ -254,6 +312,8 @@ function renderParty() {
       party.isJoinedElsewhere() && h("div", { class: "inline wrap host-actions" },
         h("span", { class: "muted small" }, `You joined the party at ${hostLabel(party.base)}.`),
         h("button", { class: "btn", onclick: confirmLeave }, "Leave party"))),
+    campaignCard(),
+    party.isHost() && devicesCard(),
     undecidedBanner(),
     incoming.length > 0 && h("section", null, h("h2", null, "Offers for you"), incoming.map(tradeCard)),
     outgoing.length > 0 && h("section", null, h("h2", null, "Your offers"), outgoing.map(tradeCard)),
@@ -261,7 +321,7 @@ function renderParty() {
       h("h2", null, "Party members"),
       others.length ? others.map(memberCard)
         : h("div", { class: "empty" }, h("p", null, "Nobody else has joined yet. Share the address above."))),
-    h("section", null,
+    (!party.isGm() || party.linked().length > 0) && h("section", null,
       h("div", { class: "section-head" }, h("h2", null, "Playing in this party"),
         h("button", { class: "btn", onclick: openJoinModal }, icon("plus"), "Bring a character")),
       h("div", { class: "group" }, party.linked().map(c => h("div", { class: "row" + (c.id === store.state.activeId ? " equipped" : "") },
@@ -310,6 +370,7 @@ function gmValueControl(spec, own, inherited, onSet) {
 // The GM values tab: every gm_ value in use, then the players whose items use it, then those items.
 // Each level can be set; an item uses the most specific value (item, player, party, the drawing's own).
 function gmValuesView() {
+  if (!party.active) return [gmControlsSection(), gmPresetsSection()];
   const vars = gmVariablesInParty();
   const gm = party.gm || {};
   const set = (scope, target, name) => async value => {
@@ -358,6 +419,95 @@ function gmValuesView() {
             }),
           ]);
       }))];
+}
+
+// ------------------------------------------------------------------ the GM's view of the players
+
+// Every character in the party, with what a GM wants at a glance: armour class, load, coins,
+// attunement and attacks, and their whole inventory (searchable across everyone).
+function gmPlayersView() {
+  const q = (ui.gmSearch || "").trim().toLowerCase();
+  const rules = store.state.settings;
+  const chars = [...party.chars].sort((a, b) => (b.online - a.online) || a.name.localeCompare(b.name));
+  const matches = (c, e) => !q || [entryName(e), e.item.name, e.item.category, e.notes].some(t => t && t.toLowerCase().includes(q));
+
+  // Their inventory as a tree: on person, then what's in (and strapped to) each container.
+  const tree = (c, parent, depth) => byName(c.items.filter(e => (e.parent || null) === parent && !inDeck(c, e))).flatMap(e => {
+    const kids = tree(c, e.uid, depth + 1);
+    if (!matches(c, e) && !kids.length) return [];
+    return [h("li", { class: "gm-inv-row" + (matches(c, e) && q ? " hit" : ""), style: { paddingLeft: 10 + depth * 18 + "px" } },
+      itemIcon(e.item, "row-icon small", () => entryIconVars(c, e)),
+      h("span", null, entryName(e), e.qty > 1 && h("span", { class: "muted" }, ` ×${e.qty.toLocaleString()}`)),
+      e.strapped && h("span", { class: "tag" }, "strapped"),
+      e.equipped && h("span", { class: "tag on" }, equipWord(e)),
+      e.attuned && h("span", { class: "tag attuned" }, "attuned"),
+      e.liquid?.pints > 0 && h("span", { class: "muted small" }, liquidLabel(e))), ...kids];
+  });
+
+  const card = c => {
+    const key = "gmp:" + c.id, open = q ? true : ui.collapsed.has(key);
+    const toggle = () => { ui.collapsed.has(key) ? ui.collapsed.delete(key) : ui.collapsed.add(key); render(); };
+    const ac = armorClass(c), enc = encumbrance(c, rules);
+    const weapons = c.items.filter(e => e.item.type === "weapon" && e.equipped);
+    const rows = tree(c, null, 0);
+    if (q && !rows.length) return null;
+    return h("div", { class: "group gm-player-card" },
+      h("div", { class: "gm-player-head" },
+        onlineDot(c.online),
+        h("div", { class: "gm-player-name" }, h("b", null, c.name), c.mine && h("span", { class: "tag" }, "yours")),
+        h("button", { class: "btn", onclick: toggle, "aria-expanded": String(open) }, icon(open ? "up" : "down"), open ? "Hide inventory" : `Inventory (${entriesLabel(c)})`)),
+      h("div", { class: "gm-stats" },
+        h("div", { class: "gm-stat", title: ac.breakdown }, h("small", null, "AC"), h("b", null, ac.ac)),
+        !enc.off && h("div", { class: "gm-stat" + (enc.status !== "ok" ? " warn" : ""), title: enc.label },
+          h("small", null, "Carried"), h("b", null, `${+enc.weight.toFixed(1)} / ${enc.capacity} lb`), enc.status !== "ok" && h("span", { class: "small" }, enc.label)),
+        h("div", { class: "gm-stat" }, h("small", null, "Coins"), h("b", null, fmtMoney(coinTotalCp(c.coins || {})))),
+        h("div", { class: "gm-stat" }, h("small", null, "Attuned"), h("b", null, `${c.items.filter(e => e.attuned).length} / 3`)),
+        h("div", { class: "gm-stat" }, h("small", null, "STR / DEX"), h("b", null, `${c.str || 10} / ${c.dex || 10}`))),
+      weapons.length > 0 && h("div", { class: "gm-attacks" }, weapons.map(e => {
+        const a = weaponAttack(c, e.item);
+        return h("span", { class: "chip" }, `${entryName(e)} ${fmtMod(a.toHit)} · ${a.damage}${a.type ? " " + a.type : ""}`);
+      })),
+      ac.strPenalty && h("p", { class: "warn-text small pad" }, "Strength too low for their armour (−10 ft speed)."),
+      open && (rows.length ? h("ul", { class: "gm-inv" }, rows) : h("p", { class: "muted pad" }, "Carrying nothing.")));
+  };
+  const cards = chars.map(card).filter(Boolean);
+  return h("section", { class: "gm-players" },
+    h("div", { class: "section-head" }, h("h2", null, "Players"),
+      h("span", { class: "muted small" }, `${plural(chars.filter(c => c.online).length, "player")} online`)),
+    h("label", { class: "search" }, icon("search"),
+      h("input", { type: "search", placeholder: "Find an item on anyone: rope, potion, map…", value: ui.gmSearch || "",
+        oninput: e => { ui.gmSearch = e.target.value; render(); document.querySelector(".gm-players input[type=search]")?.focus(); } })),
+    chars.length ? (cards.length ? cards : h("p", { class: "muted pad" }, "Nobody carries anything like that.")) :
+      h("div", { class: "empty" }, h("p", null, "Nobody has joined yet. Players join from the address on the Party tab.")));
+}
+
+// Preparing outside a party: the campaign's starting GM values, for everyone. They go to the party
+// when the GM loads the campaign into one, and this device's own icons use them meanwhile.
+function gmPresetsSection() {
+  const names = [...knownGmNames()].sort();
+  const g = store.state.gmValues || {};
+  // A value's range: as a drawing declares it (its slider), else as a control's pin sets it, else 0 to 1.
+  const specOf = name => {
+    const docs = [...drawingLibrary().map(d => d.doc), ...store.allCustomItems().map(i => i.iconDoc)].filter(Boolean);
+    for (const doc of docs) { const s = drawingGmSpecs(doc).get(name); if (s && s.max !== undefined) return s; }
+    for (const pin of gmControls().flatMap(c => c.pins)) {
+      const range = pin.xVar === name ? pin.xRange : pin.yVar === name ? pin.yRange : null;
+      if (range) return { name, value: Math.min(...range), min: Math.min(...range), max: Math.max(...range), step: "any" };
+    }
+    return { name, value: 0, min: 0, max: 1, step: 0.01 };
+  };
+  return h("section", { class: "gm-values" },
+    h("h2", null, "GM values"),
+    h("p", { class: "muted small" }, `Starting values for ${store.campaign().name}, ready for the next session: they're sent to the party when you load this campaign into it. Your own icons show them meanwhile.`),
+    names.length ? h("div", { class: "group" }, names.map(name => {
+      const spec = specOf(name), own = g.party?.[name];
+      return h("div", { class: "row gm-level" },
+        h("div", { class: "row-main static" }, h("div", { class: "row-title" }, h("code", null, name)),
+          h("div", { class: "row-sub" }, own === undefined ? `The drawing's own value (${spec.value})` : "Set for everyone")),
+        gmValueControl(spec, own, spec.value, value => setGmValue("party", "", name, value)));
+    }))
+      : h("div", { class: "empty" }, h("p", null, "No GM values yet. In the icon editor's Variables tab, add one with + GM value (a name starting ",
+        h("code", null, "gm_"), ") and bind layers to it.")));
 }
 
 // Host: remove a player's character who isn't connected. Offers a backup file first.
