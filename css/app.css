@@ -450,6 +450,9 @@ input.settle-n { width: 70px; flex: none; }
 .gm-player > .gm-level { padding-left: 14px; background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
 .gm-item { padding-left: 46px !important; }
 .gm-control { display: flex; align-items: center; gap: 8px; flex: 1 1 240px; max-width: 360px; }
+/* A value changing over time (the Values tab). */
+.gm-moving { display: inline-flex; align-items: center; gap: 6px; font-size: .85rem; color: var(--accent); }
+.gm-moving .icon { width: 16px; height: 16px; }
 .gm-control input[type=range] { flex: 1; min-width: 80px; }
 .gm-control input.gm-num { width: 84px; flex: none; }
 .gm-control.inherits input { opacity: .6; }
@@ -1245,4 +1248,13 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
 .trigger-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
 .trigger-line select { width: auto; }
 .triggers-edit > .btn { align-self: flex-start; }
+/* Rules (js/triggers.js): a value, how it's compared, and to what; actions alike. */
+.trigger-line > input.rule-addr { width: auto; flex: 2 1 190px; min-width: 0; font-family: var(--mono, ui-monospace, monospace); font-size: .85rem; }
+.trigger-line > input.rule-to { width: auto; flex: 1 1 110px; min-width: 0; }
+.trigger-line > input.rule-num { width: 84px; flex: none; }
+.trigger-line > input.rule-msg { width: auto; flex: 3 1 220px; min-width: 0; }
+.rule-conds { display: flex; flex-direction: column; gap: 6px; }
+.rule-words { margin: 0; font-style: italic; }
+.rule-help { align-self: stretch; }
+.rule-help summary { cursor: pointer; }
 .tpl-tile.example { border-style: dashed; }

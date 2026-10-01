@@ -506,6 +506,7 @@ public class PartyServer {
         snap.put("treasure", shown);
         snap.put("isHost", host);
         snap.put("campaign", campaign == null ? JSONObject.NULL : new JSONObject(campaign.toString()));
+        snap.put("time", System.currentTimeMillis()); // the clock moving values follow
         if (host) snap.put("devices", deviceList(token));
         return snap;
     }
@@ -747,8 +748,8 @@ public class PartyServer {
     /** A Global value (kept as the GM value gm_<name>), else dflt. */
     private Double globalValue(String name, Double dflt) {
         JSONObject p = gm.optJSONObject("party");
-        Object v = p == null ? null : p.opt("gm_" + name);
-        return v instanceof Number ? Double.valueOf(((Number) v).doubleValue()) : dflt; // (boxed: dflt may be null)
+        Double v = valueNow(p == null ? null : p.opt("gm_" + name));
+        return v != null ? v : dflt; // (boxed: dflt may be null)
     }
 
     private boolean condHolds(JSONObject c) {
@@ -989,21 +990,30 @@ public class PartyServer {
     /** GM values: see gm_api() in server.py. POST /api/gm {scope, target, name, value|null}, GMs only. */
     private JSONObject gmApi(Request req, List<String> parts, String token) throws ApiError, JSONException {
         if (!req.method.equals("POST") || !parts.isEmpty()) throw new ApiError(404, "Unknown endpoint");
-        if (!isGm(req, token)) throw new ApiError(403, "Only a GM can set GM values");
         JSONObject body = req.json();
         String scope = body.optString("scope"), target = body.isNull("target") ? "" : body.optString("target", ""), name = body.optString("name");
         boolean scopeOk = scope.equals("party") || scope.equals("character") || scope.equals("item");
         if (!scopeOk || !name.matches("gm_[A-Za-z0-9_]{1,40}") || target.length() > 200 || (!scope.equals("party") && target.isEmpty())) {
             throw new ApiError(400, "Not a GM value");
         }
+        // A player sets the Locals of their own characters and their items, but not the GM's state
+        // overrides or the values the campaign keeps for the GM (gmOnly: states' limits).
+        if (!isGm(req, token)) {
+            if (scope.equals("party")) throw new ApiError(403, "Only a GM can set Global values");
+            synchronized (lock) {
+                JSONObject c = characters.optJSONObject(target.split("/", -1)[0]);
+                JSONArray gmOnly = campaign == null ? null : campaign.optJSONArray("gmOnly");
+                boolean kept = false;
+                for (int i = 0; gmOnly != null && i < gmOnly.length(); i++) if (name.equals(gmOnly.optString(i))) kept = true;
+                if (c == null || !c.optString("owner").equals(token) || name.startsWith("gm_state_") || kept) {
+                    throw new ApiError(403, "Only a GM can set that");
+                }
+            }
+        }
         Object raw = body.opt("value");
         boolean clear = raw == null || raw == JSONObject.NULL;
-        double value = 0;
-        if (!clear) {
-            if (!(raw instanceof Number)) throw new ApiError(400, "GM values are numbers");
-            value = ((Number) raw).doubleValue();
-            if (Double.isNaN(value) || Double.isInfinite(value) || Math.abs(value) > 1e9) throw new ApiError(400, "GM values are numbers");
-        }
+        Object value = clear ? null : cleanValue(name, raw); // a number, or a moving value
+        if (!clear && value == null) throw new ApiError(400, "GM values are numbers");
         synchronized (lock) {
             JSONObject group = null, bucket;
             if (scope.equals("party")) {
@@ -2277,12 +2287,43 @@ public class PartyServer {
         while (it.hasNext()) {
             String k = it.next();
             Object v = b.opt(k);
-            if (GM_NAME.matcher(k).matches() && v instanceof Number && !(v instanceof Boolean)) {
-                double d = ((Number) v).doubleValue();
-                if (!Double.isNaN(d) && !Double.isInfinite(d) && Math.abs(d) <= 1e9) out.put(k, v);
-            }
+            Object kept = GM_NAME.matcher(k).matches() ? cleanValue(k, v) : null;
+            if (kept != null) out.put(k, kept);
         }
         return out;
+    }
+
+    private static boolean isNum(Object v, double limit) {
+        if (!(v instanceof Number) || v instanceof Boolean) return false;
+        double d = ((Number) v).doubleValue();
+        return !Double.isNaN(d) && !Double.isInfinite(d) && Math.abs(d) <= limit;
+    }
+
+    /** A value as kept: a number, or a moving one {value, rate, until?} stamped with this host's time
+     *  (since, ms); null when it isn't one. See clean_value in server.py. */
+    static Object cleanValue(String name, Object v) throws JSONException {
+        if (isNum(v, 1e9)) return v;
+        if (!(v instanceof JSONObject) || name.startsWith("gm_state_")) return null;
+        JSONObject m = (JSONObject) v;
+        if (!isNum(m.opt("value"), 1e9) || !isNum(m.opt("rate"), 1e6)) return null;
+        JSONObject out = new JSONObject().put("value", m.get("value")).put("rate", m.get("rate")).put("since", System.currentTimeMillis());
+        if (m.has("until") && !m.isNull("until")) {
+            if (!isNum(m.opt("until"), 1e9)) return null;
+            out.put("until", m.get("until"));
+        }
+        return out;
+    }
+
+    /** A kept value as it is now (a moving one worked out from the time), else null. */
+    static Double valueNow(Object v) {
+        if (v instanceof JSONObject) {
+            JSONObject m = (JSONObject) v;
+            double rate = m.optDouble("rate", 0);
+            double x = m.optDouble("value", 0) + rate * Math.max(0, (System.currentTimeMillis() - m.optLong("since")) / 1000.0);
+            if (m.has("until") && !m.isNull("until")) x = rate > 0 ? Math.min(x, m.optDouble("until")) : Math.max(x, m.optDouble("until"));
+            return x;
+        }
+        return isNum(v, Double.MAX_VALUE) ? Double.valueOf(((Number) v).doubleValue()) : null;
     }
 
     /** A's GM values with B's on top (B wins where both have one). */
@@ -2327,6 +2368,13 @@ public class PartyServer {
                 for (int i = 0; i < rawStates.length() && i < 30; i++) if (rawStates.opt(i) instanceof String) states.put(cut(rawStates.getString(i), 40));
             }
             switchCampaign(cid, name, system, money == null ? null : currencyJson(money), states, seedShops, seedGm);
+            // Values only a GM sets (states' limits); players set their other Locals.
+            JSONArray rawOnly = body.optJSONArray("gmOnly"), gmOnly = new JSONArray();
+            for (int i = 0; rawOnly != null && i < rawOnly.length() && i < 50; i++) {
+                Object k = rawOnly.opt(i);
+                if (k instanceof String && GM_NAME.matcher((String) k).matches()) gmOnly.put(k);
+            }
+            campaign.put("gmOnly", gmOnly);
             changed(false);
         }
         return new JSONObject().put("ok", true);

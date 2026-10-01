@@ -36,7 +36,11 @@ function controlValue(ctl, specs) {
   return v ?? specOfControl(ctl, specs)?.value ?? 0;
 }
 const sendControl = (ctl, value) => sendNamed(ctl, ctl.name, value);
-const sendNamed = (ctl, name, value) => putValue(ctl.scope, ctl.target, valueKey(name), value).catch(e => toast(e.message));
+// Through Clockwork (js/clockwork.js), as the GM: set (resolves when the party has it), or shown on
+// this device's live icons at once while it's dragged (preview), until it's let go (settle).
+const sendNamed = (ctl, name, value) => clockwork.change(...clockwork.at(ctl.scope, ctl.target, name), value, "gm").done;
+const previewNamed = (ctl, name, value) => clockwork.preview(...clockwork.at(ctl.scope, ctl.target, name), value);
+const settle = sending => Promise.resolve(sending).finally(() => clockwork.endPreview());
 // Another of a control's values (a range slider's upper, a polygon's corners): as set, else its default.
 const namedSpec = (ctl, name, specs) => specs.get(`${ctl.scope === "party" ? "global" : "local"}:${name}`);
 const namedValue = (ctl, name, specs, fallback) => (name ? valueAt(ctl.scope, ctl.target, valueKey(name)) : undefined) ?? namedSpec(ctl, name, specs)?.value ?? fallback;
@@ -125,8 +129,10 @@ function rangeControl(ctl, specs, label) {
     if (!which) { if (v === lo) return; which = v > lo ? "hi" : "lo"; }
     if (which === "lo") lo = Math.min(v, hi); else hi = Math.max(v, lo);
     place();
+    previewNamed(ctl, ctl.name, lo);
+    previewNamed(ctl, ctl.name2, hi);
     sender.soon();
-  }, () => sender.now());
+  }, () => settle(sender.now()));
   // Arrow keys move a handle the way the arrow points.
   const keys = end => ev => {
     const d = { ArrowRight: 1, ArrowUp: 1, ArrowLeft: -1, ArrowDown: -1 }[ev.key];
@@ -234,8 +240,10 @@ function polygonControl(ctl, specs, label, panel) {
     if (!r.width || !r.height) return; // not on screen
     at = clampToPoly(pts, [(ev.clientX - r.left) / r.width, (ev.clientY - r.top) / r.height]);
     place();
+    const vals = values();
+    verts.forEach((v, i) => previewNamed(ctl, v.name, vals[i]));
     sender.soon();
-  }, () => { sender.now(); keep(); });
+  }, () => { settle(sender.now()); keep(); });
   sq.addEventListener("keydown", ev => {
     const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[ev.key];
     if (!d) return;
@@ -262,7 +270,8 @@ function controlLive(ctl, specs, panel) {
     case "slider": {
       const min = ctl.min ?? spec?.min ?? 0, max = ctl.max ?? spec?.max ?? 1, step = ctl.step ?? spec?.step ?? "any";
       const out = h("output", { class: "cp-out" }, fmtNum(v));
-      // Sent at most every 150 ms while it moves (players' icons follow), and once when let go.
+      // Shown here at once while it moves, sent at most every 150 ms (players' icons follow), and
+      // once when let go.
       let timer = null, last = 0, latest = v;
       const send = () => { clearTimeout(timer); timer = null; last = Date.now(); return sendControl(ctl, latest); };
       // Party updates mustn't redraw it mid-drag: held from pressing to letting go (a press that
@@ -272,8 +281,13 @@ function controlLive(ctl, specs, panel) {
         min: Math.min(min, max), max: Math.max(min, max), step, value: v, "aria-label": label || "Value",
         ...(isUpright(ctl) ? { "aria-orientation": "vertical" } : {}),
         onpointerdown: () => { holdRender(true); window.addEventListener("pointerup", release); window.addEventListener("pointercancel", release); },
-        oninput: ev => { latest = +ev.target.value; out.textContent = fmtNum(latest); if (!timer) timer = setTimeout(send, Math.max(0, 150 - (Date.now() - last))); },
-        onchange: ev => { latest = +ev.target.value; send(); } });
+        oninput: ev => {
+          latest = +ev.target.value;
+          out.textContent = fmtNum(latest);
+          previewNamed(ctl, ctl.name, latest);
+          if (!timer) timer = setTimeout(send, Math.max(0, 150 - (Date.now() - last)));
+        },
+        onchange: ev => { latest = +ev.target.value; settle(send()); } });
       return [caption, h("div", { class: "cp-slider" + (isUpright(ctl) ? " upright" : "") }, range, out)];
     }
     case "range":

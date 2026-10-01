@@ -201,16 +201,15 @@ function gmPin(board, pin) {
   };
   place();
 
-  // Send the values at most every 150 ms while moving, and always once when it stops.
+  // Through Clockwork (js/clockwork.js), as the GM: shown on this device's live icons at once while
+  // it moves, sent at most every 150 ms, and always once when it stops.
   let timer = null, last = 0;
+  const pinValues = () => [[pin.xVar, axisValue(x, pin.xRange)], [pin.yVar, axisValue(y, pin.yRange)]].filter(([n]) => n);
   const send = () => {
     clearTimeout(timer);
     timer = null;
     last = Date.now();
-    const sets = [];
-    if (pin.xVar) sets.push(putValue(pin.scope, pin.target, valueKey(pin.xVar), axisValue(x, pin.xRange)));
-    if (pin.yVar) sets.push(putValue(pin.scope, pin.target, valueKey(pin.yVar), axisValue(y, pin.yRange)));
-    return Promise.all(sets).catch(e => toast(e.message));
+    return Promise.all(pinValues().map(([n, v]) => clockwork.change(...clockwork.at(pin.scope, pin.target, n), v, "gm").done));
   };
   const soon = () => { if (!timer) timer = setTimeout(send, Math.max(0, 150 - (Date.now() - last))); };
 
@@ -222,6 +221,7 @@ function gmPin(board, pin) {
     if (pin.yVar) y = clamp01((ev.clientY - r.top) / r.height);
     el.classList.remove("unset");
     place();
+    for (const [n, v] of pinValues()) clockwork.preview(...clockwork.at(pin.scope, pin.target, n), v);
     soon();
   };
   el.addEventListener("pointerdown", ev => {
@@ -238,6 +238,7 @@ function gmPin(board, pin) {
     dragging = false;
     el.classList.remove("dragging");
     await send();
+    clockwork.endPreview();
     holdRender(false);
   };
   el.addEventListener("pointerup", stop);

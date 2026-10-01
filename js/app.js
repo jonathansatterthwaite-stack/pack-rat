@@ -70,6 +70,7 @@ const ICONS = {
   cog: '<path d="M12 20a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z"/><path d="M12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z"/><path d="M12 2v2M12 22v-2M17 20.66l-1-1.73M11 10.27 7 3.34M20.66 17l-1.73-1M3.34 7l1.73 1M14 12h8M2 12h2M20.66 7l-1.73 1M3.34 17l1.73-1M17 3.34l-1 1.73M11 13.73l-4 6.93"/>',
   eye: '<path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0"/><circle cx="12" cy="12" r="3"/>',
   more: '<circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="19" cy="12" r="1.3" fill="currentColor"/><circle cx="5" cy="12" r="1.3" fill="currentColor"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
 };
 
 function icon(name, cls = "") {
@@ -387,6 +388,7 @@ function render() {
   refreshLiveIcons(); // live icons outside the view (an open item's details) show the new values
   refreshEntryDetails();
   syncTreasure(); // treasure being shown: pops up, redraws, comes back (js/treasure.js)
+  syncClocks(); // values moving over time keep the game tick going (js/clockwork.js)
 }
 
 function go(view) {
@@ -1016,27 +1018,21 @@ function writeEntry(entryUid) {
 
 // ------------------------------------------------------------------ item states
 // A player switching one of their item's states (Attuned…), within its limit. Returns whether it changed.
+// (A GM's device may switch it even when it's locked: js/clockwork.js checks.)
 function playerSetState(entryUid, key, on) {
-  const char = store.char(), e = char?.items.find(x => x.uid === entryUid), st = stateByKey(key);
-  if (!e || !st || !statesFor(e).includes(st)) return false;
-  if (!isGmDevice() && !canPlayerSet(char, e, key)) { toast(`Only the ${term("gm")} can change that now`); return false; }
-  const lim = on && !stateOn(char, e, key) ? stateLimit(char, st) : null;
-  if (lim != null && stateCount(char, key) >= lim) {
-    if (st.limit.mode === "block") { toast(limitText(st, lim)); return false; }
-    toast(`${limitText(st, lim)} (keeping it anyway)`);
-  }
-  commit((s, c) => setState(c.items.find(x => x.uid === entryUid), key, on));
-  return true;
+  const char = store.char(), e = char?.items.find(x => x.uid === entryUid);
+  if (!e) return false;
+  return clockwork.change({ char, entry: e }, `item.state.${key}`, !!on, isGmDevice() ? "gm" : "player").ok;
 }
 
 // The GM's switches for an item's states: the player's choice, or always on, or always off.
 function gmStateControls(char, e) {
-  const over = stateOverrides(char, e), target = `${char.id}/${e.uid}`;
+  const over = stateOverrides(char, e);
   return h("div", { class: "field full gm-states" }, h("span", null, `States (${term("gm")})`),
     h("div", { class: "gm-state-list" }, statesFor(e).map(st => h("label", { class: "gm-state" }, h("span", null, st.label),
       h("select", { "aria-label": `${st.label} (${term("gm")})`, onchange: async ev => {
         const v = ev.target.value;
-        try { await putValue("item", target, "gm_state_" + st.key, v === "" ? null : +v); } catch (err) { toast(err.message); }
+        await clockwork.change({ char, entry: e }, `item.override.${st.key}`, v === "" ? null : +v, "gm").done;
         render();
       } },
         h("option", { value: "", selected: !(st.key in over) }, st.who === "player" ? "Player's choice" : "Not set"),
@@ -2052,7 +2048,7 @@ function openItemForm(item, opts = {}) {
     const missing = systemStates().filter(st => !draft.layers[st.key]);
     if (tab !== "basic" && tab !== "triggers" && !draft.layers[tab]) tab = "basic";
     setChildren(tabsBox, (present.length || missing.length) && h("div", { class: "inline wrap layer-tabs" },
-      subTabs("Item states", [["basic", "Basic"], ...present.map(st => [st.key, st.label]), ["triggers", "Triggers"]], tab, k => { tab = k; drawTabs(); }),
+      subTabs("Item states", [["basic", "Basic"], ...present.map(st => [st.key, st.label]), ["triggers", "Rules"]], tab, k => { tab = k; drawTabs(); }),
       missing.length > 0 && h("select", { class: "add-state", "aria-label": "Add a state", onchange: e => {
         if (!e.target.value) return;
         draft.layers[e.target.value] = {};
@@ -2062,7 +2058,7 @@ function openItemForm(item, opts = {}) {
     form.hidden = tab !== "basic";
     const st = stateByKey(tab);
     setChildren(layerBox, st ? layerForm(st, draft, tpl, () => { delete draft.layers[st.key]; tab = "basic"; drawTabs(); })
-      : tab === "triggers" && [h("p", { class: "muted small" }, "What happens by itself: when the item enters an inventory, or one of its states turns on or off, it can turn states on or off and tell the player."),
+      : tab === "triggers" && [h("p", { class: "muted small" }, "What happens by itself. When the item enters an inventory or is equipped, as something becomes true (a state turns on, its charges reach 0, a value passes a line), or every so often while something holds, it can turn states on or off, change its charges and Local values, and tell the player."),
         triggersBox]);
   };
   drawTabs();
@@ -2217,12 +2213,13 @@ async function openIconDrawer(opts, onSave) {
 
 // A drawing as the SVG the app shows: one colour (currentColor, so it's tinted like the other
 // icons), no background, ids that drawnIcon() makes unique per copy. Needs the editor loaded.
-function drawingSvg(doc, variables) {
+// time: the moment to draw it at (ms; the frame clock gives every icon in a frame the same).
+function drawingSvg(doc, variables, time = undefined) {
   const { renderDocumentToString, normalizeDocument } = window.SvgLayTool;
   const n = normalizedDrawing(doc, normalizeDocument);
   return renderDocumentToString(n, {
     background: false, colorMode: "monochrome", monoColor: "currentColor", idPrefix: DRAWN_ID_PREFIX,
-    variables: { ...iconVariableDefaults(n), ...(variables || {}) } });
+    variables: { ...iconVariableDefaults(n), ...(variables || {}) }, ...(time !== undefined ? { time } : {}) });
 }
 
 // The editor's app values win over a drawing's own variables of the same name. Keep them in step:
@@ -2343,6 +2340,7 @@ const ICON_VARIABLES = [
   { name: "attuned", label: "1 when attuned, else 0", value: 0, min: 0, max: 1, step: 1 },
   { name: "worth", label: "Worth in gp, with anything inside", value: 10, min: 0, max: 1000, step: 1 },
   { name: "weight", label: "Weight in lb, with anything inside", value: 5, min: 0, max: 100, step: 0.5 },
+  { name: "dt", label: "Seconds since this icon was last drawn (0 the first time): it animates, at the rate the device can manage", value: 0, min: 0, max: 1, step: 0.01 },
 ];
 
 // The values for an inventory entry (only those that apply; the rest keep the drawing's own).
@@ -2367,24 +2365,28 @@ function entryIconVars(char, e) {
 const isLiveDrawing = doc => !!doc && bindingFormulas(doc).length > 0;
 
 // Live icons on screen. Each shows the saved picture first, then is redrawn with its item's values
-// once the editor library has loaded, again whenever the data changes (refreshLiveIcons), and every
-// so often if it uses the time.
+// once the editor library has loaded, and again whenever the data changes (refreshLiveIcons). Ones
+// that move (bound to the time or dt, or reading a value that's moving) are animated by the frame
+// clock (js/clockwork.js).
 const liveIcons = new Set();
-let liveTimer = null;
 function liveDrawnIcon(doc, svgText, cls, vars) {
   const node = drawnIcon(svgText, cls) || iconSvg("image", cls);
-  const live = { doc, cls, vars, node, born: Date.now(), seen: false, period: 0, last: 0 };
+  const live = { doc, cls, vars, node, born: Date.now(), seen: false, last: 0 };
   loadSvgLay().then(() => {
     redrawLive(live);
     liveIcons.add(live);
     const { documentUsesTime, normalizeDocument } = window.SvgLayTool;
     const n = normalizedDrawing(doc, normalizeDocument);
-    if (!documentUsesTime(n)) return;
-    // Smooth hands and loops ("t", "time", "now") update often; whole hours/minutes/seconds once a
-    // second. Time can also come through a formula variable.
-    const smooth = /\b(t|time|now|dayFraction)\b/.test(drawingFormulas(n).join(" "));
-    live.period = smooth ? 100 : 1000;
-    if (!liveTimer) liveTimer = setInterval(tickLiveIcons, 100);
+    const formulas = drawingFormulas(n).join(" ");
+    const timed = documentUsesTime(n) || /\bdt\b/.test(formulas);
+    const reads = [...drawingValueRefs(doc).values()].map(r => r.name);
+    if (!timed && !reads.length) return;
+    // Smooth hands and loops ("t", "time", "now", dt) every frame; whole hours, minutes and seconds
+    // once a second, unless a moving value needs more.
+    const smooth = /\b(t|time|now|dayFraction|dt)\b/.test(formulas);
+    const moving = () => reads.some(name => movingNames().has(name));
+    frameClock.add({ node, animates: () => timed || moving(), every: () => smooth || moving() ? 0 : 1000,
+      draw: (now, dt) => redrawLive(live, now, dt) });
   }).catch(() => {});
   return node;
 }
@@ -2403,26 +2405,13 @@ function refreshLiveIcons() {
   for (const live of liveIcons) if (keepLive(live, now) && live.seen) redrawLive(live);
 }
 
-function redrawLive(live) {
-  const next = drawnIcon(drawingSvg(live.doc, readVars(live.vars)), live.cls, { cache: false });
+function redrawLive(live, time = undefined, dt = 0) {
+  const next = drawnIcon(drawingSvg(live.doc, { ...readVars(live.vars), dt }, time), live.cls, { cache: false });
   if (!next) return;
   // Swap the picture inside the same element, so it works whether or not it's on screen yet.
   live.node.setAttribute("viewBox", next.getAttribute("viewBox") || "0 0 256 256");
   live.node.replaceChildren(...next.childNodes);
   live.last = Date.now();
-}
-
-// The clock: redraws the icons that use the time when they're due, and stops when none are left.
-function tickLiveIcons() {
-  if (document.hidden) return;
-  const now = Date.now();
-  let ticking = 0;
-  for (const live of liveIcons) {
-    if (!keepLive(live, now) || !live.period) continue;
-    ticking++;
-    if (live.seen && now - live.last >= live.period) redrawLive(live);
-  }
-  if (!ticking) { clearInterval(liveTimer); liveTimer = null; }
 }
 
 // ------------------------------------------------------------------ the drawings library
@@ -3056,7 +3045,7 @@ function openTemplateEditor(tpl, copy = false) {
           if (e.target.checked) draft.layers[st.key] = draft.layers[st.key] || {}; else delete draft.layers[st.key];
           if (!Object.keys(draft.layers).length) delete draft.layers;
         } }), " " + st.label)))],
-    systemStates().length > 0 && [h("h4", null, "Triggers"),
+    [h("h4", null, "Rules"),
       h("p", { class: "muted small" }, "Its items start with these (each item can change them)."), tplTriggers],
     h("h4", null, "Features"),
     h("p", { class: "muted small" }, "What its items can do to begin with. “Yes” can be changed for each item; “Always” can't, and puts the feature's fields with the template's own."),
@@ -3224,6 +3213,18 @@ function renderSettings() {
         h("span", null, h("b", null, "Player mode"),
           h("span", { class: "muted small" }, `Hides the Catalog tab and item editing, for players whose gear comes from the ${term("gm")}, shops and trades. Items can still be renamed (Display name) and written in.`)),
         h("input", { type: "checkbox", role: "switch", class: "switch", checked: ui.playerMode, onchange: ev => setPlayerMode(ev.target.checked) }))),
+    h("section", null,
+      h("div", { class: "switch-row" },
+        h("span", null, h("b", null, "Animations"),
+          h("span", { class: "muted small" }, "How smoothly moving icons (clocks, and ones following a value as it changes) animate on this device. Pack Rat slows them down by itself when this device is busy; Off shows them still.")),
+        h("div", { class: "seg seg-field", role: "radiogroup", "aria-label": "Animations" },
+          ANIMATIONS.map(([k, label]) => h("button", { type: "button", role: "radio", class: animationsSetting() === k ? "active" : "",
+            "aria-checked": String(animationsSetting() === k), onclick: () => {
+              writePref("packrat-animations", k);
+              frameClock.rate = 0; // from the new cap
+              frameClock.start();
+              render();
+            } }, label))))),
     partySettings(),
     h("section", null,
       h("div", { class: "section-head" }, h("h2", null, termCap("characters")),

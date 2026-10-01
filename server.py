@@ -152,12 +152,50 @@ def save():
     os.replace(tmp, DATA_FILE)
 
 
+def now_ms():
+    """The host's clock, which every device's moving values follow (snapshots carry it)."""
+    return int(time.time() * 1000)
+
+
+def is_num(v, limit=1e9):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and abs(v) <= limit
+
+
+def clean_value(name, v):
+    """A value as kept: a number, or a moving one {value, rate, until?} (a change over time: rate a
+    second, stopping at until), stamped with the host's time (since, in ms). Moving values are worked
+    out from the time on every device, so only starting and stopping one is sent. None: not a value.
+    The GM's state overrides (gm_state_…) are numbers only."""
+    if is_num(v):
+        return v
+    if not isinstance(v, dict) or name.startswith("gm_state_") or not is_num(v.get("value")) or not is_num(v.get("rate"), 1e6):
+        return None
+    out = {"value": v["value"], "rate": v["rate"], "since": now_ms()}
+    if v.get("until") is not None:
+        if not is_num(v["until"]):
+            return None
+        out["until"] = v["until"]
+    return out
+
+
+def value_now(v, now=None):
+    """A kept value as it is now (a moving one worked out from the time), else None."""
+    if isinstance(v, dict):
+        x = v["value"] + v["rate"] * max(0, ((now or now_ms()) - v["since"]) / 1000)
+        u = v.get("until")
+        if u is not None:
+            x = min(x, u) if v["rate"] > 0 else max(x, u)
+        return x
+    return v if is_num(v) else None
+
+
 def clean_gm_values(raw):
     """GM values sent by a GM's campaign: {party: {name: n}, characters: {id: {…}}, items: {"id/uid": {…}}}."""
     def bucket(b):
-        return {k: v for k, v in (b or {}).items() if isinstance(k, str) and GM_NAME.match(k)
-                and isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and abs(v) <= 1e9} \
-            if isinstance(b, dict) else {}
+        if not isinstance(b, dict):
+            return {}
+        kept = {k: clean_value(k, v) for k, v in b.items() if isinstance(k, str) and GM_NAME.match(k)}
+        return {k: v for k, v in kept.items() if v is not None}
     raw = raw if isinstance(raw, dict) else {}
     out = {"party": bucket(raw.get("party"))}
     for group in ("characters", "items"):
@@ -384,7 +422,7 @@ def snapshot(token, host=False):
     snap = {"characters": [public_char(c, token) for c in chars.values()], "trades": trades,
             "shops": [public_shop(sh) for sh in state.get("shops", []) if shop_open(sh)],
             "gm": state.get("gm") or {}, "role": role_of(token, host), "isHost": host,
-            "campaign": state.get("campaign")}
+            "campaign": state.get("campaign"), "time": now_ms()}
     # Treasure being shown: a GM sees every showing, a player the ones their characters are in.
     gm_view = role_of(token, host) == "gm"
     snap["treasure"] = [t for t in state.get("treasure", []) if gm_view or mine & set(t["players"])]
@@ -568,8 +606,8 @@ def clean_cond(raw):
 
 def global_value(name, default=0):
     """A Global value (kept as the GM value gm_<name>), else default."""
-    v = ((state.get("gm") or {}).get("party") or {}).get("gm_" + name)
-    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else default
+    v = value_now(((state.get("gm") or {}).get("party") or {}).get("gm_" + name))
+    return default if v is None else v
 
 
 def cond_holds(c):
@@ -1419,7 +1457,7 @@ class Handler(SimpleHTTPRequestHandler):
         raise ApiError(404, "Unknown endpoint")
 
     def campaign_api(self, method, token):
-        """POST /api/campaign {id, name, system, currency, states, shops, gmValues}: a GM loads one of their campaigns into
+        """POST /api/campaign {id, name, system, currency, states, gmOnly, shops, gmValues}: a GM loads one of their campaigns into
         the party (see switch_campaign). Shops and GM values seed a campaign the party hasn't played
         yet; every device plays its game system (system: {id, name}, or null for none)."""
         if method != "POST":
@@ -1443,6 +1481,8 @@ class Handler(SimpleHTTPRequestHandler):
             states = [str(k)[:40] for k in (body.get("states") or [])[:30] if isinstance(k, str)] or None
             switch_campaign(cid, name, shops, clean_gm_values(body.get("gmValues")), clean_system_ref(body.get("system")),
                             clean_currency(body.get("currency")), states)
+            # Values only a GM sets (states' limits); players set their other Locals.
+            state["campaign"]["gmOnly"] = [k for k in (body.get("gmOnly") or [])[:50] if isinstance(k, str) and GM_NAME.match(k)]
             changed(persist=False)
         print(f"  * The GM loaded the campaign {name}")
         return {"ok": True}
@@ -1577,26 +1617,35 @@ class Handler(SimpleHTTPRequestHandler):
             raise ApiError(404, "Unknown endpoint")
 
     def gm_api(self, method, parts, token):
-        """GM values: numbers the host (the GM) sets for drawn icons' `gm_…` variables, for the whole
-        party, one character or one item. Items use the most specific value set; every player gets
-        them in the state snapshot. Stored as {"party": {name: v}, "characters": {charId: {…}},
+        """Global and Local values (js/clockwork.js): numbers for the whole party (Globals), one
+        character or one item (Locals). Items use the most specific value set; every player gets
+        them in the state snapshot. Stored as {"party": {gm_name: v}, "characters": {charId: {…}},
         "items": {"charId/entryUid": {…}}}.
 
         POST /api/gm {scope: party|character|item, target: "" | charId | "charId/uid", name, value}
-             value null clears it (the level above then applies).
+             value null clears it (the level above then applies); {value, rate, until?} starts it
+             moving (see clean_value).
+        GMs set any. A player sets the Locals of their own characters and their items, except the
+        GM's state overrides (gm_state_…) and the values the campaign keeps for the GM (gmOnly:
+        states' limits).
         """
         if method != "POST" or parts:
             raise ApiError(404, "Unknown endpoint")
-        if not self.is_gm(token):
-            raise ApiError(403, "Only a GM can set GM values")
         body = self.body()
         scope, target, name, value = body.get("scope"), str(body.get("target") or ""), body.get("name"), body.get("value")
         if scope not in ("party", "character", "item") or not isinstance(name, str) \
                 or not GM_NAME.match(name) or len(target) > 200 or (scope != "party" and not target):
             raise ApiError(400, "Not a GM value")
-        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
-                                  or not math.isfinite(value) or abs(value) > 1e9):
-            raise ApiError(400, "GM values are numbers")
+        if not self.is_gm(token):
+            if scope == "party":
+                raise ApiError(403, "Only a GM can set Global values")
+            owner = (state["characters"].get(target.split("/")[0]) or {}).get("owner")
+            if owner != token or name.startswith("gm_state_") or name in ((state.get("campaign") or {}).get("gmOnly") or []):
+                raise ApiError(403, "Only a GM can set that")
+        if value is not None:
+            value = clean_value(name, value)
+            if value is None:
+                raise ApiError(400, "GM values are numbers")
         with cond:
             gm = state.setdefault("gm", {})
             if scope == "party":

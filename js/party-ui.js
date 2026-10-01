@@ -778,7 +778,7 @@ function gmLimits(c) {
       h("input", { type: "number", min: 0, max: 99, value: stateLimit(c, st) ?? "", placeholder: String(st.limit.default ?? ""),
         "aria-label": `${st.limit.label || st.label + " limit"} for ${c.name}`, onchange: async ev => {
           const v = ev.target.value === "" ? null : Math.max(0, Math.min(99, Math.round(+ev.target.value)));
-          try { await setLocal(c.id, null, limitValueName(st), v); } catch (err) { toast(err.message); }
+          await clockwork.change({ char: c }, `char.limit.${st.key}`, v, "gm").done;
           render();
         } }),
       h("span", { class: "small muted" }, `${stateCount(c, st.key)} ${st.label.toLowerCase()}` + (typeof own === "number" ? "" : " · default")));

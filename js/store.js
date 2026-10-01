@@ -561,7 +561,7 @@ const entriesLabel = char => plural((char.items || []).filter(e => !inDeck(char,
 // "holder" (the container the rest is packed in), "in" (inside it), "strap" (strapped to its
 // outside) or "loose" (on person). Left out, it's worked out: the pack's backpack or chest holds
 // everything, with bedrolls, rope, tents and the like strapped to a backpack's side.
-const STRAPPABLE = /bedroll|blanket|rope|tent|pole|ladder|shovel|miner's pick|grappling hook|pot, iron|bucket/i;
+const STRAPPABLE = /bedroll|blanket|rope|tent|\bpole\b|ladder|shovel|miner's pick|grappling hook|pot, iron|bucket/i;
 
 const PACK_PLACES = [["holder", "Holds the rest"], ["in", "Inside"], ["strap", "Strapped outside"], ["loose", "On person"]];
 

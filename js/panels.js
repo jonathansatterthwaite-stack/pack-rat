@@ -10,7 +10,7 @@
 //   PackRat.on("state", s => …)       the character (stats, coins, items with their features…), sent
 //                                      again whenever anything changes
 //   PackRat.request(action, args)     ask for a change; the app checks it first (PANEL_REQUESTS: setStat,
-//                                      equip, setState, changeQty, openItem, openCoins)
+//                                      equip, setState, setValue, changeQty, openItem, openCoins)
 //   PackRat.summary(parts)            what the panel's header shows (closed: only the parts marked closed)
 //   PackRat.on("compute", s => r)     gm-player panels: the summary of one character, returned as
 //                                      { stats: [{ label, value, title, sub, warn }], chips: [text], notes: [text] }
@@ -128,7 +128,7 @@ function statsOf(char, sys = activeSystem()) {
 }
 
 // A set of stored values by name (without the GM's state overrides).
-const ownValues = bucket => Object.fromEntries(Object.entries(bucket || {}).filter(([k]) => !k.startsWith("gm_state_")).map(([k, v]) => [keyName(k), v]));
+const ownValues = bucket => Object.fromEntries(Object.entries(bucket || {}).filter(([k]) => !k.startsWith("gm_state_")).map(([k, v]) => [keyName(k), valueNow(v)]));
 
 function panelState(char, withIcons = true) {
   const settings = store.state.settings;
@@ -187,6 +187,12 @@ const PANEL_REQUESTS = {
   },
   // An item's state, as the player would switch it (limits and locks apply).
   setState(char, { uid, key, on }) { if (typeof key === "string") playerSetState(uid, key, !!on); },
+  // A Local value: the character's, or one item's own (uid). value null clears it.
+  setValue(char, { name, uid, value }) {
+    const entry = uid !== undefined ? char.items.find(x => x.uid === uid) : null;
+    if (typeof name !== "string" || (uid !== undefined && !entry)) return;
+    clockwork.change(entry ? { char, entry } : { char }, `${entry ? "local" : "char.local"}.${name}`, value, isGmDevice() ? "gm" : "player");
+  },
   openItem(char, { uid }) { if (char.items.some(x => x.uid === uid)) openEntry(uid); },
   openCoins() { openCoins(); },
 };

@@ -284,6 +284,8 @@ const party = {
     this.shops = snap.shops || [];
     this.treasure = snap.treasure || []; // treasure being shown (js/treasure.js)
     this.gm = snap.gm || {};
+    // The host's clock, which moving values follow (js/clockwork.js): how far ahead of ours it is.
+    if (typeof snap.time === "number") this.clockOffset = snap.time - Date.now();
     // A host from before roles doesn't say: then, as it did, the host device is the GM.
     const oldHost = snap.role === undefined && !!this.info?.canManageShops;
     this.role = snap.role || (oldHost ? "gm" : "player");
@@ -303,10 +305,12 @@ const party = {
   // it has there.
 
   async loadCampaign(camp) {
-    await this.api("POST", "api/campaign", { id: camp.id, name: camp.name, shops: camp.shops, gmValues: camp.gmValues,
+    await this.api("POST", "api/campaign", { id: camp.id, name: camp.name, shops: camp.shops, gmValues: valuesFromNow(camp.gmValues),
       system: camp.system ? { id: camp.system, name: systemName(camp.system) } : null,
       // The servers work out shop payments in its money, and sale prices with its states' layers.
-      currency: currencyRules(sysOf(camp)), states: systemStates(sysOf(camp)).map(st => st.key) });
+      currency: currencyRules(sysOf(camp)), states: systemStates(sysOf(camp)).map(st => st.key),
+      // Values only a GM sets (states' limits); players set their other Locals (js/clockwork.js).
+      gmOnly: systemStates(sysOf(camp)).map(limitValueName).filter(Boolean).map(valueKey) });
   },
 
   // The game system the GM's campaign plays (hosts from before systems don't say: keep ours).
@@ -360,9 +364,17 @@ const party = {
 
   // scope: "party" | "character" | "item"; target: "" | charId | "charId/entryUid"; value null clears it.
   async setGm(scope, target, name, value) {
-    await this.api("POST", "api/gm", { scope, target, name, value });
-    // Here too straight away: the snapshot saying so can arrive a moment later.
-    this.gm = putGmValue(this.gm || {}, scope, target, name, value);
+    // Here at once, so what reads it next (a rule adding to it again, a redraw) sees it; the
+    // host's snapshot follows. Put back if the host says no.
+    const g = this.gm || {}, bucket = scope === "party" ? g.party : g[scope === "character" ? "characters" : "items"]?.[target];
+    const had = bucket && name in bucket ? bucket[name] : null;
+    this.gm = putGmValue(g, scope, target, name, value);
+    try {
+      await this.api("POST", "api/gm", { scope, target, name, value });
+    } catch (err) {
+      this.gm = putGmValue(this.gm || {}, scope, target, name, had);
+      throw err;
+    }
   },
 
   // ------------------------------------------------------------ document images
