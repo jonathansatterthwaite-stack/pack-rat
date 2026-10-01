@@ -385,6 +385,7 @@ function render() {
   syncTileSize(main);
   window.scrollTo(0, scroll);
   refreshLiveIcons(); // live icons outside the view (an open item's details) show the new values
+  refreshEntryDetails();
 }
 
 function go(view) {
@@ -974,7 +975,10 @@ function layerSections(item, isOn) {
   const fields = [...layerFields(tpl), ...allFeatures().flatMap(ft => ft.fields).filter(f => LAYER_KINDS.has(f.kind))]
     .filter((f, i, all) => all.findIndex(g => g.key === f.key) === i);
   const meaningful = L => Object.entries(L).some(([k, v]) => v !== "" && v != null && (typeof v !== "object" || Object.keys(v).length));
-  const off = systemStates().filter(st => layers[st.key] && meaningful(layers[st.key]) && !isOn(st.key));
+  // Players see what the states they switch would bring (Needs: Attuned); what the GM's would
+  // (identified, cursed) only the GM sees.
+  const gm = isGmDevice();
+  const off = systemStates().filter(st => layers[st.key] && meaningful(layers[st.key]) && !isOn(st.key) && (st.who === "player" || gm));
   if (!off.length) return null;
   return h("div", { class: "layer-sections" }, off.map(st => {
     const L = layers[st.key];
@@ -982,7 +986,7 @@ function layerSections(item, isOn) {
       .map(f => [f.label, layerValue(f, L[f.key])]).filter(([, v]) => v != null && v !== "");
     const feats = Object.keys(L.features || {}).filter(k => L.features[k]).map(k => featureByKey(k)?.label).filter(Boolean);
     return h("section", { class: "layer-off" },
-      h("h4", null, st.who === "player" ? `Needs: ${st.label}` : `When ${st.label}`),
+      h("h4", null, st.who === "player" ? `Needs: ${st.label}` : `When ${st.label}`, st.who !== "player" && h("span", { class: "muted small" }, ` (only the ${term("gm")} sees this)`)),
       rows.length > 0 && h("dl", null, rows.map(([k, v]) => [h("dt", null, k), h("dd", null, v)])),
       feats.length > 0 && h("p", { class: "small" }, "Also: " + feats.join(", ")),
       (L.locks || []).length > 0 && h("p", { class: "small" }, `Only the ${term("gm")} can change: ` + L.locks.map(k => stateByKey(k)?.label || k).join(", ")),
@@ -1167,6 +1171,17 @@ function parseLocation(value) {
   return { parent: parent || null, strapped: out === "out" };
 }
 
+// An inventory item's details, while they're open: redrawn as soon as its states change (the
+// player ticking Attuned, a trigger cursing it, the GM identifying it), so locks and layers
+// apply straight away.
+let entryDetailsOpen = null;
+function refreshEntryDetails() {
+  const d = entryDetailsOpen;
+  if (!d || !document.contains(d.panel)) { entryDetailsOpen = null; return; }
+  const c = store.char(), x = c?.items.find(i => i.uid === d.uid);
+  if (x && JSON.stringify(entryStates(c, x)) !== d.states) d.reopen();
+}
+
 function openEntry(entryUid) {
   const char = store.char();
   const e = char.items.find(x => x.uid === entryUid);
@@ -1278,6 +1293,8 @@ function openEntry(entryUid) {
     readBtn, liquidCap(e) > 0 && liquidControls(e), isDeckEntry(e) && deckSection(e, reopen, () => close()),
     cardBackButton(e, () => close()), controls, planner?.el, itemDetails(shown, changeIcon, e.srcId, vars, true), layerSections(base, key => stateOn(char, e, key))],
   { footer, wide: !!planner, head: iconFocusSwitch(), backdrop: iconBackdrop(it, vars) });
+  // Its states can change while it's open (a trigger, the GM): render() redraws it if they do.
+  entryDetailsOpen = { uid: entryUid, states: JSON.stringify(entryStates(char, e)), panel: [...document.querySelectorAll("#modal-root .modal")].pop(), reopen };
 }
 
 const LIQUIDS = ["Water", "Wine", "Ale", "Beer", "Mead", "Cider", "Milk", "Juice", "Tea", "Brandy", "Rum", "Whiskey",
