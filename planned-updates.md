@@ -8,16 +8,6 @@ Default Adventurer character (the character generated when the app is first laun
 
 Allow GM to create treasure and/or treasure tables. Let them put loot in containers and present it to player.
 
-Move to a system agnostic spec. Create rules package system that allows rule settings to be imported, exported, edited, saved, enabled and disabled. Change DnD 5e rules into a package. Look at applying more universal terminology to app, consider allowing the rules package to include a terminology key that replaces instances of the name with the chosen name.
-
-(Complete) Add campaign selection. Create a campaign management screen.
-
-(Complete) Add a file management view. For characters, rule packages, campaigns, SVG arrangements, etc. A place to view and manage any data that is not inherently part of the app itself.
-
-(Complete) Add a mode to allow GMs to set up GM features without hosting a server. Make it so that the host and designated GM do not have to be the same user, create GM role that is independent from a character. GM role could have expanded information on players and I can hide player specific tabs/info that a GM would not need.
-
-(Complete) Consider rolling custom tab into Catalog tab as a sub tab.
-
 ## Interactivity
 gm_ variables are still displayed incorrectly in the SVG editor. It shouldn't list created gm variables, only instructions on how to utilise them.
 
@@ -63,3 +53,14 @@ Consider live images with animations. Investigate if having too many of these ca
 - If total calculations start to effect app speed the animation/tick speed should be throttled. This should make it so only animations slow down and not the user experience.
 
 svg animations seem to update only on release of a gm_ control. Other variables update while controls are being moved.
+
+# Complete
+**[Complete]** Move to a system agnostic spec. Create rules package system that allows rule settings to be imported, exported, edited, saved, enabled and disabled. Change DnD 5e rules into a package. Look at applying more universal terminology to app, consider allowing the rules package to include a terminology key that replaces instances of the name with the chosen name.
+
+**[Complete]** Add campaign selection. Create a campaign management screen.
+
+**[Complete]** Add a file management view. For characters, rule packages, campaigns, SVG arrangements, etc. A place to view and manage any data that is not inherently part of the app itself.
+
+**[Complete]** Add a mode to allow GMs to set up GM features without hosting a server. Make it so that the host and designated GM do not have to be the same user, create GM role that is independent from a character. GM role could have expanded information on players and I can hide player specific tabs/info that a GM would not need.
+
+**[Complete]** Consider rolling custom tab into Catalog tab as a sub tab.
