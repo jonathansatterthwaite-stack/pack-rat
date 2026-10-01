@@ -259,10 +259,27 @@ svg.drawn-icon { overflow: visible; }
 .seg.sub-tabs { display: flex; width: fit-content; max-width: 100%; overflow-x: auto; margin-bottom: 14px; }
 .seg.sub-tabs button { width: auto; padding: 0 16px; white-space: nowrap; font-weight: 600; flex: none; }
 .package-group .group-head h3 { flex: 1; text-align: left; }
-.gm-var .gm-level { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.gm-values .gm-level, .cw .gm-level { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .gm-var .collapse { flex: none; }
 .gm-var .group-head h3 { flex: 1; text-align: left; }
-.gm-var .gm-level .row-main { flex: 1 1 160px; min-width: 0; }
+.gm-values .gm-level .row-main, .cw .gm-level .row-main { flex: 1 1 160px; min-width: 0; }
+.gm-values { margin-bottom: 18px; }
+.gm-control select { flex: 1; min-width: 0; }
+/* Clockwork (js/clockwork-ui.js): the GM's cog beside connected items, and the Clockwork tab. */
+.icon-btn.cw-cog { color: var(--muted); flex: none; }
+.icon-btn.cw-cog:hover { color: var(--accent); }
+.gm-inv-row .cw-cog { width: 30px; height: 30px; margin-left: auto; }
+.gm-inv-row .cw-cog + .gm-states-btn { margin-left: 0; }
+.cw-char-name { margin: 16px 0 8px; display: flex; align-items: center; gap: 8px; }
+.cw-item .group-head { gap: 10px; }
+.cw-item .group-head h3 { flex: 1; text-align: left; margin: 0; }
+.cw-item.focus { box-shadow: 0 0 0 2px var(--accent); }
+.cw-body { padding: 4px 12px 12px; display: grid; gap: 6px; }
+.cw-line { display: grid; grid-template-columns: 90px 1fr; gap: 8px; align-items: baseline; }
+.cw-what { display: flex; flex-wrap: wrap; gap: 4px 6px; min-width: 0; }
+.cw-rules { margin: 0; padding-left: 18px; display: grid; gap: 2px; width: 100%; }
+.cw-what .chip { cursor: default; }
+@media (max-width: 520px) { .cw-line { grid-template-columns: 1fr; gap: 2px; } }
 .gm-player > .gm-level { padding-left: 14px; background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
 .gm-item { padding-left: 46px !important; }
 .gm-control { display: flex; align-items: center; gap: 8px; flex: 1 1 240px; max-width: 360px; }
@@ -949,6 +966,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
   .tile { min-height: 88px; padding: 8px 8px 6px; }
   .row { flex-wrap: wrap; padding-left: 10px; }
   .row-main { flex: 1 1 calc(100% - 30px); }
+  .row:has(> .cw-cog) .row-main { flex-basis: calc(100% - 86px); }
   .row .type-dot, .row .row-icon { align-self: flex-start; margin-top: 8px; }
   .inv-list .row-weight { margin-left: 18px; text-align: left; width: auto; flex: 1; }
   .cat-row { flex-wrap: nowrap; }

@@ -118,13 +118,14 @@ const catalogItem = id => id ? systemIndex().catalog.get(id) : undefined;
 
 // ------------------------------------------------------------------ states
 // What an inventory item can be (D&D 5e: Attuned, Identified, Cursed). A system lists them:
-//   { key, label, who: "player" | "gm", requires?: feature, limit?: { gmValue?, default, mode: "warn" | "block", text?, label? } }
+//   { key, label, who: "player" | "gm", requires?: feature, limit?: { value?, default, mode: "warn" | "block", text?, label? } }
 // - who: the player switches "player" states (a checkbox on the item); "gm" ones only the GM.
 // - requires: only items with that feature can have it (5e: Attuned needs Attunement).
-// - limit: how many of a character's items can have it on: the GM value `gmValue` (for that
-//   character, or the party), else `default`. Over it, "warn" allows it with a warning, "block" doesn't.
+// - limit: how many of a character's items can have it on: the character's Local value `value`
+//   (see js/clockwork.js; older systems: gmValue "gm_<name>"), else `default`. Over it, "warn"
+//   allows it with a warning, "block" doesn't.
 // An entry keeps its own in `states` ({ attuned: true }; older ones: `toggles`, or `attuned`). The GM
-// can set any state of any item, overriding it: the item-level GM value gm_state_<key> (1 on, 0 off).
+// can set any state of any item, overriding it: the item's internal value gm_state_<key> (1 on, 0 off).
 // A state can be locked: then only the GM can change it (Release 3 step 2: layers lock states).
 
 // The system's states (Release 2 systems had `toggles`: player states, limits warning).
@@ -138,10 +139,10 @@ const stateByKey = key => systemStates().find(st => st.key === key);
 // The states an entry has set itself.
 const ownStates = e => ({ ...(e.attuned ? { attuned: true } : {}), ...(e.toggles || {}), ...(e.states || {}) });
 
-// The GM's overrides for an entry: { key: true | false } (in a party the host's GM values, else
-// this campaign's presets). Without its character, found by the entry's uid alone.
+// The GM's overrides for an entry: { key: true | false } (in a party the host's values, else
+// this campaign's). Without its character, found by the entry's uid alone.
 function stateOverrides(char, e) {
-  const items = gmValuesNow().items || {};
+  const items = valueSet().items || {};
   const bucket = (char ? items[`${char.id}/${e.uid}`]
     : Object.entries(items).find(([k]) => k.endsWith("/" + e.uid))?.[1]) || {};
   const out = {};
@@ -174,7 +175,7 @@ const canPlayerSet = (char, e, key) => stateByKey(key)?.who === "player" && !loc
 // How many of a character's items may have a state on (null: no limit).
 function stateLimit(char, st) {
   if (!st?.limit) return null;
-  const v = st.limit.gmValue ? gmValuesFor(char.id, null)[st.limit.gmValue] : undefined;
+  const name = limitValueName(st), v = name ? charLocal(char.id, name) : undefined;
   return typeof v === "number" ? v : st.limit.default ?? null;
 }
 const stateCount = (char, key) => char.items.filter(x => stateOn(char, x, key)).length;
@@ -299,7 +300,7 @@ function standardiseTemplates(data) {
 function systemFile(sys) {
   const { builtin, none, optional, ...rest } = sys;
   return { ...rest, catalog: sys.catalog || [], tables: sys.tables || [], glossary: sys.glossary || {},
-    panels: sys.panels || [], panelLib: sys.panelLib || "", stats: sys.stats || {}, states: systemStates(sys), terminology: sys.terminology || {},
+    panels: sys.panels || [], panelLib: sys.panelLib || "", stats: sys.stats || {}, states: systemStates(sys), values: sys.values || [], terminology: sys.terminology || {},
     currency: currency(sys), weight: sys.weight || { unit: weightUnit(sys) } };
 }
 
@@ -310,8 +311,8 @@ function cleanStates(list) {
     return {
       key: st.key, label: String(st.label).slice(0, 40), who: st.who === "gm" ? "gm" : "player",
       requires: typeof st.requires === "string" ? st.requires : undefined,
-      limit: lim && (lim.default > 0 || typeof lim.gmValue === "string") ? {
-        gmValue: typeof lim.gmValue === "string" && /^gm_[A-Za-z0-9_]{1,40}$/.test(lim.gmValue) ? lim.gmValue : undefined,
+      limit: lim && (lim.default > 0 || typeof lim.value === "string" || typeof lim.gmValue === "string") ? {
+        value: [lim.value, typeof lim.gmValue === "string" ? lim.gmValue.replace(/^gm_/, "") : null].find(isValueName),
         default: lim.default > 0 ? Math.floor(lim.default) : null, mode: lim.mode === "block" ? "block" : "warn",
         text: lim.text ? String(lim.text).slice(0, 120) : undefined, label: lim.label ? String(lim.label).slice(0, 40) : undefined,
       } : undefined,
@@ -343,6 +344,7 @@ function cleanSystem(raw) {
     weight: raw.weight && typeof raw.weight.unit === "string" && raw.weight.unit.trim()
       ? { unit: raw.weight.unit.trim().slice(0, 12), ...(typeof raw.weight.one === "string" && raw.weight.one.trim() ? { one: raw.weight.one.trim().slice(0, 12) } : {}) } : null,
     states: cleanStates(raw.states || systemStates({ toggles: (Array.isArray(raw.toggles) ? raw.toggles : []).filter(Boolean) })),
+    values: cleanValueDecls(raw.values),
     terminology: raw.terminology && typeof raw.terminology === "object"
       ? Object.fromEntries(Object.entries(raw.terminology).filter(([k, v]) => k in TERMS && typeof v === "string" && v.trim()).map(([k, v]) => [k, v.trim().slice(0, 40)])) : {},
     catalog: (Array.isArray(raw.catalog) ? raw.catalog : []).filter(i => i && i.id && i.name),

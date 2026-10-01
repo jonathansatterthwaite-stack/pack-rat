@@ -92,7 +92,7 @@ const DND5E_SYSTEM = {
   // unless the GM changes a character's slots), identified, cursed.
   states: [
     { key: "attuned", label: "Attuned", who: "player", requires: "attunement",
-      limit: { gmValue: "gm_attuneSlots", default: 3, mode: "warn", text: "You can attune to at most {limit} items", label: "Attunement slots" } },
+      limit: { value: "attuneSlots", default: 3, mode: "warn", text: "You can attune to at most {limit} items", label: "Attunement slots" } },
     { key: "identified", label: "Identified", who: "gm" },
     { key: "cursed", label: "Cursed", who: "gm" },
   ],

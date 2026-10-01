@@ -67,6 +67,7 @@ const ICONS = {
   grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
   users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
+  cog: '<path d="M12 20a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z"/><path d="M12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z"/><path d="M12 2v2M12 22v-2M17 20.66l-1-1.73M11 10.27 7 3.34M20.66 17l-1.73-1M3.34 7l1.73 1M14 12h8M2 12h2M20.66 7l-1.73 1M3.34 17l1.73-1M17 3.34l-1 1.73M11 13.73l-4 6.93"/>',
   more: '<circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="19" cy="12" r="1.3" fill="currentColor"/><circle cx="5" cy="12" r="1.3" fill="currentColor"/>',
 };
 
@@ -174,7 +175,8 @@ const ui = {
   views: loadViewPrefs(),
   sort: readPref("packrat-sort", "smart"),
   sortReverse: readPref("packrat-sort-rev", "") === "1",
-  gmTab: "players", // the GM tab's sub-tab: "players" or "values"
+  gmTab: "players", // the GM tab's sub-tab: "players", "values" or "clockwork"
+  cwFocus: null, // the item the Clockwork tab shows first ("charId/uid", from its cog)
   settingsTab: "settings", // Settings · Campaigns · Files
   catTab: "items", // Catalog: Items · My items · Drawings · Templates
   role: readPref("packrat-role", "player"), // "gm" to prepare GM things outside a party (see isGmDevice)
@@ -802,6 +804,7 @@ function entryRow(char, e, showPath = false) {
         e.charges != null && h("span", { class: "tag" }, `${e.charges}/${it.maxCharges} charges`),
         path && h("span", { class: "tag" }, path)),
       h("div", { class: "row-sub" }, [liquidLabel(e) || containerLoad(char, e) || itemSummary(it), e.notes].filter(Boolean).join(" — "))),
+    clockworkCog(char, e),
     h("div", { class: "row-weight muted" }, fmtWeight(entryOwnWeight(e))),
     writingButton(e),
     isEquipable(e) && iconBtn(equipKind(e) === "wielded" ? "sword" : "shield", e.equipped ? "Unequip" : "Equip",
@@ -899,7 +902,7 @@ function gmStateControls(char, e) {
     h("div", { class: "gm-state-list" }, statesFor(e).map(st => h("label", { class: "gm-state" }, h("span", null, st.label),
       h("select", { "aria-label": `${st.label} (${term("gm")})`, onchange: async ev => {
         const v = ev.target.value;
-        try { await setGmValue("item", target, "gm_state_" + st.key, v === "" ? null : +v); } catch (err) { toast(err.message); }
+        try { await putValue("item", target, "gm_state_" + st.key, v === "" ? null : +v); } catch (err) { toast(err.message); }
         render();
       } },
         h("option", { value: "", selected: !(st.key in over) }, st.who === "player" ? "Player's choice" : "Not set"),
@@ -974,11 +977,10 @@ function layerSections(item, isOn) {
   // The template's fields, and the features' (an AC bonus…), once each.
   const fields = [...layerFields(tpl), ...allFeatures().flatMap(ft => ft.fields).filter(f => LAYER_KINDS.has(f.kind))]
     .filter((f, i, all) => all.findIndex(g => g.key === f.key) === i);
-  const meaningful = L => Object.entries(L).some(([k, v]) => v !== "" && v != null && (typeof v !== "object" || Object.keys(v).length));
   // Players see what the states they switch would bring (Needs: Attuned); what the GM's would
   // (identified, cursed) only the GM sees.
   const gm = isGmDevice();
-  const off = systemStates().filter(st => layers[st.key] && meaningful(layers[st.key]) && !isOn(st.key) && (st.who === "player" || gm));
+  const off = systemStates().filter(st => layerHasContent(layers[st.key]) && !isOn(st.key) && (st.who === "player" || gm));
   if (!off.length) return null;
   return h("div", { class: "layer-sections" }, off.map(st => {
     const L = layers[st.key];
@@ -1292,7 +1294,7 @@ function openEntry(entryUid) {
   close = openModal(entryName(e), [e.customName && h("p", { class: "muted small" }, it.name),
     readBtn, liquidCap(e) > 0 && liquidControls(e), isDeckEntry(e) && deckSection(e, reopen, () => close()),
     cardBackButton(e, () => close()), controls, planner?.el, itemDetails(shown, changeIcon, e.srcId, vars, true), layerSections(base, key => stateOn(char, e, key))],
-  { footer, wide: !!planner, head: iconFocusSwitch(), backdrop: iconBackdrop(it, vars) });
+  { footer, wide: !!planner, head: [clockworkCog(char, e, () => close()), iconFocusSwitch()], backdrop: iconBackdrop(it, vars) });
   // Its states can change while it's open (a trigger, the GM): render() redraws it if they do.
   entryDetailsOpen = { uid: entryUid, states: JSON.stringify(entryStates(char, e)), panel: [...document.querySelectorAll("#modal-root .modal")].pop(), reopen };
 }
@@ -2103,7 +2105,7 @@ async function openIconDrawer(opts, onSave) {
       h("button", { class: "btn", onclick: close }, "Cancel"),
       h("button", { class: "btn primary", onclick: save }, icon("check"), opts.saveLabel || "Use this icon")),
     h("p", { class: "icon-drawer-hint muted small" },
-      "Build the icon from shapes on layers: add shapes from the library and pick a layer in the strip beside the canvas. Press and hold a shape to move it; drag its handles to resize or rotate it. Modifiers add outlines, effects and masks. Variables make it live: in the Variables tab, bind a layer to one of Pack Rat's item values (“fill” shows how full a container is) or to the time for a clock. GM values (names starting gm_, e.g. gm_curse) are set by the GM from the Party screen: add one with + GM value in the Variables tab, where the Pack Rat item list explains them. It's drawn in one colour; the app colours it like its other icons."),
+      "Build the icon from shapes on layers: add shapes from the library and pick a layer in the strip beside the canvas. Press and hold a shape to move it; drag its handles to resize or rotate it. Modifiers add outlines, effects and masks. Variables make it live: in the Variables tab, bind a layer to one of Pack Rat's item values (“fill” shows how full a container is) or to the time for a clock. Global and Local values (names starting global_ or local_, e.g. global_storm, local_heat) are set by the GM (GM tab → Values): add one with + Global value or + Local value in the Variables tab, where the Pack Rat item list explains them. It's drawn in one colour; the app colours it like its other icons."),
     host);
   document.body.append(overlay);
   document.body.classList.add("modal-open");
@@ -2119,10 +2121,16 @@ async function openIconDrawer(opts, onSave) {
       // The values Pack Rat fills in for an item: formulas can use them, and the Variables tab lists
       // them (with this copy's real values when editing one in an inventory).
       variableGroups: [iconVariableGroup(opts.vars, opts.doc)],
-      // "+ GM value" beside "+ Add variable": a gm_ variable with a slider (its default and range).
-      variablePresets: [{ id: "packrat-gm", label: "GM value",
-        title: "Add a GM value: a variable the GM sets from the Party screen (GM values tab). Rename it, keeping the gm_ at the start (e.g. gm_curse); its slider is the default and range.",
-        variable: { name: "gm_value", value: 0, min: 0, max: 1, step: 0.01 } }],
+      // "+ Global value" and "+ Local value" beside "+ Add variable": a global_ or local_ variable
+      // with a slider (its default and range). See js/clockwork.js.
+      variablePresets: [
+        { id: "packrat-global", label: "Global value",
+          title: "Add a Global value: one for the whole campaign, the same on every item, set by the GM (GM tab → Values). Rename it, keeping the global_ at the start (e.g. global_storm); its slider is the default and range.",
+          variable: { name: "global_value", value: 0, min: 0, max: 1, step: 0.01 } },
+        { id: "packrat-local", label: "Local value",
+          title: "Add a Local value: each item's own, else its character's, set by the GM (GM tab → Values) and later by rules. Rename it, keeping the local_ at the start (e.g. local_heat); its slider is the default and range.",
+          variable: { name: "local_value", value: 0, min: 0, max: 1, step: 0.01 } },
+      ],
       // The editor's side panels keep the widths you drag them to (on this device).
       panelWidths: (() => { try { return JSON.parse(readPref("packrat-icon-editor-panels", "null")) || undefined; } catch { return undefined; } })(),
     });
@@ -2148,11 +2156,11 @@ function drawingSvg(doc, variables) {
 
 // The editor's app values win over a drawing's own variables of the same name. Keep them in step:
 // a value the drawing declares follows its slider unless this inventory copy has a real value for it,
-// and gm_ names added while drawing join the list. Held while a pointer is down, so redrawing the
+// and global_ / local_ names added while drawing join the list. Held while a pointer is down, so redrawing the
 // Variables panel doesn't interrupt dragging a slider. Returns a function that stops it.
 function syncIconVariables(editor, host, vars) {
   const actual = readVars(vars);
-  const known = knownGmNames(); // elsewhere in Pack Rat: doesn't change while drawing
+  const known = knownValues(); // elsewhere in Pack Rat: doesn't change while drawing
   let listed = "", held = false, pending = false;
   const sync = () => {
     pending = false;
@@ -2187,25 +2195,12 @@ function readVars(vars) {
 
 // Pack Rat's values that a drawing uses without declaring them get a default (so formulas work in
 // the catalog and the library too); a variable the drawing declares itself keeps its slider value.
-// GM values used in formulas but not declared start at 0.
+// Global and Local values used in formulas but not declared start at 0 (see drawingValueRefs).
 function iconVariableDefaults(doc) {
   const declared = new Set((doc.variables || []).map(v => v.name));
   const out = Object.fromEntries(ICON_VARIABLES.filter(v => !declared.has(v.name)).map(v => [v.name, v.value]));
-  for (const [name, spec] of drawingGmSpecs(doc)) if (!declared.has(name)) out[name] = spec.value;
+  for (const r of drawingValueRefs(doc).values()) if (!declared.has(r.varName)) out[r.varName] = r.spec.value;
   return out;
-}
-
-// GM values (see party.gmValues) are variables named gm_…: declared in a drawing (with a slider
-// giving the default and range), or just used in its formulas (default 0, range 0–1).
-const GM_NAME_RE = /\bgm_[A-Za-z0-9_]+\b/g;
-function drawingGmSpecs(doc) {
-  const specs = new Map();
-  for (const v of doc?.variables || []) if (/^gm_[A-Za-z0-9_]+$/.test(v.name || "")) specs.set(v.name, v);
-  // Used in a formula variable (e.g. heat = gm_heat * 2) or a binding.
-  for (const name of drawingFormulas(doc).join(" ").match(GM_NAME_RE) || []) {
-    if (!specs.has(name)) specs.set(name, { name, value: 0, min: 0, max: 1, step: 0.01 });
-  }
-  return specs;
 }
 
 // The formulas of a drawing's layers (the enabled bindings), and with its formula variables too.
@@ -2220,44 +2215,34 @@ function bindingFormulas(doc) {
 }
 const drawingFormulas = doc => [...(doc?.variables || []).map(v => v.expression || "").filter(Boolean), ...bindingFormulas(doc)];
 
-// Every GM value name Pack Rat knows of: set by the GM in the party, or used by a drawing on
-// this device (the library, custom items, characters' items).
-function knownGmNames() {
-  const names = new Set();
-  const g = gmValuesNow();
-  for (const bucket of [g.party, ...Object.values(g.characters || {}), ...Object.values(g.items || {})]) {
-    for (const name of Object.keys(bucket || {})) names.add(name);
-  }
-  const docs = [...drawingLibrary().map(d => d.doc), ...store.allCustomItems().map(i => i.iconDoc),
-    ...store.state.characters.flatMap(c => c.items.map(e => e.item.iconDoc))];
-  for (const doc of docs) if (doc) for (const name of drawingGmSpecs(doc).keys()) names.add(name);
-  for (const c of store.state.gmControls || []) for (const p of c.pins) for (const n of [p.xVar, p.yVar]) if (n) names.add(n);
-  return names;
-}
-
 // Pack Rat's values as a variable group for the editor's Variables tab: the item values, then the
-// GM values (this drawing's, and every other one Pack Rat knows of, so names stay consistent).
-// actual: the real values for the inventory copy being edited, if any. A value the drawing declares
-// itself shows its slider value (see openIconDrawer, which keeps the two in step).
-function iconVariableGroup(vars, doc, known = knownGmNames()) {
+// Global and Local values (this drawing's, and every other one Pack Rat knows of, so names stay
+// consistent). actual: the real values for the inventory copy being edited, if any. A value the
+// drawing declares itself shows its slider value (see openIconDrawer, which keeps the two in step).
+function iconVariableGroup(vars, doc, known = knownValues()) {
   const actual = readVars(vars);
   const declared = new Map((doc?.variables || []).map(v => [v.name, v.value]));
   const value = (name, fallback) => name in actual ? actual[name] : declared.has(name) ? declared.get(name) : fallback;
-  const gmHere = drawingGmSpecs(doc);
-  const gmNames = [...new Set([...gmHere.keys(), ...known])].sort();
-  const gmLabel = name => {
-    const where = name in actual ? `this item's GM value (${actual[name]})` : party.active ? "not set by the GM for this item" : "set by the GM in a party";
-    return `GM value: the GM sets it for the party, a player or an item (Party screen → GM values); ${where}.` +
-      (gmHere.has(name) ? " This drawing uses it." : " Used by other drawings.");
-  };
+  const here = drawingValueRefs(doc, true), refs = new Map(here);
+  for (const v of known.values()) {
+    const varName = `${v.scope}_${v.name}`;
+    if (!refs.has(varName)) refs.set(varName, { varName, name: v.name, scope: v.scope, spec: v });
+  }
+  const label = r => (r.scope === "global" ? "Global value: one for the whole campaign, the same on every item"
+    : r.scope === "local" ? "Local value: this item's own, else its character's"
+    : "An older GM value: this item's Local, else its character's, else the Global") +
+    ` (GM tab → Values)${r.varName in actual ? `; this item: ${actual[r.varName]}` : ""}.` +
+    (here.has(r.varName) ? " This drawing uses it." : " Used elsewhere in Pack Rat.");
   return { id: "packrat", title: "Pack Rat item", variables: [
     ...ICON_VARIABLES.map(v => ({ name: v.name, label: v.label, value: value(v.name, v.value) })),
-    // How to make a GM value, listed with the item values (the name "gm_" on its own isn't one).
-    { name: "gm_", value: 0, label: "GM values: variables named gm_ followed by a word, e.g. gm_curse or gm_heat. " +
-      "Add one with + GM value (its slider sets the default and range; rename it, keeping the gm_), or just use a gm_ name in a formula (it starts at 0). " +
-      "Bind layers to it like any other variable. In a party, the GM sets it on the Party screen → GM values tab, for everyone, one player or one item; each item uses the most specific value. " +
-      "The GM values Pack Rat knows of are listed below." },
-    ...gmNames.map(name => ({ name, label: gmLabel(name), value: value(name, gmHere.get(name)?.value ?? 0) })),
+    // How to make one, listed with the item values (the names "global_" and "local_" on their own aren't values).
+    { name: "global_", value: 0, label: "Global values: variables named global_ followed by a word, e.g. global_storm. One for the whole campaign: every item sees the same. " +
+      "Add one with + Global value (its slider sets the default and range; rename it, keeping the global_), or just use a global_ name in a formula (it starts at 0). The GM sets it in the GM tab → Values." },
+    { name: "local_", value: 0, label: "Local values: variables named local_ followed by a word, e.g. local_heat. Each item's own, else its character's. " +
+      "Add one with + Local value, or use a local_ name in a formula. The GM sets it in the GM tab → Values, for a character or one item. " +
+      "Older drawings' gm_ names still work: the item's, else its character's, else the Global. The values Pack Rat knows of are listed below." },
+    ...[...refs.values()].sort((a, b) => a.varName.localeCompare(b.varName))
+      .map(r => ({ name: r.varName, label: label(r), value: value(r.varName, r.spec?.value ?? 0) })),
   ] };
 }
 
@@ -2292,7 +2277,7 @@ const ICON_VARIABLES = [
 // The values for an inventory entry (only those that apply; the rest keep the drawing's own).
 function entryIconVars(char, e) {
   const it = currentItem(e, char);
-  const v = { qty: e.qty, equipped: e.equipped ? 1 : 0, attuned: char && stateOn(char, e, "attuned") ? 1 : 0,
+  const v = { qty: e.qty, equipped: e.equipped ? 1 : 0, attuned: clockwork.get({ char, entry: e }, "item.state.attuned") || 0,
     worth: entryTotalValue(char, e) / 100, weight: entryTotalWeight(char, e) };
   const fill = fillLevel(char, e);
   if (fill) {
@@ -2303,7 +2288,7 @@ function entryIconVars(char, e) {
   }
   if (hasFeature(it, "charges", e.srcId) && it.maxCharges) { v.charges = e.charges ?? it.maxCharges; v.maxCharges = it.maxCharges; }
   if (isDeckEntry(e)) { v.pieces = cardsIn(char, e).length; v.piecesTotal = v.pieces + cardsOut(char, e).length; }
-  if (char?.id) Object.assign(v, gmValuesFor(char.id, e.uid)); // the GM's values (or, preparing offline, the presets)
+  if (char?.id) Object.assign(v, iconValueVars(char.id, e.uid)); // Global and Local values (js/clockwork.js)
   return v;
 }
 
@@ -2340,7 +2325,7 @@ function keepLive(live, now) {
   return true;
 }
 
-// The data changed (an edit, a trade, a GM value): redraw the live icons still showing. The views
+// The data changed (an edit, a trade, a value): redraw the live icons still showing. The views
 // are redrawn with new icons anyway; this reaches the ones that stay, like an open item's details.
 function refreshLiveIcons() {
   const now = Date.now();
@@ -3137,20 +3122,20 @@ function renderSettings() {
     render();
     toast(on ? "Player mode on: the catalog and custom items are hidden" : "Player mode off");
   };
-  // Role: a GM prepares campaigns' shops, GM values and controls without hosting (and gets the GM
+  // Role: a GM prepares campaigns' shops, values and controls without hosting (and gets the GM
   // tab); in a party, the host decides who's GM. Per device.
   const setRole = role => {
     ui.role = role;
     writePref("packrat-role", role);
     render();
-    toast(role === "gm" ? "GM role: the GM tab has your GM values and controls" : "Player role");
+    toast(role === "gm" ? "GM role: the GM tab has your values, controls and Clockwork" : "Player role");
   };
   const roleBox = h("section", { class: "role-box" },
     h("div", { class: "switch-row" },
       h("span", null, h("b", null, "Role on this device"),
         h("span", { class: "muted small" }, party.active
           ? (party.isGm() ? "You're a GM in this party." : "In a party, the host decides who's a GM.")
-          : `As ${term("gm")}, prepare each campaign's shops, GM values and controls without hosting a party. In a party, the host chooses the ${term("gm")}.`)),
+          : `As ${term("gm")}, prepare each campaign's shops, values and controls without hosting a party. In a party, the host chooses the ${term("gm")}.`)),
       h("div", { class: "seg seg-field", role: "radiogroup", "aria-label": "Role" },
         [["player", "Player"], ["gm", term("gm")]].map(([k, label]) => h("button", { type: "button", role: "radio", class: ui.role === k ? "active" : "",
           "aria-checked": String(ui.role === k), disabled: party.active, onclick: () => setRole(k) }, label)))),
@@ -3161,7 +3146,7 @@ function renderSettings() {
     h("section", { class: "help-link" },
       icon("book"),
       h("div", null, h("b", null, "User guide"),
-        h("p", { class: "muted small" }, "How everything works, with pictures: containers, sets, drawn icons, parties, shops and GM values.")),
+        h("p", { class: "muted small" }, "How everything works, with pictures: containers, sets, drawn icons, parties, shops and values.")),
       h("a", { class: "btn", href: GUIDE_URL, target: "_blank", rel: "noopener" }, "Open the guide")),
     ui.role !== "gm" && h("section", null,
       h("label", { class: "switch-row" },

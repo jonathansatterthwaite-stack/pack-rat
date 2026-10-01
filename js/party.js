@@ -102,7 +102,7 @@ const party = {
   chars: [],          // every character in the party, from the latest snapshot
   trades: [],         // trades involving my characters
   shops: [],
-  gm: {},             // GM values (see gmValues)
+  gm: {},             // Global and Local values (js/clockwork.js)
   synced: new Map(),  // id -> { rev, json }: last version the server confirmed (= linked characters)
   records: {},        // id -> { rev, h }: the same, remembered on this device between visits
   undecided: new Set(), // changed both here and in the party while away: waiting for the player
@@ -273,9 +273,8 @@ const party = {
     }
   },
 
-  // ------------------------------------------------------------ GM values
-  // Numbers the GM (the host) sets for drawn icons' gm_… variables: for the whole party, one
-  // character or one item. An item uses the most specific one set.
+  // ------------------------------------------------------------ roles, and values
+  // Global and Local values (js/clockwork.js) are kept by the host in `gm`, as GM values were.
 
   isGm() { return this.active && this.role === "gm"; },
   // The device running the party: it can stop it, choose GMs and remove players.
@@ -356,12 +355,6 @@ const party = {
     this.link();
     toast(`Now playing ${pc.name}`);
     return true;
-  },
-
-  // The GM values that apply to one item: party-wide, then its character's, then its own.
-  gmValues(charId, entryUid) {
-    const g = this.gm || {};
-    return { ...(g.party || {}), ...(g.characters?.[charId] || {}), ...(g.items?.[`${charId}/${entryUid}`] || {}) };
   },
 
   // scope: "party" | "character" | "item"; target: "" | charId | "charId/entryUid"; value null clears it.

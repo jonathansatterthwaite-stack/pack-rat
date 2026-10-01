@@ -131,7 +131,7 @@ const SLOT_DELVE_SYSTEM = {
   commonFields: [],
   states: [
     { key: "broken", label: "Broken", who: "player" },
-    { key: "blessed", label: "Blessed", who: "gm", limit: { gmValue: "gm_blessings", default: 1, mode: "block", text: "Only {limit} blessed item per adventurer", label: "Blessings" } },
+    { key: "blessed", label: "Blessed", who: "gm", limit: { value: "blessings", default: 1, mode: "block", text: "Only {limit} blessed item per adventurer", label: "Blessings" } },
   ],
   stats: { str: 10, con: 10 },
   campaignSettings: [],

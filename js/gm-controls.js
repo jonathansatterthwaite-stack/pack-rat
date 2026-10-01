@@ -1,46 +1,24 @@
-// GM controls: boards the GM makes for setting GM values by hand. A board is a picture (a map, a
-// dial, anything) or a blank square, with pins to drag: each pin's x and y set a pair of GM values
-// (e.g. gm_shipX and gm_shipY), for everyone, one player or one item. Players' drawn icons follow.
+// GM controls: boards the GM makes for setting values by hand (Clockwork controls: see
+// js/clockwork.js). A board is a picture (a map, a dial, anything) or a blank square, with pins to
+// drag: each pin's x and y set a pair of values (e.g. shipX and shipY): Globals, or one player's or
+// one item's Locals. Players' drawn icons follow.
 //
 // Kept on the GM's device (store.state.gmControls): { id, name, image?, pins: [pin] }, where a pin
-// is { id, label, color, xVar, yVar, scope, target, xRange: [from, to], yRange: [from, to] }.
-// A pin has no position of its own: it shows where its GM values are, so setting them any other
-// way (the GM values list) moves it too.
+// is { id, label, color, xVar, yVar, scope, target, xRange: [from, to], yRange: [from, to] }; xVar
+// and yVar are value names, scope "party" (Globals), "character" or "item" (Locals).
+// A pin has no position of its own: it shows where its values are, so setting them any other way
+// (the Values tab) moves it too.
 
-const GM_VAR = /^gm_[A-Za-z0-9_]{1,40}$/;
 const PIN_COLORS = ["#c0392b", "#2e86de", "#27ae60", "#e67e22", "#8e44ad", "#16a085", "#d4ac0d", "#34495e"];
 
 const gmControls = () => store.state.gmControls || [];
 
-// ------------------------------------------------------------------ who's the GM, and where GM values go
+// ------------------------------------------------------------------ who's the GM
 // A device is the GM in a party when the host has made it one (party.isGm); outside a party when
-// it's set to the GM role (Settings), to prepare: then GM values are the campaign's presets, which
-// go to the party when the campaign is loaded into one.
+// it's set to the GM role (Settings), to prepare: then values are the campaign's starting ones,
+// which go to the party when the campaign is loaded into one.
 
 const isGmDevice = () => party.active ? party.isGm() : ui.role === "gm";
-const gmValuesNow = () => party.active ? party.gm || {} : store.state.gmValues || {};
-
-async function setGmValue(scope, target, name, value) {
-  if (party.active) return party.setGm(scope, target, name, value);
-  store.update(s => { s.gmValues = putGmValue(s.gmValues || {}, scope, target, name, value); });
-}
-
-// The GM values that apply to an item: in a party the host's, else this campaign's presets.
-function gmValuesFor(charId, entryUid) {
-  if (party.active) return party.gmValues(charId, entryUid);
-  const g = store.state?.gmValues || {};
-  return { ...(g.party || {}), ...(g.characters?.[charId] || {}), ...(g.items?.[`${charId}/${entryUid}`] || {}) };
-}
-
-// A GM value where a pin applies: that level's own, else the levels above it (as items see them).
-function gmValueAt(scope, target, name) {
-  const g = gmValuesNow();
-  const charId = scope === "item" ? target.split("/")[0] : target;
-  for (const level of [scope === "item" && g.items?.[target], scope !== "party" && g.characters?.[charId], g.party]) {
-    if (level && name in level) return level[name];
-  }
-  return undefined;
-}
 
 // An axis maps a position across the board (0 at the left or top, 1 at the right or bottom) onto a
 // range of values; a range can run backwards (from 10 down to 0).
@@ -51,43 +29,44 @@ const axisValue = (pos, [from, to]) => Math.round((from + pos * (to - from)) * 1
 function scopeLabel(pin) {
   if (pin.scope === "party") return "everyone";
   const [charId, entryUid] = pin.target.split("/");
-  const c = party.chars.find(x => x.id === charId);
+  const c = gmChars().find(x => x.id === charId);
   if (!c) return "a player who has left";
   if (pin.scope === "character") return c.name;
   const e = c.items.find(x => x.uid === entryUid);
   return e ? `${c.name}'s ${entryName(e)}` : `an item ${c.name} no longer has`;
 }
 
-// "gm_shipX = 0.42 · gm_shipY = 0.8"
+// "shipX = 0.42 · shipY = 0.8"
 function pinValues(pin) {
   return [pin.xVar, pin.yVar].filter(Boolean).map(n => {
-    const v = gmValueAt(pin.scope, pin.target, n);
+    const v = valueAt(pin.scope, pin.target, valueKey(n));
     return `${n} = ${v === undefined ? "not set" : v}`;
   }).join(" · ");
 }
 
-// ------------------------------------------------------------------ the GM tab: Players · GM values
-// In a party: the players (gmPlayersView) and the GM values with their controls. Preparing outside
-// one: the campaign's starting GM values and controls.
+// ------------------------------------------------------------------ the GM tab: Players · Values · Clockwork
+// In a party: the players (gmPlayersView). Always: the Global and Local values with the boards
+// (valuesView), and Clockwork's connections (clockworkView). Preparing outside a party, values are
+// the campaign's starting ones.
 
-const GM_TABS = [["players", "Players"], ["values", "GM values"]];
+const GM_TABS = [["players", "Players"], ["values", "Values"], ["clockwork", "Clockwork"]];
 
 function renderGm() {
   const tabs = party.active ? GM_TABS : GM_TABS.filter(([k]) => k !== "players");
   const tab = tabs.some(([k]) => k === ui.gmTab) ? ui.gmTab : tabs[0][0];
   return h("div", { class: "view-gm view-party" },
-    tabs.length > 1 && subTabs("GM", tabs, tab, k => { ui.gmTab = k; render(); }),
-    tab === "players" ? gmPlayersView() : gmValuesView());
+    subTabs("GM", tabs, tab, k => { ui.gmTab = k; render(); }),
+    tab === "players" ? gmPlayersView() : tab === "values" ? valuesView() : clockworkView());
 }
 
-// ------------------------------------------------------------------ the Controls section (GM values tab)
+// ------------------------------------------------------------------ the Controls section (Values tab)
 
 function gmControlsSection() {
   const list = gmControls();
   return h("section", { class: "gm-controls" },
     h("div", { class: "section-head" }, h("h2", null, "Controls"),
       h("button", { class: "btn", onclick: () => editGmControl(null) }, icon("plus"), "New control")),
-    h("p", { class: "muted small" }, "Boards for setting GM values by dragging pins: a map, any picture, or a blank square. Each pin's position sets a pair of GM values, like gm_shipX and gm_shipY, and players' icons follow as you drag. Kept on this device."),
+    h("p", { class: "muted small" }, "Boards for setting values by dragging pins: a map, any picture, or a blank square. Each pin's position sets a pair of values, like shipX and shipY (Globals, or a player's or an item's Locals), and players' icons follow as you drag. Kept on this device."),
     list.map(gmControlCard));
 }
 
@@ -99,7 +78,7 @@ function gmControlCard(ctl) {
       h("button", { class: "collapse" + (closed ? " closed" : ""), "aria-expanded": String(!closed), onclick: toggle }, icon("chevron"), h("h3", null, ctl.name)),
       h("span", { class: "muted small" }, plural(ctl.pins.length, "pin")),
       iconBtn("edit", `Edit ${ctl.name}`, () => editGmControl(ctl)),
-      iconBtn("trash", `Delete ${ctl.name}`, () => confirmDialog(`Delete the control “${ctl.name}”? The GM values it set keep their values.`, "Delete",
+      iconBtn("trash", `Delete ${ctl.name}`, () => confirmDialog(`Delete the control “${ctl.name}”? The values it set keep their values.`, "Delete",
         () => commit(s => { s.gmControls = s.gmControls.filter(c => c.id !== ctl.id); }, `Deleted ${ctl.name}`, true)), "danger-hover")),
     !closed && [
       ctl.pins.length ? gmBoard(ctl) : h("p", { class: "muted pad" }, "No pins yet: Edit to add some."),
@@ -117,9 +96,9 @@ function gmBoard(ctl) {
   return h("div", { class: "gm-board-wrap" }, board);
 }
 
-// A pin: drag it (or select it and use the arrow keys) to set its GM values.
+// A pin: drag it (or select it and use the arrow keys) to set its values.
 function gmPin(board, pin) {
-  const at = name => name ? gmValueAt(pin.scope, pin.target, name) : undefined;
+  const at = name => name ? valueAt(pin.scope, pin.target, valueKey(name)) : undefined;
   const vx = at(pin.xVar), vy = at(pin.yVar);
   let x = vx === undefined ? 0.5 : axisPos(vx, pin.xRange), y = vy === undefined ? 0.5 : axisPos(vy, pin.yRange);
   const el = h("button", { type: "button", class: "gm-pin" + (vx === undefined && vy === undefined ? " unset" : ""),
@@ -140,8 +119,8 @@ function gmPin(board, pin) {
     timer = null;
     last = Date.now();
     const sets = [];
-    if (pin.xVar) sets.push(setGmValue(pin.scope, pin.target, pin.xVar, axisValue(x, pin.xRange)));
-    if (pin.yVar) sets.push(setGmValue(pin.scope, pin.target, pin.yVar, axisValue(y, pin.yRange)));
+    if (pin.xVar) sets.push(putValue(pin.scope, pin.target, valueKey(pin.xVar), axisValue(x, pin.xRange)));
+    if (pin.yVar) sets.push(putValue(pin.scope, pin.target, valueKey(pin.yVar), axisValue(y, pin.yRange)));
     return Promise.all(sets).catch(e => toast(e.message));
   };
   const soon = () => { if (!timer) timer = setTimeout(send, Math.max(0, 150 - (Date.now() - last))); };
@@ -190,13 +169,13 @@ function gmPin(board, pin) {
 
 // ------------------------------------------------------------------ making and editing a control
 
-// Where a pin can apply: everyone, a player, or one of a player's items with a drawn icon.
+// Where a pin can apply: Globals (everyone), a player's Locals, or one of a player's items with a drawn icon.
 function pinScopeOptions(current) {
-  const opts = [h("option", { value: "party:" }, "Everyone")];
-  for (const c of party.chars) {
+  const opts = [h("option", { value: "party:" }, "Everyone (Global values)")];
+  for (const c of gmChars()) {
     const items = c.items.filter(e => e.item.iconDoc);
     opts.push(h("optgroup", { label: c.name },
-      h("option", { value: "character:" + c.id }, `${c.name} (all their items)`),
+      h("option", { value: "character:" + c.id }, `${c.name} (their Local values)`),
       items.map(e => h("option", { value: `item:${c.id}/${e.uid}` }, entryName(e)))));
   }
   if (current !== "party:" && !opts.some(o => o.value === current || [...(o.children || [])].some(x => x.value === current))) {
@@ -205,14 +184,17 @@ function pinScopeOptions(current) {
   return opts;
 }
 
-// A GM value name from a control's name: "Ship's position" -> "gm_ships_position".
-const gmSlug = text => "gm_" + ((text || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 30) || "pin");
+// A value name from a control's name: "Ship's position" -> "ships_position".
+const valueSlug = text => {
+  const s = (text || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 30);
+  return isValueName(s) ? s : "pin" + (s ? "_" + s : "");
+};
 
 function editGmControl(ctl) {
   const isNew = !ctl;
   const draft = ctl ? clone(ctl) : { id: "gc" + uid(), name: "", pins: [] };
   let close;
-  const known = [...new Set([...knownGmNames(), ...gmControls().flatMap(c => c.pins.flatMap(p => [p.xVar, p.yVar])).filter(Boolean)])].sort();
+  const known = [...new Set([...knownValues().values()].map(v => v.name))].sort();
   const listId = "gm-names-" + uid();
 
   const bgBox = h("div", { class: "inline wrap gm-bg" });
@@ -227,9 +209,9 @@ function editGmControl(ctl) {
   const pinsBox = h("div", { class: "gm-pin-rows" });
   const num = (value, label, onSet) => h("input", { type: "number", step: "any", value, "aria-label": label, class: "gm-range",
     onchange: e => { if (e.target.value !== "") onSet(+e.target.value); } });
-  const varInput = (pin, key, label) => h("input", { type: "text", list: listId, value: pin[key] || "", placeholder: "gm_…", "aria-label": label,
-    class: pin[key] && !GM_VAR.test(pin[key]) ? "invalid" : "", spellcheck: "false", autocomplete: "off",
-    onchange: e => { pin[key] = e.target.value.trim(); e.target.classList.toggle("invalid", !!pin[key] && !GM_VAR.test(pin[key])); } });
+  const varInput = (pin, key, label) => h("input", { type: "text", list: listId, value: pin[key] || "", placeholder: "value name", "aria-label": label,
+    class: pin[key] && !isValueName(pin[key]) ? "invalid" : "", spellcheck: "false", autocomplete: "off",
+    onchange: e => { pin[key] = e.target.value.trim(); e.target.classList.toggle("invalid", !!pin[key] && !isValueName(pin[key])); } });
   const drawPins = () => {
     setChildren(pinsBox, draft.pins.map(pinRow));
     // A select shows its choice only once its options are in it.
@@ -250,7 +232,7 @@ function editGmControl(ctl) {
       h("select", { onchange: e => { const [scope, target] = e.target.value.split(/:(.*)/); pin.scope = scope; pin.target = target || ""; } },
         pinScopeOptions(`${pin.scope}:${pin.target}`))));
   const addPin = () => {
-    const n = draft.pins.length + 1, base = gmSlug(draft.name) + (n > 1 ? n : "");
+    const n = draft.pins.length + 1, base = valueSlug(draft.name) + (n > 1 ? n : "");
     draft.pins.push({ id: "p" + uid(), label: `Pin ${n}`, color: PIN_COLORS[(n - 1) % PIN_COLORS.length],
       xVar: base + "_x", yVar: base + "_y", scope: "party", target: "", xRange: [0, 1], yRange: [0, 1] });
     drawPins();
@@ -259,9 +241,9 @@ function editGmControl(ctl) {
 
   const save = () => {
     draft.name = (draft.name || "").trim() || "Control";
-    const bad = draft.pins.flatMap(p => [p.xVar, p.yVar]).filter(n => n && !GM_VAR.test(n));
-    if (bad.length) return toast(`Not a GM value name: ${bad.join(", ")} (use gm_ then letters, digits or _)`);
-    if (draft.pins.some(p => !p.xVar && !p.yVar)) return toast("Each pin needs a GM value to set, across or down");
+    const bad = draft.pins.flatMap(p => [p.xVar, p.yVar]).filter(n => n && !isValueName(n));
+    if (bad.length) return toast(`Not a value name: ${bad.join(", ")} (a letter, then letters, digits or _; not starting gm_, global_, local_ or state_)`);
+    if (draft.pins.some(p => !p.xVar && !p.yVar)) return toast("Each pin needs a value to set, across or down");
     close();
     commit(s => {
       s.gmControls = s.gmControls || [];
@@ -275,7 +257,7 @@ function editGmControl(ctl) {
       h("input", { type: "text", value: draft.name, maxlength: 60, placeholder: "e.g. Sea chart, Doom clock, Weather", oninput: e => { draft.name = e.target.value; } })),
     h("div", { class: "field" }, h("span", null, "Background"), bgBox),
     h("div", { class: "section-head" }, h("h4", null, "Pins"), h("button", { type: "button", class: "btn", onclick: addPin }, icon("plus"), "Add pin")),
-    h("p", { class: "muted small" }, "Each pin sets up to two GM values: one from its position across the board, one from its position down it. Choose what each edge is worth (a range can run backwards). Leave one empty to use only the other."),
+    h("p", { class: "muted small" }, "Each pin sets up to two values: one from its position across the board, one from its position down it. Choose what each edge is worth (a range can run backwards). Leave one empty to use only the other. Drawings read them as global_name or local_name."),
     pinsBox,
     h("datalist", { id: listId }, known.map(n => h("option", { value: n })))),
   { wide: true, footer: [

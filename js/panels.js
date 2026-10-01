@@ -127,6 +127,9 @@ function statsOf(char, sys = activeSystem()) {
   return { ...clone(sys.stats || {}), ...legacy, ...clone(char.stats || {}) };
 }
 
+// A set of stored values by name (without the GM's state overrides).
+const ownValues = bucket => Object.fromEntries(Object.entries(bucket || {}).filter(([k]) => !k.startsWith("gm_state_")).map(([k, v]) => [keyName(k), v]));
+
 function panelState(char, withIcons = true) {
   const settings = store.state.settings;
   const value = char.items.reduce((s, e) => s + entryValue(e), 0);
@@ -137,6 +140,7 @@ function panelState(char, withIcons = true) {
     const holder = e.parent && char.items.find(x => x.uid === e.parent);
     return {
       uid: e.uid, srcId: e.srcId || null, name: entryName(e), qty: e.qty, equipped: !!e.equipped, states: entryStates(char, e),
+      values: ownValues(valueSet().items?.[`${char.id}/${e.uid}`]), // its own Local values (js/clockwork.js)
       parent: e.parent || null, strapped: !!e.strapped, location: locationLabel(char, e) || "", inHolder: !!(holder && holderSpec(holder)),
       template: tpl.id, root: rootTemplate(tpl)?.id || tpl.id, main: mainFeatures(tpl), features, item: it,
       // Icons for what panels show: equippable things, and anything with a feature of the system's own.
@@ -146,8 +150,11 @@ function panelState(char, withIcons = true) {
   // Each limited state: how many are on, and the limit (5e: attunement slots).
   const limits = Object.fromEntries(systemStates().filter(st => st.limit).map(st => [st.key,
     { count: items.filter(x => x.states[st.key]).length, limit: stateLimit(char, st) }]));
+  const g = valueSet();
   return {
     system: activeSystem().id, settings: clone(settings), limits,
+    // Global values, and the character's Locals (an item's own are on the item).
+    values: { global: ownValues(g.party), local: ownValues(g.characters?.[char.id]) },
     character: { id: char.id, name: char.name, stats: statsOf(char), coins: { ...(char.coins || {}) } },
     items,
     totals: {

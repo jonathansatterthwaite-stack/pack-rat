@@ -165,7 +165,7 @@ function newCharacter(name) {
 //
 // Everything saved (DATA_KEY):
 //   { version: 2, activeCampaign, campaigns: [campaign], packages: [package], iconLibrary: [drawing] }
-// A campaign is one game: its characters, shops, the GM's controls and preset GM values, and its
+// A campaign is one game: its characters, shops, the GM's controls and starting values, and its
 // rules settings. Rule packages (custom items and templates) and the drawings library are shared;
 // each campaign picks the packages it uses, and new custom items go into its home package.
 // The old single bundle (STORAGE_KEY) is read once to make the first campaign and left as it was.
@@ -232,7 +232,9 @@ function normalizeData(d) {
     for (const k of ["characters", "shops", "gmControls"]) if (!Array.isArray(c[k])) c[k] = [];
     if (!c.characters.length) c.characters.push(newCharacter("Adventurer"));
     if (!c.characters.some(x => x.id === c.activeId)) c.activeId = c.characters[0].id;
-    if (!c.gmValues || typeof c.gmValues !== "object") c.gmValues = {};
+    if (!c.gmValues || typeof c.gmValues !== "object") c.gmValues = {}; // Global and Local values (js/clockwork.js)
+    // Boards' pins named GM values (gm_shipX); now values are named without it (shipX).
+    for (const ctl of c.gmControls) for (const p of ctl.pins || []) for (const k of ["xVar", "yVar"]) if (/^gm_./.test(p[k] || "")) p[k] = p[k].slice(3);
     c.packages = (Array.isArray(c.packages) ? c.packages : []).filter(id => d.packages.some(p => p.id === id));
     if (!c.packages.includes(c.home)) c.home = c.packages[0] || null;
   }

@@ -1,4 +1,5 @@
-// Triggers: an item's "when → if → do" rules (see item states and layers in js/system.js).
+// Triggers: an item's "when → if → do" rules, Clockwork's first (see js/clockwork.js, and item
+// states and layers in js/system.js).
 //
 //   item.triggers: [{ on, if?, do: [{ set, to }], message? }]
 //     on:      "acquired" (it enters this character's inventory: added, bought, given, traded),
@@ -43,7 +44,7 @@ function runCharTriggers(char) {
       changed = true;
       for (const t of e.item.triggers || []) {
         if (!events.includes(t.on)) continue;
-        if (t.if?.state && stateOn(char, e, t.if.state) !== (t.if.is !== false)) continue;
+        if (t.if?.state && !!clockwork.get({ char, entry: e }, "item.state." + t.if.state) !== (t.if.is !== false)) continue;
         for (const a of t.do || []) if (a?.set && stateByKey(a.set)) setState(e, a.set, a.to !== false);
         if (t.message) messages.push(`${entryName(e)}: ${t.message}`);
       }

@@ -263,7 +263,7 @@ function campaignCard() {
     let close;
     close = openModal("Load a campaign", [
       h("p", { class: "muted small" }, "Everyone switches to it: players' devices play their characters from it (or bring new ones). "
-        + "A campaign the party hasn't played yet starts with its shops and GM values from your device."),
+        + "A campaign the party hasn't played yet starts with its shops and values from your device."),
       h("div", { class: "group" }, mine.map(c => h("button", { class: "row row-main switch", onclick: () => { close(); load(c); } },
         icon("book"), h("div", null, h("div", { class: "row-title" }, c.name),
           h("div", { class: "row-sub" }, [plural(c.shops.length, "shop"), c.notes].filter(Boolean).join(" · ")))))),
@@ -285,7 +285,7 @@ function devicesCard() {
   return h("section", { class: "devices-card" },
     h("div", { class: "section-head" }, h("h2", null, "Devices"),
       h("span", { class: "muted small" }, gms.length ? plural(gms.length, "GM") : "You're the GM until you choose one")),
-    h("p", { class: "muted small" }, "Make a device a GM to let it run the shops, GM values and controls and see everyone's details. As host you keep stopping the party, choosing GMs and removing players."),
+    h("p", { class: "muted small" }, "Make a device a GM to let it run the shops, values and controls and see everyone's details. As host you keep stopping the party, choosing GMs and removing players."),
     h("div", { class: "group" }, party.devices.map(d => h("div", { class: "row" },
       onlineDot(d.online),
       h("div", { class: "row-main static" },
@@ -333,94 +333,6 @@ function renderParty() {
     history.length > 0 && h("section", null, h("h2", null, "Recent trades"), history.map(tradeCard)));
 }
 
-// ------------------------------------------------------------------ GM values
-
-// The gm_… variables of the drawn icons carried in the party (declared, or only used in formulas):
-// name → { spec, chars: charId → { char, items } }.
-function gmVariablesInParty() {
-  const vars = new Map();
-  for (const c of party.chars) {
-    for (const e of c.items || []) {
-      if (!e.item.iconDoc) continue;
-      for (const v of drawingGmSpecs(e.item.iconDoc).values()) {
-        let g = vars.get(v.name);
-        if (!g) vars.set(v.name, g = { spec: v, chars: new Map() });
-        let cg = g.chars.get(c.id);
-        if (!cg) g.chars.set(c.id, cg = { char: c, items: [] });
-        cg.items.push({ e, spec: v });
-      }
-    }
-  }
-  return new Map([...vars].sort(([a], [b]) => a.localeCompare(b)));
-}
-
-// A value at one level: a slider and a number, or "inherited" (the level above applies) until set.
-function gmValueControl(spec, own, inherited, onSet) {
-  const shown = own ?? inherited;
-  const min = Math.min(spec.min ?? 0, shown), max = Math.max(spec.max ?? 1, shown);
-  const num = h("input", { type: "number", class: "gm-num", step: spec.step || "any", value: shown, "aria-label": "Value",
-    onchange: ev => { if (ev.target.value !== "") onSet(+ev.target.value); } });
-  const range = h("input", { type: "range", min, max, step: spec.step || "any", value: shown, "aria-label": "Value",
-    oninput: ev => { num.value = ev.target.value; }, onchange: ev => onSet(+ev.target.value) });
-  return h("div", { class: "gm-control" + (own === undefined ? " inherits" : "") }, range, num,
-    own !== undefined ? iconBtn("x", "Clear (use the value above)", () => onSet(null))
-      : h("span", { class: "muted small gm-inherit" }, "inherited"));
-}
-
-// The GM values tab: every gm_ value in use, then the players whose items use it, then those items.
-// Each level can be set; an item uses the most specific value (item, player, party, the drawing's own).
-function gmValuesView() {
-  if (!party.active) return [gmControlsSection(), gmPresetsSection()];
-  const vars = gmVariablesInParty();
-  const gm = party.gm || {};
-  const set = (scope, target, name) => async value => {
-    try { await party.setGm(scope, target, name, value); } catch (e) { toast(e.message); }
-  };
-  const fold = key => {
-    const closed = ui.collapsed.has(key);
-    return [closed, h("button", { class: "collapse" + (closed ? " closed" : ""), "aria-expanded": String(!closed),
-      onclick: () => { closed ? ui.collapsed.delete(key) : ui.collapsed.add(key); render(); } }, icon("chevron"))];
-  };
-  const source = (item, player, all) => item !== undefined ? "this item" : player !== undefined ? "the player" : all !== undefined ? "the party" : "the drawing";
-  return [gmControlsSection(), h("section", { class: "gm-values" },
-    h("h2", null, "GM values"),
-    h("p", { class: "muted small" }, "Numbers you set for drawn icons, e.g. how cursed a blade is. Set a value for the whole party, for a player, or for one item: each item uses the most specific one. Players see the change straight away."),
-    !vars.size ? h("div", { class: "empty" }, h("p", null, "No GM values yet. In the icon editor's Variables tab, add one with + GM value (a name starting ",
-      h("code", null, "gm_"), ", e.g. ", h("code", null, "gm_curse"), ") and bind layers to it. Items carried with that icon show up here."))
-      : [...vars].map(([name, g]) => {
-        const all = gm.party?.[name];
-        const [closed, toggle] = fold(`gm:${name}`);
-        const users = [...g.chars.values()].reduce((n, cg) => n + cg.items.length, 0);
-        return h("div", { class: "group gm-var" },
-          h("div", { class: "group-head" }, toggle,
-            h("h3", null, h("code", null, name)),
-            h("span", { class: "muted small" }, `${plural(users, "item")} · ${plural(g.chars.size, "player")}`)),
-          !closed && [
-            h("div", { class: "row gm-level" }, h("div", { class: "row-main static" }, h("div", { class: "row-title" }, "Everyone"),
-              h("div", { class: "row-sub" }, `The drawing's own value is ${g.spec.value}`)),
-              gmValueControl(g.spec, all, g.spec.value, set("party", "", name))),
-            [...g.chars.values()].map(({ char, items }) => {
-              const player = gm.characters?.[char.id]?.[name];
-              const [cClosed, cToggle] = fold(`gm:${name}:${char.id}`);
-              return h("div", { class: "gm-player" },
-                h("div", { class: "row gm-level" }, cToggle,
-                  h("div", { class: "row-main static" }, h("div", { class: "row-title" }, char.name, char.mine && h("span", { class: "tag" }, "yours")),
-                    h("div", { class: "row-sub" }, plural(items.length, "item"))),
-                  gmValueControl(g.spec, player, all ?? g.spec.value, set("character", char.id, name))),
-                !cClosed && items.map(({ e, spec }) => {
-                  const own = gm.items?.[`${char.id}/${e.uid}`]?.[name];
-                  const effective = own ?? player ?? all ?? spec.value;
-                  return h("div", { class: "row gm-level gm-item" },
-                    itemIcon(e.item, "row-icon", () => entryIconVars(char, e)),
-                    h("div", { class: "row-main static" }, h("div", { class: "row-title" }, entryName(e)),
-                      h("div", { class: "row-sub" }, `Uses ${effective} (from ${source(own, player, all)})`)),
-                    gmValueControl(spec, own, player ?? all ?? spec.value, set("item", `${char.id}/${e.uid}`, name)));
-                }));
-            }),
-          ]);
-      }))];
-}
-
 // ------------------------------------------------------------------ the GM's view of the players
 
 // Every character in the party, with what a GM wants at a glance: armour class, load, coins,
@@ -441,6 +353,7 @@ function gmPlayersView() {
       e.equipped && h("span", { class: "tag on" }, equipWord(e)),
       statesOnFor(c, e).map(st => h("span", { class: "tag attuned" }, st.label.toLowerCase())),
       e.liquid?.pints > 0 && h("span", { class: "muted small" }, liquidLabel(e)),
+      clockworkCog(c, e),
       statesFor(e).length > 0 && iconBtn("wand", `States of ${entryName(e)}`, () => openGmStates(c, e), "gm-states-btn")), ...kids];
   });
 
@@ -474,35 +387,6 @@ function gmPlayersView() {
         oninput: e => { ui.gmSearch = e.target.value; render(); document.querySelector(".gm-players input[type=search]")?.focus(); } })),
     chars.length ? (cards.length ? cards : h("p", { class: "muted pad" }, "Nobody carries anything like that.")) :
       h("div", { class: "empty" }, h("p", null, "Nobody has joined yet. Players join from the address on the Party tab.")));
-}
-
-// Preparing outside a party: the campaign's starting GM values, for everyone. They go to the party
-// when the GM loads the campaign into one, and this device's own icons use them meanwhile.
-function gmPresetsSection() {
-  const names = [...knownGmNames()].sort();
-  const g = store.state.gmValues || {};
-  // A value's range: as a drawing declares it (its slider), else as a control's pin sets it, else 0 to 1.
-  const specOf = name => {
-    const docs = [...drawingLibrary().map(d => d.doc), ...store.allCustomItems().map(i => i.iconDoc)].filter(Boolean);
-    for (const doc of docs) { const s = drawingGmSpecs(doc).get(name); if (s && s.max !== undefined) return s; }
-    for (const pin of gmControls().flatMap(c => c.pins)) {
-      const range = pin.xVar === name ? pin.xRange : pin.yVar === name ? pin.yRange : null;
-      if (range) return { name, value: Math.min(...range), min: Math.min(...range), max: Math.max(...range), step: "any" };
-    }
-    return { name, value: 0, min: 0, max: 1, step: 0.01 };
-  };
-  return h("section", { class: "gm-values" },
-    h("h2", null, "GM values"),
-    h("p", { class: "muted small" }, `Starting values for ${store.campaign().name}, ready for the next session: they're sent to the party when you load this campaign into it. Your own icons show them meanwhile.`),
-    names.length ? h("div", { class: "group" }, names.map(name => {
-      const spec = specOf(name), own = g.party?.[name];
-      return h("div", { class: "row gm-level" },
-        h("div", { class: "row-main static" }, h("div", { class: "row-title" }, h("code", null, name)),
-          h("div", { class: "row-sub" }, own === undefined ? `The drawing's own value (${spec.value})` : "Set for everyone")),
-        gmValueControl(spec, own, spec.value, value => setGmValue("party", "", name, value)));
-    }))
-      : h("div", { class: "empty" }, h("p", null, "No GM values yet. In the icon editor's Variables tab, add one with + GM value (a name starting ",
-        h("code", null, "gm_"), ") and bind layers to it.")));
 }
 
 // Host: remove a player's character who isn't connected. Offers a backup file first.
@@ -897,15 +781,15 @@ function openGmStates(c, e) {
 
 // A character's limits (5e: attunement slots), which only the GM sets.
 function gmLimits(c) {
-  const lims = systemStates().filter(st => st.limit?.gmValue);
+  const lims = systemStates().filter(limitValueName);
   if (!lims.length) return null;
   return h("div", { class: "gm-limits" }, lims.map(st => {
-    const own = (gmValuesNow().characters || {})[c.id]?.[st.limit.gmValue];
+    const own = charLocal(c.id, limitValueName(st));
     return h("label", { class: "gm-limit" }, h("span", { class: "small muted" }, st.limit.label || `${st.label} limit`),
       h("input", { type: "number", min: 0, max: 99, value: stateLimit(c, st) ?? "", placeholder: String(st.limit.default ?? ""),
         "aria-label": `${st.limit.label || st.label + " limit"} for ${c.name}`, onchange: async ev => {
           const v = ev.target.value === "" ? null : Math.max(0, Math.min(99, Math.round(+ev.target.value)));
-          try { await setGmValue("character", c.id, st.limit.gmValue, v); } catch (err) { toast(err.message); }
+          try { await setLocal(c.id, null, limitValueName(st), v); } catch (err) { toast(err.message); }
           render();
         } }),
       h("span", { class: "small muted" }, `${stateCount(c, st.key)} ${st.label.toLowerCase()}` + (typeof own === "number" ? "" : " · default")));
