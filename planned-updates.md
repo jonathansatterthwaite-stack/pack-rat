@@ -16,3 +16,5 @@ Consider live images with animations. Investigate if having too many of these ca
 - If total calculations start to effect app speed the animation/tick speed should be throttled. This should make it so only animations slow down and not the user experience.
 
 svg animations seem to update only on release of a gm_ control. Other variables update while controls are being moved.
+
+(Bug) Moving a layer into a group often makes the layer jump positions
