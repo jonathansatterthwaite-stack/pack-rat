@@ -25,7 +25,7 @@ function switchCampaign(id) {
 // Make, or edit, a campaign: its name, notes, rules settings and the rule packages it uses.
 function editCampaign(camp = null) {
   const isNew = !camp;
-  const draft = isNew ? { name: "", notes: "", system: store.campaign().system, packages: [...store.campaign().packages], home: store.campaign().home, settings: { ...store.campaign().settings } }
+  const draft = isNew ? { name: "", notes: "", system: systemById(store.campaign().system) ? store.campaign().system : defaultSystemId(), packages: [...store.campaign().packages], home: store.campaign().home, settings: { ...store.campaign().settings } }
     : { name: camp.name, notes: camp.notes || "", system: camp.system, packages: [...camp.packages], home: camp.home, settings: { ...camp.settings } };
   let close;
   const pkgBox = h("div", { class: "group pkg-choice" });
@@ -41,17 +41,28 @@ function editCampaign(camp = null) {
         h("input", { type: "radio", name: "home-pkg", checked: draft.home === p.id, onchange: () => { draft.home = p.id; } }), " new items here"));
   }) : h("p", { class: "muted pad" }, "No rule packages yet."));
   drawPkgs();
+  // Rules settings: coin weight, and the ones the chosen system uses.
+  const rulesBox = h("div", { class: "form grid" });
+  const drawRules = () => setChildren(rulesBox,
+    usesSetting("encumbrance", systemById(draft.system) || NO_SYSTEM) && h("label", { class: "field" }, h("span", null, "Encumbrance"),
+      h("select", { onchange: e => { draft.settings.encumbrance = e.target.value; } },
+        [["standard", "Standard (capacity = STR × 15)"], ["variant", "Variant (speed penalties at STR × 5 / × 10)"], ["off", "Off"]]
+          .map(([v, l]) => h("option", { value: v, selected: draft.settings.encumbrance === v }, l)))),
+    currency(systemById(draft.system) || NO_SYSTEM).perWeight > 0 && h("label", { class: "check field" },
+      h("input", { type: "checkbox", checked: draft.settings.coinWeight !== false, onchange: e => { draft.settings.coinWeight = e.target.checked; } }),
+      ` Coins have weight (${currency(systemById(draft.system) || NO_SYSTEM).perWeight} coins = 1 ${weightUnit(systemById(draft.system) || NO_SYSTEM)})`));
+  drawRules();
   const save = () => {
     const name = draft.name.trim() || (isNew ? "New campaign" : camp.name);
     close();
     commit(() => {
       if (isNew) {
-        const c = newCampaign(name, draft.packages, draft.system);
+        const c = newCampaign(name, draft.packages, draft.system || null);
         Object.assign(c, { notes: draft.notes, home: draft.home, settings: draft.settings, lastPlayed: Date.now() });
         store.data.campaigns.push(c);
         if (!party.active) store.data.activeCampaign = c.id;
       } else {
-        Object.assign(camp, { name, notes: draft.notes, system: draft.system, packages: draft.packages, home: draft.home, settings: { ...camp.settings, ...draft.settings } });
+        Object.assign(camp, { name, notes: draft.notes, system: draft.system || null, packages: draft.packages, home: draft.home, settings: { ...camp.settings, ...draft.settings } });
       }
       normalizeData(store.data);
     }, isNew ? `Made the campaign ${name}` : `Saved ${name}`, true);
@@ -62,17 +73,15 @@ function editCampaign(camp = null) {
     h("label", { class: "field" }, h("span", null, "Notes"),
       h("textarea", { rows: 2, value: draft.notes, placeholder: "Where you left off, house rules, who's playing…", oninput: e => { draft.notes = e.target.value; } })),
     h("h4", null, "Rules"),
-    systems().length > 1 && h("label", { class: "field" }, h("span", null, "Game system"),
-      h("select", { onchange: e => { draft.system = e.target.value; } },
-        systems().map(x => h("option", { value: x.id, selected: (draft.system || DEFAULT_SYSTEM) === x.id }, x.name))),
-      !isNew && h("span", { class: "muted small" }, "Its templates, catalog and groups. Items already made keep their details.")),
-    h("div", { class: "form grid" },
-      h("label", { class: "field" }, h("span", null, "Encumbrance"),
-        h("select", { onchange: e => { draft.settings.encumbrance = e.target.value; } },
-          [["standard", "Standard (capacity = STR × 15)"], ["variant", "Variant (speed penalties at STR × 5 / × 10)"], ["off", "Off"]]
-            .map(([v, l]) => h("option", { value: v, selected: draft.settings.encumbrance === v }, l)))),
-      h("label", { class: "check field" }, h("input", { type: "checkbox", checked: draft.settings.coinWeight !== false, onchange: e => { draft.settings.coinWeight = e.target.checked; } }),
-        " Coins have weight (50 coins = 1 lb)")),
+    h("label", { class: "field" }, h("span", null, "Game system"),
+      h("select", { onchange: e => { draft.system = e.target.value || null; drawRules(); } },
+        systems().map(x => h("option", { value: x.id, selected: draft.system === x.id }, x.name)),
+        // A campaign whose system you don't have (from a file) keeps it until you choose another.
+        draft.system && !systemById(draft.system) && h("option", { value: draft.system, selected: true }, `${systemName(draft.system)} (you don't have it)`),
+        h("option", { value: "", selected: !draft.system }, NO_SYSTEM.name)),
+      h("span", { class: "muted small" }, "Its templates, catalog, money and panels. Add others in Files. "
+        + (isNew ? "" : "Items already made keep their details if it changes."))),
+    rulesBox,
     h("h4", null, "Rule packages"),
     h("p", { class: "muted small" }, "Custom items and templates come in packages, shared between campaigns. Tick the ones this campaign uses; its catalog shows their items."),
     pkgBox), { wide: true, footer: [
@@ -117,8 +126,8 @@ const drawingsUsedBy = items => {
 async function exportCampaign(camp) {
   const packages = store.packages().filter(p => camp.packages.includes(p.id));
   const items = [...camp.characters.flatMap(c => c.items.map(e => e.item)), ...packages.flatMap(p => p.customItems)];
-  // An imported system goes with it (the built-in ones are in every copy of Pack Rat).
-  const sys = store.data.systems.find(x => x.id === camp.system);
+  // An imported system goes with it (the ones that come with Pack Rat are in every copy of it).
+  const sys = store.data.systems.find(x => x.id === camp.system && !x.bundled);
   download(`${safeName(camp.name)}.campaign.json`, { kind: "campaign", campaign: camp, packages, system: sys, drawings: drawingsUsedBy(items),
     images: await bundleImages(new Set([...campaignImageRefs([camp]), ...allImageRefs([], packages.flatMap(p => p.customItems))])) });
 }
@@ -134,7 +143,8 @@ function campaignsView() {
         h("h3", null, camp.name), current && h("span", { class: "tag on" }, party.active ? "in this party" : "playing")),
       camp.notes && h("p", { class: "muted small campaign-notes" }, camp.notes),
       h("dl", { class: "campaign-facts" },
-        h("dt", null, "Characters"), h("dd", null, players.length ? players.map(c => c.name).join(", ") : "None yet"),
+        h("dt", null, "Game system"), h("dd", null, systemName(camp.system), camp.system && !systemById(camp.system) && h("span", { class: "warn-text small" }, " (you don't have it: import it in Files)")),
+        h("dt", null, termCap("characters")), h("dd", null, players.length ? players.map(c => c.name).join(", ") : "None yet"),
         h("dt", null, "Rule packages"), h("dd", null, pkgs.length ? pkgs.map(p => p.name).join(", ") : "None"),
         (camp.shops.length > 0 || camp.gmControls.length > 0) && [h("dt", null, "GM"), h("dd", null,
           [camp.shops.length && plural(camp.shops.length, "shop"), camp.gmControls.length && plural(camp.gmControls.length, "control")].filter(Boolean).join(", "))],
@@ -154,7 +164,7 @@ function campaignsView() {
       h("button", { class: "btn primary", onclick: () => editCampaign(null) }, icon("plus"), "New campaign")),
     h("p", { class: "muted small" }, party.active
       ? "In a party, the campaign is the one the GM has loaded. Your other campaigns wait here until you leave."
-      : "Each campaign has its own characters, shops and GM controls. Rule packages and drawings are shared: each campaign picks the packages it uses."),
+      : `Each campaign has its own ${term("characters")}, shops and ${term("gm")} controls. Rule packages and drawings are shared: each campaign picks the packages it uses.`),
     h("div", { class: "campaign-grid" }, [active, ...store.campaigns().filter(c => c !== active)].map(card)));
 }
 
@@ -226,8 +236,8 @@ async function exportPackage(pkg) {
 function deleteSystem(sys) {
   const users = store.campaigns().filter(c => c.system === sys.id);
   if (users.length) return toast(`${users.map(c => c.name).join(", ")} ${users.length === 1 ? "plays" : "play"} ${sys.name}: choose another system for ${users.length === 1 ? "it" : "them"} first`);
-  confirmDialog(`Delete the game system “${sys.name}”?`, "Delete", () =>
-    commit(() => { store.data.systems = store.data.systems.filter(x => x.id !== sys.id); }, `Deleted ${sys.name}`, true));
+  confirmDialog(isBundled(sys) ? `Remove ${sys.name}? It comes with Pack Rat, so you can add it again from Files.` : `Remove the game system “${sys.name}”?`, "Remove", () =>
+    commit(() => { store.data.systems = store.data.systems.filter(x => x.id !== sys.id); }, `Removed ${sys.name}`, true));
 }
 
 function moveCharacter(char, from) {
@@ -291,7 +301,7 @@ function filesView() {
   const total = sizeOf(store.data);
   const camps = store.campaigns();
   const usedPkg = p => camps.filter(c => c.packages.includes(p.id)).map(c => c.name);
-  const usedSys = x => camps.filter(c => (c.system || DEFAULT_SYSTEM) === x.id).map(c => c.name);
+  const usedSys = x => camps.filter(c => c.system === x.id).map(c => c.name);
 
   const picturesBox = h("div", { class: "files-pictures" }, h("p", { class: "muted pad" }, "Looking for pictures…"));
   drawPictures(picturesBox);
@@ -305,14 +315,14 @@ function filesView() {
       + "Import takes any Pack Rat file: a whole backup, a campaign, a character, a rule package or a drawing."),
 
     filesSection("Campaigns", camps.map(c => fileRow(icon("book"), [c.name, c === store.campaign() && h("span", { class: "tag on" }, "current")],
-      `${plural(c.characters.length, "character")} · ${plural(c.shops.length, "shop")} · ${plural(c.gmControls.length, "GM control")}`, sizeOf(c), [
+      `${plural(c.characters.length, term("character"), term("characters"))} · ${plural(c.shops.length, "shop")} · ${plural(c.gmControls.length, "GM control")}`, sizeOf(c), [
         fileBtn("edit", `Edit ${c.name}`, () => editCampaign(c)),
         fileBtn("download", `Export ${c.name}`, () => exportCampaign(c)),
         fileBtn("copy", `Copy ${c.name}`, () => duplicateCampaign(c)),
         camps.length > 1 && fileBtn("trash", `Delete ${c.name}`, () => deleteCampaign(c), "danger-hover"),
       ])), h("button", { class: "btn", onclick: () => editCampaign(null) }, icon("plus"), "New")),
 
-    filesSection("Characters", allCharacters().map(({ char, campaign }) => fileRow(icon("user"), char.name,
+    filesSection(termCap("characters"), allCharacters().map(({ char, campaign }) => fileRow(icon("user"), char.name,
       `${campaign.name} · ${entriesLabel(char)} · ${coinSummary(char.coins)}`, sizeOf(char), [
         fileBtn("download", `Export ${char.name}`, () => exportCharacter(char)),
         camps.length > 1 && fileBtn("move", `Move ${char.name} to another campaign`, () => moveCharacter(char, campaign)),
@@ -329,13 +339,18 @@ function filesView() {
       ])), h("button", { class: "btn", onclick: () => editPackage(null) }, icon("plus"), "New"),
       "Custom items and templates. Each campaign chooses the packages it uses (Campaigns → Edit)."),
 
-    filesSection("Game systems", systems().map(x => fileRow(icon("book"), [x.name, x.builtin && h("span", { class: "tag" }, "built in")],
-      `${plural((x.templates || []).length, "template")} · ${plural((x.catalog || []).length, "catalog item")} · ${usedSys(x).length ? "used by " + usedSys(x).join(", ") : "not used by any campaign"}`,
-      x.builtin ? null : sizeOf(x), [
-        fileBtn("download", `Export ${x.name}`, () => download(`${safeName(x.name)}.system.json`, systemFile(x))),
-        !x.builtin && fileBtn("trash", `Delete ${x.name}`, () => deleteSystem(x), "danger-hover"),
-      ])), null,
-      "What a campaign plays: its templates, groups, features and catalog. D&D 5e is built in; others come as files to import (Import a file)."),
+    filesSection("Game systems", [
+      ...systems().map(x => fileRow(icon("book"), x.name,
+        `${isBundled(x) ? "Comes with Pack Rat · " : ""}${plural((x.templates || []).length, "template")} · ${plural((x.catalog || []).length, "catalog item")} · ${usedSys(x).length ? "played by " + usedSys(x).join(", ") : "no campaign plays it"}`,
+        isBundled(x) ? null : sizeOf(x), [
+          fileBtn("download", `Export ${x.name}`, () => download(`${safeName(x.name)}.system.json`, systemFile(x))),
+          fileBtn("trash", `Remove ${x.name}`, () => deleteSystem(x), "danger-hover"),
+        ])),
+      // Ones that come with Pack Rat and were removed: added back with a tap.
+      ...BUNDLED_SYSTEMS.filter(b => !systemById(b.id)).map(b => fileRow(icon("book"), b.name, "Comes with Pack Rat · not added", null, [
+        h("button", { class: "btn", onclick: () => commit(() => installSystem({ id: b.id }), `Added ${b.name}`, true) }, icon("plus"), "Add"),
+      ])),
+    ], null, "What a campaign plays: its templates, groups, features, catalog and panels. A campaign can also play none. Others come as files to import (Import a file).", systems().length),
 
     filesSection("Drawings", drawingLibrary().map(d => fileRow(h("span", { class: "file-thumb" }, drawnIcon(d.svg, "file-svg") || icon("image")), d.name,
       `Used by ${plural(drawingUsers(d.id).length, "item")}${isLiveDrawing(d.doc) ? " · live" : ""}`, sizeOf(d), [

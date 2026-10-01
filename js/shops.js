@@ -97,7 +97,7 @@ function stockLabel(listing) {
 // (Same as sell_offer() in server.py and sellOffer() in PartyServer.java.)
 function sellOffer(shop, entry, qty) {
   if (!shop.buys) return 0;
-  const item = entry.item || {};
+  const item = entry.item ? currentItem(entry) : {}; // as it is now (identified, cursed…)
   const bundle = Math.max(1, item.bundle || 1);
   const rule = (shop.sellItems || []).find(r => r.srcId === entry.srcId);
   if (rule && rule.mode === "fixed") return Math.floor(rule.value * qty / bundle);
@@ -342,14 +342,14 @@ function renderShopEditor() {
       }
     }
   };
-  const priceGp = li => li.price == null ? "" : +(li.price / 100).toFixed(2);
+  const priceGp = li => li.price == null ? "" : +(li.price / showCoin().value).toFixed(2);
   const items = h("div", { class: "group shop-edit-items" }, d.items.length ? d.items.map((li, i) => h("div", { class: "row shop-edit-row" },
     itemIcon(li.item, "row-icon"),
     h("div", { class: "row-main static" }, h("div", { class: "row-title" }, li.item.name),
       h("div", { class: "row-sub" }, "List price ", li.item.cost ? fmtCost(li.item.cost) : "free", (li.item.bundle || 1) > 1 ? ` per ${li.item.bundle}` : "")),
-    h("label", { class: "field mini" }, h("span", null, "Price (gp)"),
+    h("label", { class: "field mini" }, h("span", null, `Price (${showCoin().key})`),
       h("input", { type: "number", min: 0, step: "any", inputmode: "decimal", placeholder: "list", value: priceGp(li),
-        oninput: e => { li.price = e.target.value === "" ? null : Math.max(0, Math.round(+e.target.value * 100)); } })),
+        oninput: e => { li.price = e.target.value === "" ? null : Math.max(0, Math.round(+e.target.value * showCoin().value)); } })),
     h("label", { class: "field mini" }, h("span", null, "Stock"),
       h("input", { type: "number", min: 0, inputmode: "numeric", placeholder: "∞", value: li.stock ?? "",
         oninput: e => { li.stock = e.target.value === "" ? null : Math.max(0, Math.floor(+e.target.value)); } })),
@@ -459,18 +459,18 @@ function sellSettings(d) {
     h("p", { class: "muted small" }, "Override the offer for particular items: a % of list price, or a fixed price (per bundle for ammunition)."),
     h("div", { class: "group" }, d.sellItems.length ? d.sellItems.map((r, i) => {
       const valueIn = h("input", { type: "number", min: 0, step: "any", inputmode: "decimal",
-        value: r.mode === "fixed" ? +(r.value / 100).toFixed(2) : r.value,
-        oninput: e => { r.value = r.mode === "fixed" ? Math.max(0, Math.round(+e.target.value * 100)) : Math.max(0, Math.min(1000, Math.round(+e.target.value))); } });
+        value: r.mode === "fixed" ? +(r.value / showCoin().value).toFixed(2) : r.value,
+        oninput: e => { r.value = r.mode === "fixed" ? Math.max(0, Math.round(+e.target.value * showCoin().value)) : Math.max(0, Math.min(1000, Math.round(+e.target.value))); } });
       return h("div", { class: "row shop-edit-row" },
         itemIcon({ type: r.type || "gear", name: r.name, icon: r.icon }, "row-icon"),
         h("div", { class: "row-main static" }, h("div", { class: "row-title" }, r.name)),
         h("label", { class: "field mini" }, h("span", null, "Offer"),
           h("select", { onchange: e => {
             r.mode = e.target.value;
-            r.value = r.mode === "fixed" ? 100 : d.sellRate ?? 50;
+            r.value = r.mode === "fixed" ? showCoin().value : d.sellRate ?? 50;
             render();
-          } }, h("option", { value: "percent", selected: r.mode !== "fixed" }, "% of list"), h("option", { value: "fixed", selected: r.mode === "fixed" }, "Fixed (gp)"))),
-        h("label", { class: "field mini" }, h("span", null, r.mode === "fixed" ? "gp" : "%"), valueIn),
+          } }, h("option", { value: "percent", selected: r.mode !== "fixed" }, "% of list"), h("option", { value: "fixed", selected: r.mode === "fixed" }, `Fixed (${showCoin().key})`))),
+        h("label", { class: "field mini" }, h("span", null, r.mode === "fixed" ? showCoin().key : "%"), valueIn),
         iconBtn("trash", "Remove", () => { d.sellItems.splice(i, 1); render(); }, "danger-hover"));
     }) : h("p", { class: "muted pad" }, "None yet.")));
   return h("section", { class: "sell-section" },
@@ -556,7 +556,7 @@ async function sellToShop(shop, entry, qty) {
     let received = paid;
     if (shopStore.server()) {
       // The host's own solo character: the shop's till and stockroom live on the server.
-      received = (await shopStore.request("POST", `api/shops/${shop.id}/receive`, { srcId: entry.srcId, item: entry.item, qty })).paid;
+      received = (await shopStore.request("POST", `api/shops/${shop.id}/receive`, { srcId: entry.srcId, item: currentItem(entry), qty })).paid;
       shopStore.refresh();
     }
     commit((s, c) => {
@@ -599,17 +599,17 @@ function addToBackroom(shop, entry, qty) {
 
 // Editor: the shop's till and how it gives change.
 function moneySettings(d) {
-  let amount = d.funds == null ? "" : +(d.funds / 100).toFixed(2);
+  let amount = d.funds == null ? "" : +(d.funds / showCoin().value).toFixed(2);
   return h("section", { class: "sell-section" },
     h("h3", null, "Money"),
     h("label", { class: "check field" }, h("input", { type: "checkbox", checked: d.funds == null, onchange: e => {
-      d.funds = e.target.checked ? null : Math.round((+amount || 0) * 100);
+      d.funds = e.target.checked ? null : Math.round((+amount || 0) * showCoin().value);
       render();
     } }), " Unlimited funds"),
     h("div", { class: "form grid" },
-      d.funds != null && h("label", { class: "field" }, h("span", null, "Funds (gp)"),
+      d.funds != null && h("label", { class: "field" }, h("span", null, `Funds (${showCoin().key})`),
         h("input", { type: "number", min: 0, step: "any", inputmode: "decimal", value: amount,
-          oninput: e => { amount = e.target.value; d.funds = Math.max(0, Math.round((+e.target.value || 0) * 100)); } })),
+          oninput: e => { amount = e.target.value; d.funds = Math.max(0, Math.round((+e.target.value || 0) * showCoin().value)); } })),
       h("label", { class: "field" }, h("span", null, "Small change margin (%)"),
         h("input", { type: "number", min: 0, max: 50, inputmode: "numeric", value: d.changeMargin,
           oninput: e => { d.changeMargin = Math.max(0, Math.min(50, Math.round(+e.target.value || 0))); } }))),
@@ -617,7 +617,7 @@ function moneySettings(d) {
       ? "Unlimited: the shop can always pay. Turn this off to give it a till that sales fill and purchases from players empty."
       : "Sales to players add to the till; buying from players spends it. The shop won't buy what it can't pay for."),
     h("p", { class: "muted small" }, "The margin is the share of every payout (money for items, and change) given in the next smaller coin, "
-      + "like a real shopkeeper. At 10%, selling for 9 gp pays 8 gp and 10 sp. At 0%, it always pays in the largest coins."));
+      + "like a real shopkeeper. At 10%, a payout comes partly in the next smaller coin. At 0%, it always pays in the largest coins."));
 }
 
 // Host: what players have sold to this shop, waiting to go back on the shelves.
@@ -674,7 +674,7 @@ function shelveDialog(shop, b) {
   const same = shop.items.find(li => (li.srcId || null) === (b.srcId || null) && JSON.stringify(li.item) === JSON.stringify(b.item));
   let qty = max, priceGp = "", close;
   const go = async () => {
-    const price = priceGp === "" ? null : Math.max(0, Math.round(+priceGp * 100));
+    const price = priceGp === "" ? null : Math.max(0, Math.round(+priceGp * showCoin().value));
     if (await stockroomAction(shop, b.bid, "shelve", qty, price)) close();
   };
   close = openModal(`Put ${b.item.name} on the shelf`, h("div", { class: "form" },
@@ -686,8 +686,8 @@ function shelveDialog(shop, b) {
       ? h("p", { class: "muted small" }, same.stock == null
         ? "It's already on the shelf with unlimited stock, so this just clears it from the stockroom."
         : `Adds to the ${same.stock} already on the shelf, at the same price (${listingPrice(shop, same) ? fmtCost(listingPrice(shop, same)) : "free"}).`)
-      : h("label", { class: "field" }, h("span", null, "Price (gp) — empty for the list price"),
-        h("input", { type: "number", min: 0, step: "any", inputmode: "decimal", placeholder: +((b.item.cost || 0) / 100).toFixed(2),
+      : h("label", { class: "field" }, h("span", null, `Price (${showCoin().key}) — empty for the list price`),
+        h("input", { type: "number", min: 0, step: "any", inputmode: "decimal", placeholder: +((b.item.cost || 0) / showCoin().value).toFixed(2),
           oninput: e => { priceGp = e.target.value; } }))),
   { footer: [h("button", { class: "btn", onclick: () => close() }, "Cancel"), h("button", { class: "btn primary", onclick: go }, "Put on shelf")] });
 }

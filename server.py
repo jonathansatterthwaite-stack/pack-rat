@@ -38,7 +38,10 @@ DEFAULT_LAN_PORT = 8765
 # Only the app itself is served; party-data (which holds player tokens) and tools are not.
 STATIC_PREFIXES = ("/index.html", "/manifest.webmanifest", "/sw.js", "/css/", "/js/", "/icons/")
 NON_STACKING = {"weapon", "armor", "container", "magic", "pack"}
-COINS = ["pp", "gp", "ep", "sp", "cp"]
+# The game system's money, as the GM's device sends it with the campaign (see clean_currency):
+# coins [key, value] largest first, worth `value` of the smallest; change: what shops pay out and
+# give change in. Parties from before game systems, or GMs on older versions: D&D 5e's.
+DEFAULT_CURRENCY = {"coins": [["pp", 1000], ["gp", 100], ["ep", 50], ["sp", 10], ["cp", 1]], "change": ["gp", "sp", "cp"]}
 MAX_BODY = 8 * 1024 * 1024
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 IMAGE_TYPES = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif"}
@@ -163,7 +166,14 @@ def clean_gm_values(raw):
     return out
 
 
-def switch_campaign(cid, name, shops, gm_values):
+def clean_system_ref(raw):
+    """The game system a campaign plays, as the GM's device names it ({id, name}), or None."""
+    if not isinstance(raw, dict) or not raw.get("id"):
+        return None
+    return {"id": str(raw["id"])[:80], "name": str(raw.get("name") or raw["id"])[:80]}
+
+
+def switch_campaign(cid, name, shops, gm_values, system=None, money=None, states=None):
     """Call with `cond` held. Saves the current campaign's party and makes `cid` current: its own
     save if it has one, else a fresh party with the GM's shops and GM values. The first campaign
     loaded takes over a party from before campaigns (party.json is left as it was, as a backup)."""
@@ -171,7 +181,7 @@ def switch_campaign(cid, name, shops, gm_values):
     current = state.get("campaign") or {}
     host_level = {k: state[k] for k in HOST_LEVEL if k in state}
     if current.get("id") == cid:
-        state["campaign"] = {"id": cid, "name": name}
+        state["campaign"] = {"id": cid, "name": name, "system": system, "currency": money, "states": states}
         save()
         return
     save()
@@ -195,7 +205,7 @@ def switch_campaign(cid, name, shops, gm_values):
     else:
         new = {"characters": {}, "trades": [], "shops": shops, "gm": gm_values}
     new.update(host_level)
-    new["campaign"] = {"id": cid, "name": name}
+    new["campaign"] = {"id": cid, "name": name, "system": system, "currency": money, "states": states}
     for k, v in (("characters", {}), ("trades", []), ("shops", []), ("gm", {})):
         new.setdefault(k, v)
     state = new
@@ -331,7 +341,7 @@ def clean_side(char, side):
     for i in items:  # giving a container already gives everything in it
         if any(d["uid"] in uids for d in descendants(char, i["uid"])):
             raise TradeError(f"Don't list items that are inside {i['name']} - they go with it.")
-    coins = {k: int((side.get("coins") or {}).get(k) or 0) for k in COINS}
+    coins = {k: int((side.get("coins") or {}).get(k) or 0) for k in coin_keys(currency())}
     if any(v < 0 for v in coins.values()):
         raise TradeError("Coin amounts can't be negative.")
     return {"items": items, "coins": {k: v for k, v in coins.items() if v}}
@@ -349,50 +359,77 @@ def check_side(char, side):
 
 # ------------------------------------------------------------------ shops
 
-COIN_VALUES = {"pp": 1000, "gp": 100, "ep": 50, "sp": 10, "cp": 1}
+def clean_currency(raw):
+    """A currency sent by a GM's device, checked; None if it isn't one (one coin must be worth 1)."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("coins"), list):
+        return None
+    coins = []
+    for c in raw["coins"][:12]:
+        if (isinstance(c, list) and len(c) == 2 and isinstance(c[0], str) and re.match(r"^[a-z][a-z0-9]{0,7}$", c[0])
+                and isinstance(c[1], int) and not isinstance(c[1], bool) and 1 <= c[1] <= 10 ** 9 and c[0] not in (k for k, _ in coins)):
+            coins.append([c[0], c[1]])
+    coins.sort(key=lambda c: -c[1])
+    if not any(v == 1 for _, v in coins):
+        return None
+    keys = [k for k, _ in coins]
+    asked = raw.get("change") if isinstance(raw.get("change"), list) else keys
+    change = [k for k in keys if k in asked]
+    if keys[-1] not in change:
+        change.append(keys[-1])
+    return {"coins": coins, "change": change}
 
 
-PAYOUT_COINS = ["gp", "sp", "cp"]
+def currency():
+    """The money of the campaign being played."""
+    return (state.get("campaign") or {}).get("currency") or DEFAULT_CURRENCY
 
 
-def coins_for(amount, allowed):
-    """Greedy split of copper into the allowed denominations."""
+def coin_keys(cur):
+    return [k for k, _ in cur["coins"]]
+
+
+def coins_for(amount, allowed, values):
+    """Greedy split of an amount into the allowed coins."""
     out = {}
     for k in allowed:
-        out[k], amount = divmod(amount, COIN_VALUES[k])
+        out[k], amount = divmod(amount, values[k])
     return out
 
 
-def payout(amount, margin=0, top="gp"):
-    """Coins a shop hands over (same as payout() in store.js). Mostly the largest
-    coins (up to `top`), but `margin` % of it in the next smaller coin, the way a
-    shopkeeper gives some small change."""
-    allowed = PAYOUT_COINS[PAYOUT_COINS.index(top):]
+def payout(amount, margin=0, top=None, cur=None):
+    """Coins a shop hands over (same as payout() in store.js). Mostly the largest change coins (up
+    to `top`), but `margin` % of it in the next smaller coin, the way a shopkeeper gives some small
+    change."""
+    cur = cur or currency()
+    values, change = dict(cur["coins"]), cur["change"]
+    allowed = change[change.index(top or change[0]):]
     small = amount * margin // 100
-    main = coins_for(amount - small, allowed)
+    main = coins_for(amount - small, allowed, values)
     largest = next((k for k in allowed if main.get(k)), allowed[-1])
-    smaller = PAYOUT_COINS[PAYOUT_COINS.index(largest) + 1:] or [largest]
-    extra = coins_for(small, smaller)
-    return {k: main.get(k, 0) + extra.get(k, 0) for k in PAYOUT_COINS}
+    smaller = change[change.index(largest) + 1:] or [largest]
+    extra = coins_for(small, smaller, values)
+    return {k: main.get(k, 0) + extra.get(k, 0) for k in change}
 
 
-def pay_coins(coins, cost, margin=0):
+def pay_coins(coins, cost, margin=0, cur=None):
     """Same as payCoins() in store.js: spend big coins first without overpaying,
     then break the smallest coin that covers the rest. None if unaffordable.
     Change comes as payout(margin) in coins smaller than the one broken."""
-    c = {k: int((coins or {}).get(k) or 0) for k in COINS}
-    if sum(c[k] * COIN_VALUES[k] for k in COINS) < cost:
+    cur = cur or currency()
+    keys, values = coin_keys(cur), dict(cur["coins"])
+    c = {k: int((coins or {}).get(k) or 0) for k in keys}
+    if sum(c[k] * values[k] for k in keys) < cost:
         return None
     remaining = cost
-    for d in COINS:
-        n = min(c[d], remaining // COIN_VALUES[d])
+    for d in keys:
+        n = min(c[d], remaining // values[d])
         c[d] -= n
-        remaining -= n * COIN_VALUES[d]
+        remaining -= n * values[d]
     if remaining > 0:
-        d = next(k for k in reversed(COINS) if c[k] > 0 and COIN_VALUES[k] > remaining)
+        d = next(k for k in reversed(keys) if c[k] > 0 and values[k] > remaining)
         c[d] -= 1
-        top = next(k for k in PAYOUT_COINS if COIN_VALUES[k] < COIN_VALUES[d])
-        for k, n in payout(COIN_VALUES[d] - remaining, margin, top).items():
+        top = next(k for k in cur["change"] if values[k] < values[d])
+        for k, n in payout(values[d] - remaining, margin, top, cur).items():
             c[k] += n
     return c
 
@@ -446,12 +483,39 @@ def clean_shop(raw):
         raise ApiError(400, "Invalid shop")
 
 
-def sell_offer(shop, entry, qty):
-    """What a shop pays for `qty` of an inventory entry, in copper (same as sellOffer() in shops.js).
-    Most specific rule wins: this item's own rule, then its type's %, then the shop's default %."""
+LAYER_META = {"locks", "features"}
+
+
+def current_item(entry, char_id=None):
+    """An inventory item as it is now (same as currentItem() in the app): with the layers of the
+    states that are on (the entry's own, or the GM's override, gm_state_<key>), in the system's order."""
+    item = entry.get("item") or {}
+    layers = item.get("layers")
+    if not isinstance(layers, dict) or not layers:
+        return item
+    own = {"attuned": True} if entry.get("attuned") else {}
+    for src in (entry.get("toggles"), entry.get("states")):
+        if isinstance(src, dict):
+            own.update({k: bool(v) for k, v in src.items()})
+    over = (((state.get("gm") or {}).get("items") or {}).get(f"{char_id}/{entry.get('uid')}") or {}) if char_id else {}
+    order = (state.get("campaign") or {}).get("states") or list(layers)
+    out = dict(item)
+    for k in order:
+        v = over.get("gm_state_" + str(k))
+        on = bool(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else own.get(k, False)
+        layer = layers.get(k)
+        if on and isinstance(layer, dict):
+            out.update({f: x for f, x in layer.items() if f not in LAYER_META and x not in ("", None)})
+    return out
+
+
+def sell_offer(shop, entry, qty, char_id=None):
+    """What a shop pays for `qty` of an inventory entry, in the smallest coin (same as sellOffer() in
+    shops.js). Most specific rule wins: this item's own rule, then its type's %, then the shop's
+    default %. The item as it is now (identified, cursed…)."""
     if not shop.get("buys"):
         return 0
-    item = entry.get("item") or {}
+    item = current_item(entry, char_id)
     bundle = max(1, int(item.get("bundle") or 1))
     rule = next((r for r in shop.get("sellItems") or [] if r["srcId"] == entry.get("srcId")), None)
     if rule and rule["mode"] == "fixed":
@@ -460,10 +524,11 @@ def sell_offer(shop, entry, qty):
     return int(item.get("cost") or 0) * qty * pct // (bundle * 100)
 
 
-def receive_coins(coins, amount, margin=0):
-    """Same as receiveCoins() in store.js: add copper as gp/sp/cp (see payout)."""
-    c = {k: int((coins or {}).get(k) or 0) for k in COINS}
-    for k, n in payout(amount, margin).items():
+def receive_coins(coins, amount, margin=0, cur=None):
+    """Same as receiveCoins() in store.js: add an amount in change coins (see payout)."""
+    cur = cur or currency()
+    c = {k: int((coins or {}).get(k) or 0) for k in coin_keys(cur)}
+    for k, n in payout(amount, margin, None, cur).items():
         c[k] += n
     return c
 
@@ -511,7 +576,8 @@ def merge_into(dst, entry):
 
 def transfer(src, dst, uid, qty):
     e = find_entry(src, uid)
-    loose = {"parent": None, "strapped": False, "equipped": False, "attuned": False}
+    # Traded items arrive loose and unequipped, with the game system's toggles (attuned…) off.
+    loose = {"parent": None, "strapped": False, "equipped": False, "attuned": False, "toggles": {}, "states": {}, "seen": None}
     if qty >= e["qty"]:
         kids = descendants(src, uid)
         moving = {uid} | {k["uid"] for k in kids}
@@ -519,6 +585,9 @@ def transfer(src, dst, uid, qty):
         e.update(loose)
         for k in kids:
             k["equipped"] = k["attuned"] = False
+            k["toggles"] = {}
+            k["states"] = {}
+            k["seen"] = None
         if kids:
             dst["items"].append(e)
         else:
@@ -1033,7 +1102,7 @@ class Handler(SimpleHTTPRequestHandler):
                 # A deck sells with the cards still in it; anything else has to be emptied first.
                 if any(e.get("parent") == entry["uid"] and not e["item"].get("card") for e in c["items"]):
                     raise ApiError(409, f"Empty the {entry['item'].get('name', 'container')} before selling it")
-                paid = sell_offer(shop, entry, qty)
+                paid = sell_offer(shop, entry, qty, c["id"])
                 if paid <= 0:
                     raise ApiError(409, f"{shop['name']} won't buy {entry['item'].get('name', 'that')}")
                 if shop.get("funds") is not None and shop["funds"] < paid:
@@ -1179,8 +1248,9 @@ class Handler(SimpleHTTPRequestHandler):
         raise ApiError(404, "Unknown endpoint")
 
     def campaign_api(self, method, token):
-        """POST /api/campaign {id, name, shops, gmValues}: a GM loads one of their campaigns into the
-        party (see switch_campaign). Shops and GM values seed a campaign the party hasn't played yet."""
+        """POST /api/campaign {id, name, system, currency, states, shops, gmValues}: a GM loads one of their campaigns into
+        the party (see switch_campaign). Shops and GM values seed a campaign the party hasn't played
+        yet; every device plays its game system (system: {id, name}, or null for none)."""
         if method != "POST":
             raise ApiError(404, "Unknown endpoint")
         if not party_enabled():
@@ -1199,7 +1269,9 @@ class Handler(SimpleHTTPRequestHandler):
             shop["backroom"] = []
             shops.append(shop)
         with cond:
-            switch_campaign(cid, name, shops, clean_gm_values(body.get("gmValues")))
+            states = [str(k)[:40] for k in (body.get("states") or [])[:30] if isinstance(k, str)] or None
+            switch_campaign(cid, name, shops, clean_gm_values(body.get("gmValues")), clean_system_ref(body.get("system")),
+                            clean_currency(body.get("currency")), states)
             changed(persist=False)
         print(f"  * The GM loaded the campaign {name}")
         return {"ok": True}

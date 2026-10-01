@@ -174,12 +174,10 @@ const ui = {
   views: loadViewPrefs(),
   sort: readPref("packrat-sort", "smart"),
   sortReverse: readPref("packrat-sort-rev", "") === "1",
-  combatOpen: readPref("packrat-combat", "1") === "1",
   gmTab: "players", // the GM tab's sub-tab: "players" or "values"
   settingsTab: "settings", // Settings · Campaigns · Files
   catTab: "items", // Catalog: Items · My items · Drawings · Templates
   role: readPref("packrat-role", "player"), // "gm" to prepare GM things outside a party (see isGmDevice)
-  statsOpen: readPref("packrat-stats", "1") === "1",
   playerMode: readPref("packrat-player-mode", "") === "1",
 };
 
@@ -207,8 +205,6 @@ function applyPrefs() {
   ui.views = loadViewPrefs();
   ui.sort = readPref("packrat-sort", "smart");
   ui.sortReverse = readPref("packrat-sort-rev", "") === "1";
-  ui.combatOpen = readPref("packrat-combat", "1") === "1";
-  ui.statsOpen = readPref("packrat-stats", "1") === "1";
   ui.playerMode = readPref("packrat-player-mode", "") === "1";
   ui.role = readPref("packrat-role", "player");
 }
@@ -319,7 +315,8 @@ function fitTileNames(box) {
 }
 
 const VIEWS = {
-  inventory: { label: "Inventory", icon: "bag", render: renderInventory },
+  inventory: { label: "Inventory", icon: "bag", render: renderInventory,
+    top: () => [missingSystemBanner(), foundElsewhereBanner(), notInPartyBanner(), party.active && undecidedBanner()] },
   catalog: { label: "Catalog", icon: "book", render: renderCatalog, builder: true },
   shops: { label: "Shops", icon: "cart", render: renderShops },
   gm: { label: "GM", icon: "shield", render: renderGm, gmOnly: true },
@@ -327,11 +324,17 @@ const VIEWS = {
   settings: { label: "Settings", icon: "sliders", render: renderSettingsTabs },
 };
 
+// The campaign rules settings the system uses (D&D 5e: encumbrance, size), shown in Settings → Rules.
+const usesSetting = (key, sys = activeSystem()) => (sys.campaignSettings || []).includes(key);
+
 // Player mode (Settings) hides making and editing items; a GM always has them.
 const playerOnly = () => ui.playerMode && !isGmDevice();
 
 // Does this GM play characters too? If not, the Inventory tab would only ever be empty.
 const gmHasCharacters = () => party.active ? party.linked().length > 0 : store.state.characters.some(c => !isBlankCharacter(c));
+
+// A tab's name (the GM tab's comes from the game system's words).
+const viewLabel = key => key === "gm" ? term("gm") : VIEWS[key].label;
 
 function viewVisible(key) {
   const v = VIEWS[key];
@@ -352,6 +355,7 @@ function holdRender(on) {
 
 function render() {
   if (renderHeld) { renderWanted = true; return; }
+  runTriggers(); // items' triggers, for whatever just changed (js/triggers.js)
   const char = store.char();
   // In a party with none of this device's characters playing yet: choose one first (a GM or the
   // host needn't: they have the party to run).
@@ -359,19 +363,23 @@ function render() {
   if (!viewVisible(ui.view)) ui.view = isGmDevice() && viewVisible("gm") ? "gm" : Object.keys(VIEWS).find(viewVisible);
   // A GM who plays no character is just the GM.
   document.getElementById("char-name").textContent = joining ? "Join the party"
-    : isGmDevice() && !gmHasCharacters() ? "Game master" : char ? char.name : "";
+    : isGmDevice() && !gmHasCharacters() ? termCap("gameMaster") : char ? char.name : "";
   document.getElementById("campaign-name").textContent = store.campaign().name;
   document.getElementById("nav").hidden = joining;
   const offers = party.active ? party.incoming().length : 0;
   document.querySelectorAll("[data-view]").forEach(b => {
     b.classList.toggle("active", b.dataset.view === ui.view);
     b.hidden = !viewVisible(b.dataset.view);
+    b.querySelector(".nav-label").textContent = viewLabel(b.dataset.view);
     const badge = b.querySelector(".badge");
     if (badge) { badge.textContent = offers; badge.hidden = !offers; }
   });
   const main = document.getElementById("view");
   const scroll = window.scrollY;
   tileObserver?.disconnect(); // the grids being replaced; new ones observe themselves
+  // Above the view: its notices, then the system's panels (they stay loaded: see js/panels.js).
+  setChildren(document.getElementById("view-top"), !joining && VIEWS[ui.view].top?.());
+  syncPanels(char, !joining && ui.view === "inventory");
   main.replaceChildren(joining ? renderJoin() : VIEWS[ui.view].render());
   // Tiles are laid out now: size them and shrink names to fit (resizes are handled by each grid's observer).
   syncTileSize(main);
@@ -388,50 +396,22 @@ function go(view) {
 
 // ------------------------------------------------------------------ inventory view
 
+// The campaign plays a game system this device hasn't got (the GM's, in a party; or an imported
+// campaign's): it shows without its templates and panels until it's added.
+function missingSystemBanner() {
+  const id = store.campaign().system;
+  if (!id || systemById(id)) return null;
+  const bundled = bundledSystem(id);
+  return h("section", { class: "found-banner" }, icon("book"),
+    h("div", null, h("b", null, `${store.campaign().name} plays ${systemName(id)}`),
+      h("p", { class: "muted small" }, bundled ? "It comes with Pack Rat but was removed from this device. Add it back to see its catalog and panels."
+        : "This device hasn't got it. Ask for its file, then import it (Settings → Files → Import a file).")),
+    bundled ? h("button", { class: "btn primary", onclick: () => commit(() => installSystem({ id }), `Added ${bundled.name}`, true) }, icon("plus"), "Add it")
+      : h("button", { class: "btn", onclick: () => { ui.settingsTab = "files"; go("settings"); } }, "Files"));
+}
+
 function renderInventory() {
   const char = store.char();
-  const settings = store.state.settings;
-  const enc = encumbrance(char, settings);
-  const ac = armorClass(char);
-  const value = char.items.reduce((s, e) => s + entryValue(e), 0);
-  const attuned = char.items.filter(e => e.attuned).length;
-  const pct = Math.min(100, (enc.weight / enc.capacity) * 100);
-
-  const statsGrid = h("div", { class: "stats" },
-    h("div", { class: "stat", title: ac.breakdown },
-      h("div", { class: "stat-label" }, icon("shield"), "Armor Class"),
-      h("div", { class: "stat-value" }, ac.ac),
-      h("div", { class: "stat-sub" }, ac.breakdown),
-      ac.strPenalty && h("div", { class: "stat-warn" }, "Str too low: -10 ft speed"),
-      ac.stealth && h("div", { class: "stat-sub" }, "Disadvantage on Stealth")),
-    !enc.off && h("div", { class: "stat" },
-      h("div", { class: "stat-label" }, icon("weight"), "Carried"),
-      h("div", { class: "stat-value" }, +enc.weight.toFixed(1), h("small", null, ` / ${enc.capacity} lb`)),
-      h("div", { class: "meter " + enc.status }, h("div", { style: { width: pct + "%" } })),
-      h("div", { class: "stat-sub" + (enc.status !== "ok" ? " warn-text" : "") }, enc.label)),
-    h("button", { class: "stat clickable", onclick: openCoins },
-      h("div", { class: "stat-label" }, icon("coins"), "Coins"),
-      h("div", { class: "coins" }, coinChips(char.coins)),
-      h("div", { class: "stat-sub" }, `Worth ${fmtCost(coinTotalCp(char.coins))} · gear ${fmtCost(Math.round(value))}`)),
-    h("div", { class: "stat" },
-      h("div", { class: "stat-label" }, icon("user"), "Abilities"),
-      h("div", { class: "abilities" },
-        abilityInput("STR", "str"), abilityInput("DEX", "dex")),
-      h("div", { class: "stat-sub" }, `Attuned ${attuned} / 3`)));
-
-  // Collapsible; closed, it still shows the coins (a button to the coin purse) and the weight carried.
-  const open = ui.statsOpen;
-  const toggleStats = () => { ui.statsOpen = !open; writePref("packrat-stats", ui.statsOpen ? "1" : "0"); render(); };
-  const stats = h("section", { class: "group char-panel" + (open ? "" : " closed") },
-    h("div", { class: "group-head" },
-      h("button", { class: "collapse" + (open ? "" : " closed"), onclick: toggleStats, "aria-expanded": String(open) }, icon("chevron"),
-        h("h3", null, open ? "Character" : "")),
-      !open && h("button", { class: "purse-btn", type: "button", title: "Open the coin purse", "aria-label": "Coins: open the coin purse", onclick: openCoins },
-        icon("coins"), h("span", { class: "coins" }, coinChips(char.coins))),
-      !open && !enc.off && h("span", { class: "carried-mini" + (enc.status !== "ok" ? " warn-text" : ""), title: enc.label },
-        icon("weight"), `${+enc.weight.toFixed(1)} / ${enc.capacity} lb`)),
-    open && statsGrid);
-
   const list = h("div", { class: "inv-list" });
   const drawList = () => {
     setChildren(list, inventoryTree(char));
@@ -447,108 +427,13 @@ function renderInventory() {
     layoutToggle(),
     tileLabelToggles());
 
-  return h("div", { class: "view-inventory" }, foundElsewhereBanner(), notInPartyBanner(), party.active && undecidedBanner(), stats, combatPanel(char), toolbar, inventoryTypeChips(char), list);
+  return h("div", { class: "view-inventory" }, toolbar, inventoryTypeChips(char), list);
 }
 
 // "12 pp 40 gp 0 ep …", each coin in its colour.
 function coinChips(coins) {
-  return COIN_ORDER.map(k => h("span", { class: "coin " + k }, h("b", null, (coins[k] || 0).toLocaleString()), " ", k));
-}
-
-// ------------------------------------------------------------------ combat panel
-
-// Collapsible: the equipped weapons ready to use, with to-hit, damage, range and ammunition.
-function combatPanel(char) {
-  const open = ui.combatOpen;
-  const toggle = () => { ui.combatOpen = !open; writePref("packrat-combat", ui.combatOpen ? "1" : "0"); render(); };
-  const weapons = char.items.filter(e => hasFeature(e.item, "weapon", e.srcId));
-  const ready = weapons.filter(e => e.equipped);
-  // Nothing equipped yet: show every weapon so the panel is still useful.
-  const shown = ready.length ? ready : weapons;
-  const others = ready.length ? weapons.filter(e => !e.equipped) : [];
-  const summary = ready.length ? ready.map(entryName).join(", ")
-    : weapons.length ? `${weapons.length} weapon${weapons.length === 1 ? "" : "s"}, none equipped` : "Unarmed";
-  const profs = char.weaponProfs || ["Simple", "Martial"];
-  const setProf = (cat, on) => commit((s, c) => {
-    const cur = c.weaponProfs || ["Simple", "Martial"];
-    c.weaponProfs = on ? [...new Set([...cur, cat])] : cur.filter(x => x !== cat);
-  });
-  return h("section", { class: "group combat" },
-    h("div", { class: "group-head" },
-      h("button", { class: "collapse" + (open ? "" : " closed"), onclick: toggle, "aria-expanded": String(open) }, icon("chevron"),
-        h("h3", null, "Combat")),
-      h("span", { class: "muted combat-summary" }, summary)),
-    open && [
-      h("div", { class: "combat-settings" },
-        h("label", { class: "prof-field" }, "Proficiency bonus",
-          h("input", { type: "number", inputmode: "numeric", min: 0, max: 10, value: char.prof ?? 2, "aria-label": "Proficiency bonus",
-            onchange: ev => commit((s, c) => { c.prof = Math.max(0, Math.min(10, Math.floor(+ev.target.value || 0))); }) })),
-        h("span", { class: "muted small" }, "Proficient with"),
-        ["Simple", "Martial"].map(cat => h("label", { class: "check" },
-          h("input", { type: "checkbox", checked: profs.includes(cat), onchange: ev => setProf(cat, ev.target.checked) }), " ", cat))),
-      h("div", { class: "attack-grid" }, shown.map(e => attackCard(char, e)), unarmedCard(char)),
-      !weapons.length && h("p", { class: "muted small pad" }, "Add weapons from the catalog and equip them to see them here."),
-      !ready.length && weapons.length > 0 && h("p", { class: "muted small pad" }, "Equip weapons (the sword button on an item) to keep just those here."),
-      others.length > 0 && h("div", { class: "combat-others muted small" }, "Also carried: ",
-        others.map((e, i) => [i > 0 && ", ", h("button", { class: "link", title: "Equip", onclick: () => toggleEquip(e.uid) },
-          entryName(e) + (e.qty > 1 ? ` ×${e.qty}` : ""))])),
-    ]);
-}
-
-function attackCard(char, e) {
-  const it = e.item, a = weaponAttack(char, it);
-  const abil = mod(char[a.ability]);
-  const hitWhy = [`${a.ability.toUpperCase()} ${fmtMod(abil)}`, a.prof ? `proficiency ${fmtMod(char.prof ?? 2)}` : "not proficient",
-    it.bonus && `magic ${fmtMod(it.bonus)}`].filter(Boolean).join(", ");
-  const where = [a.reach && `Reach ${a.reach}`, a.range && `${a.thrown ? "Thrown" : "Range"} ${a.range}`].filter(Boolean).join(" · ");
-  return h("div", { class: "attack" + (e.equipped ? "" : " idle") },
-    h("div", { class: "attack-head" },
-      itemIcon(it, "attack-icon"),
-      h("button", { class: "attack-name", onclick: () => openEntry(e.uid), title: "Details" },
-        entryName(e), e.qty > 1 && h("span", { class: "tag" }, "×" + e.qty)),
-      h("div", { class: "to-hit", title: hitWhy }, h("b", null, fmtMod(a.toHit)), h("small", null, "to hit"))),
-    h("div", { class: "attack-dmg" }, h("b", null, a.damage), a.type && " " + a.type,
-      a.twoHanded && h("span", { class: "muted" }, ` · two hands ${a.twoHanded}`)),
-    h("div", { class: "attack-meta" }, [where, a.ability.toUpperCase(), !a.prof && "not proficient"].filter(Boolean).join(" · ")),
-    // Range and ammunition are spelt out above; the other properties keep their rules as tooltips.
-    it.properties?.some(p => !/^(range|ammunition)/i.test(p)) &&
-      h("div", { class: "attack-props" }, propertyChips(it.properties.filter(p => !/^(range|ammunition)/i.test(p)))),
-    a.offHand && h("div", { class: "attack-note" }, `Off-hand attack (bonus action): ${a.offHand}${a.type ? " " + a.type : ""}`),
-    a.loading && h("div", { class: "attack-note" }, "Loading: one shot per action, bonus action or reaction."),
-    a.range && h("div", { class: "attack-note" }, "Beyond the first range: disadvantage. Can't reach past the second."),
-    a.ammo && ammoLine(char, it));
-}
-
-// The ammunition a weapon uses, where it is, and buttons to use or recover one.
-function ammoLine(char, weapon) {
-  const stacks = ammoEntries(char, weapon)
-    // Quivers and cases first: that's what you shoot from.
-    .sort((x, y) => (holderSpec(char.items.find(c => c.uid === y.parent) || { item: {} }) ? 1 : 0)
-      - (holderSpec(char.items.find(c => c.uid === x.parent) || { item: {} }) ? 1 : 0));
-  if (!stacks.length) return h("div", { class: "ammo out" }, "No ammunition — add some from the catalog.");
-  const change = (uid, d) => commit((s, c) => {
-    const x = c.items.find(x => x.uid === uid);
-    if (!x) return;
-    x.qty = Math.max(0, x.qty + d);
-    if (x.qty === 0) removeEntry(c, x.uid);
-  });
-  return h("div", { class: "ammo" }, stacks.map(s => h("div", { class: "ammo-row" },
-    itemIcon(s.item, "ammo-icon"),
-    h("span", { class: "ammo-count" }, h("b", null, s.qty.toLocaleString()), " ", entryName(s)),
-    h("span", { class: "muted small ammo-where" }, locationLabel(char, s) || "on person"),
-    iconBtn("minus", `Use one ${entryName(s)}`, () => change(s.uid, -1)),
-    iconBtn("plus", `Recover one ${entryName(s)}`, () => change(s.uid, 1)))));
-}
-
-function unarmedCard(char) {
-  const str = mod(char.str), hit = str + (char.prof ?? 2);
-  return h("div", { class: "attack idle" },
-    h("div", { class: "attack-head" },
-      h("span", { class: "attack-icon unarmed" }, icon("user")),
-      h("span", { class: "attack-name static" }, "Unarmed strike"),
-      h("div", { class: "to-hit", title: `STR ${fmtMod(str)}, proficiency ${fmtMod(char.prof ?? 2)}` }, h("b", null, fmtMod(hit)), h("small", null, "to hit"))),
-    h("div", { class: "attack-dmg" }, h("b", null, String(Math.max(0, 1 + str))), " bludgeoning"),
-    h("div", { class: "attack-meta" }, "Reach 5 ft · STR"));
+  return currency().coins.map(c => h("span", { class: "coin " + c.key },
+    h("b", { style: c.color ? { color: c.color } : null }, (coins[c.key] || 0).toLocaleString()), " ", c.key));
 }
 
 // Inventory filter: "all", "equipped", or a group (Gear & Tools…), optionally narrowed to one
@@ -623,14 +508,6 @@ function inventoryTypeChips(char) {
   return [row, sub];
 }
 
-function abilityInput(label, key) {
-  const char = store.char();
-  return h("label", { class: "ability" }, h("span", null, label),
-    h("input", { type: "number", inputmode: "numeric", min: 1, max: 30, value: char[key] || 10,
-      onchange: e => commit((s, c) => { c[key] = Math.max(1, Math.min(30, +e.target.value || 10)); }) }),
-    h("small", null, fmtMod(mod(char[key]))));
-}
-
 function matchesSearch(item, q) {
   if (!q) return true;
   q = q.toLowerCase();
@@ -688,7 +565,7 @@ function inventoryTree(char) {
     // Filtered: one flat list, with each item tagged by the container it's in.
     const sub = activeInvSub(char, type);
     const hits = listed(char).filter(e => invTypeMatches(e, type, sub) &&
-      (matchesSearch(e.item, q) || [e.notes, e.customName].some(t => (t || "").toLowerCase().includes(q.toLowerCase()))));
+      (matchesSearch(currentItem(e, char), q) || [e.notes, e.customName].some(t => (t || "").toLowerCase().includes(q.toLowerCase()))));
     if (!hits.length) return [h("p", { class: "muted pad" }, "Nothing matches.")];
     const weight = hits.reduce((sum, e) => sum + entryOwnWeight(e), 0);
     return [h("div", { class: "group" },
@@ -806,7 +683,7 @@ function moveEntry(id, parentUid, strapped = false) {
         const x = c.items.find(x => x.uid === id);
         x.qty -= room;
         // A renamed stack keeps its name (and doesn't join an unnamed one).
-        if (x.customName) c.items.push({ ...clone(x), uid: uid(), qty: room, parent: parentUid, strapped: false, equipped: false, attuned: false });
+        if (x.customName) c.items.push({ ...clone(x), uid: uid(), qty: room, parent: parentUid, strapped: false, equipped: false, attuned: false, toggles: {}, states: {} });
         else addToInventory(c, { ...clone(x.item), id: x.srcId }, room, parentUid);
       }, `Moved ${room} × ${entryName(entry)} to ${dest} (it's full)`, true);
     }
@@ -839,7 +716,7 @@ function contentsLoad(char, e) {
   const spec = holderSpec(e);
   if (spec) return `${holderUsed(char, e, spec)} / ${spec.limit} ${spec.unit}s`;
   const inner = contentsWeight(char, e);
-  return e.item.capacityLb > 0 ? `${+inner.toFixed(2)} / ${e.item.capacityLb} lb` : fmtWeight(inner);
+  return e.item.capacityLb > 0 ? `${+inner.toFixed(2)} / ${e.item.capacityLb} ${weightUnit()}` : fmtWeight(inner);
 }
 
 // Tile labels: worth top-left, weight top-right, and along the bottom the stack count or, for a
@@ -850,7 +727,7 @@ function minimalCorners(worthCp, weightLb, bottom) {
     // Worth and weight share the top edge: whichever is shorter leaves the other more room.
     (worthCp > 0 || weightLb > 0) && h("span", { class: "tile-top" },
       worthCp > 0 && h("span", { class: "tile-mini tile-worth", title: "Worth" }, fmtCostShort(worthCp).replace(/^([\d.]+k?) /, "$1")),
-      weightLb > 0 && h("span", { class: "tile-mini tile-wt", title: "Weight" }, +weightLb.toFixed(1) + "lb")),
+      weightLb > 0 && h("span", { class: "tile-mini tile-wt", title: "Weight" }, +weightLb.toFixed(1) + weightUnit())),
     bottom && h("span", { class: "tile-mini tile-bottom" }, bottom),
   ];
 }
@@ -858,8 +735,9 @@ function minimalCorners(worthCp, weightLb, bottom) {
 // "15 gp", "1.8 gp", "4 sp", "1.5k gp" (for the small corner labels).
 function fmtCostShort(cp) {
   cp = Math.round(cp);
-  if (cp >= 100000) return `${+(cp / 100000).toFixed(cp >= 1000000 ? 0 : 1)}k gp`;
-  if (cp >= 100) return `${+(cp / 100).toFixed(cp >= 1000 ? 0 : 1)} gp`;
+  const { key, value } = showCoin();
+  if (cp >= value * 1000) return `${+(cp / (value * 1000)).toFixed(cp >= value * 10000 ? 0 : 1)}k ${key}`;
+  if (cp >= value) return `${+(cp / value).toFixed(cp >= value * 10 ? 0 : 1)} ${key}`;
   return fmtCost(cp);
 }
 
@@ -873,7 +751,7 @@ function containerCapacity(char, e) {
     const [n, unit] = cap < 1 ? [16, "oz"] : cap >= 8 ? [1 / 8, "gal"] : [1, "pt"];
     return `${+(have * n).toFixed(1)}/${+(cap * n).toFixed(1)} ${unit}`;
   }
-  return `${+contentsWeight(char, e).toFixed(1)}/${e.item.capacityLb} lb`;
+  return `${+contentsWeight(char, e).toFixed(1)}/${e.item.capacityLb} ${weightUnit()}`;
 }
 
 // A faint tint filling the element as far as the container is full (see fillLevel).
@@ -895,11 +773,11 @@ function entryList(char, entries, showPath = false) {
 }
 
 function entryTile(char, e, showPath) {
-  const it = e.item;
+  const it = currentItem(e, char); // as it is now (its active layers)
   const path = showPath ? locationLabel(char, e) : null;
   const el = h("button", { class: "tile" + (e.equipped ? " equipped" : ""), draggable: "true",
     title: [entryName(e), liquidLabel(e) || containerLoad(char, e) || itemSummary(it), e.equipped && equipWord(e),
-      e.attuned && "attuned", e.charges != null && `${e.charges}/${it.maxCharges} charges`, path].filter(Boolean).join(" · "),
+      ...statesOnFor(char, e).map(st => st.label.toLowerCase()), e.charges != null && `${e.charges}/${it.maxCharges} charges`, path].filter(Boolean).join(" · "),
     onclick: () => openEntry(e.uid),
     ondragstart: ev => { ev.dataTransfer.setData("text/entry", e.uid); ev.dataTransfer.effectAllowed = "move"; } },
     itemIcon(it, "tile-icon", () => entryIconVars(char, e)),
@@ -910,7 +788,7 @@ function entryTile(char, e, showPath) {
 }
 
 function entryRow(char, e, showPath = false) {
-  const it = e.item;
+  const it = currentItem(e, char); // as it is now (its active layers)
   const path = showPath ? locationLabel(char, e) : null;
   const setQty = n => setEntryQty(e, n);
   return withFill(h("div", { class: "row" + (e.equipped ? " equipped" : ""), draggable: "true",
@@ -919,13 +797,13 @@ function entryRow(char, e, showPath = false) {
     h("button", { class: "row-main", onclick: () => openEntry(e.uid) },
       h("div", { class: "row-title" }, entryName(e),
         e.equipped && h("span", { class: "tag on" }, equipWord(e)),
-        e.attuned && h("span", { class: "tag attuned" }, "attuned"),
+        statesOnFor(char, e).map(st => h("span", { class: "tag attuned" }, st.label.toLowerCase())),
         e.charges != null && h("span", { class: "tag" }, `${e.charges}/${it.maxCharges} charges`),
         path && h("span", { class: "tag" }, path)),
       h("div", { class: "row-sub" }, [liquidLabel(e) || containerLoad(char, e) || itemSummary(it), e.notes].filter(Boolean).join(" — "))),
     h("div", { class: "row-weight muted" }, fmtWeight(entryOwnWeight(e))),
     writingButton(e),
-    isEquipable(e) && iconBtn(hasFeature(it, "weapon", e.srcId) ? "sword" : "shield", e.equipped ? "Unequip" : "Equip",
+    isEquipable(e) && iconBtn(equipKind(e) === "wielded" ? "sword" : "shield", e.equipped ? "Unequip" : "Equip",
       () => toggleEquip(e.uid), "equip" + (e.equipped ? " on" : "")),
     h("div", { class: "qty" },
       iconBtn("minus", "Decrease", () => setQty(e.qty - 1)),
@@ -998,10 +876,45 @@ function writeEntry(entryUid) {
   ] });
 }
 
+// ------------------------------------------------------------------ item states
+// A player switching one of their item's states (Attuned…), within its limit. Returns whether it changed.
+function playerSetState(entryUid, key, on) {
+  const char = store.char(), e = char?.items.find(x => x.uid === entryUid), st = stateByKey(key);
+  if (!e || !st || !statesFor(e).includes(st)) return false;
+  if (!isGmDevice() && !canPlayerSet(char, e, key)) { toast(`Only the ${term("gm")} can change that now`); return false; }
+  const lim = on && !stateOn(char, e, key) ? stateLimit(char, st) : null;
+  if (lim != null && stateCount(char, key) >= lim) {
+    if (st.limit.mode === "block") { toast(limitText(st, lim)); return false; }
+    toast(`${limitText(st, lim)} (keeping it anyway)`);
+  }
+  commit((s, c) => setState(c.items.find(x => x.uid === entryUid), key, on));
+  return true;
+}
+
+// The GM's switches for an item's states: the player's choice, or always on, or always off.
+function gmStateControls(char, e) {
+  const over = stateOverrides(char, e), target = `${char.id}/${e.uid}`;
+  return h("div", { class: "field full gm-states" }, h("span", null, `States (${term("gm")})`),
+    h("div", { class: "gm-state-list" }, statesFor(e).map(st => h("label", { class: "gm-state" }, h("span", null, st.label),
+      h("select", { "aria-label": `${st.label} (${term("gm")})`, onchange: async ev => {
+        const v = ev.target.value;
+        try { await setGmValue("item", target, "gm_state_" + st.key, v === "" ? null : +v); } catch (err) { toast(err.message); }
+        render();
+      } },
+        h("option", { value: "", selected: !(st.key in over) }, st.who === "player" ? "Player's choice" : "Not set"),
+        h("option", { value: "1", selected: over[st.key] === true }, "On"),
+        h("option", { value: "0", selected: over[st.key] === false }, "Off"))))));
+}
+
 // Equippable items (weapons, armor, magic items…) and anything worn for an AC bonus; armor is "worn".
-const wornForAc = e => !!e.item.acBonus && hasFeature(e.item, "worn", e.srcId);
-const isEquipable = e => hasFeature(e.item, "equippable", e.srcId) || wornForAc(e);
-const equipWord = e => hasFeature(e.item, "armor", e.srcId) || wornForAc(e) ? "worn" : "equipped";
+const wornForAc = e => !!currentItem(e).acBonus && hasFeature(currentItem(e), "worn", e.srcId);
+const isEquipable = e => hasFeature(currentItem(e), "equippable", e.srcId) || wornForAc(e);
+// How it's equipped: a system's features say ("wielded" weapons, "worn" armor); else just equipped.
+function equipKind(e) {
+  const it = currentItem(e), kinds = allFeatures().filter(f => f.equip && hasFeature(it, f.key, e.srcId)).map(f => f.equip);
+  return kinds.includes("wielded") ? "wielded" : kinds.includes("worn") || wornForAc(e) ? "worn" : "equipped";
+}
+const equipWord = e => equipKind(e) === "worn" ? "worn" : "equipped";
 
 // Set a stack's quantity; at 0 it's removed (with Undo).
 function setEntryQty(e, n) {
@@ -1019,7 +932,7 @@ function toggleEquip(entryUid) {
     const e = c.items.find(x => x.uid === entryUid);
     e.equipped = !e.equipped;
     // Only one suit of armor and one shield at a time.
-    const isArmor = x => hasFeature(x.item, "armor", x.srcId);
+    const isArmor = x => hasFeature(currentItem(x), "armor", x.srcId);
     if (e.equipped && isArmor(e)) {
       const shield = e.item.category === "Shield";
       c.items.forEach(o => {
@@ -1041,6 +954,108 @@ function iconFocusSwitch() {
       onchange: e => e.target.closest(".modal").classList.toggle("icon-focus", e.target.checked) }));
 }
 
+// ------------------------------------------------------------------ layers in details and editing
+
+// The fields a layer can change: the template's simple ones (not icons, pictures, pieces…).
+const LAYER_KINDS = new Set(["text", "textarea", "number", "select", "checkbox", "tags", "dice", "cost"]);
+const layerFields = tpl => templateFields(tpl).filter(f => LAYER_KINDS.has(f.kind) && f.key !== "source");
+
+function layerValue(f, v) {
+  if (f.kind === "cost") return fmtCost(v);
+  if (f.kind === "weight" || f.key === "weight") return fmtWeight(v);
+  return fieldDisplay(f, v);
+}
+
+// The item's layers whose states are off, faded: what it would gain ("Needs: Attuned" for the
+// player's states, "When Identified" for the GM's). isOn(key) says which are on.
+function layerSections(item, isOn) {
+  const layers = item.layers || {}, tpl = itemTemplate(item);
+  // The template's fields, and the features' (an AC bonus…), once each.
+  const fields = [...layerFields(tpl), ...allFeatures().flatMap(ft => ft.fields).filter(f => LAYER_KINDS.has(f.kind))]
+    .filter((f, i, all) => all.findIndex(g => g.key === f.key) === i);
+  const meaningful = L => Object.entries(L).some(([k, v]) => v !== "" && v != null && (typeof v !== "object" || Object.keys(v).length));
+  const off = systemStates().filter(st => layers[st.key] && meaningful(layers[st.key]) && !isOn(st.key));
+  if (!off.length) return null;
+  return h("div", { class: "layer-sections" }, off.map(st => {
+    const L = layers[st.key];
+    const rows = fields.filter(f => L[f.key] !== undefined && L[f.key] !== "" && !["description", "effect"].includes(f.key))
+      .map(f => [f.label, layerValue(f, L[f.key])]).filter(([, v]) => v != null && v !== "");
+    const feats = Object.keys(L.features || {}).filter(k => L.features[k]).map(k => featureByKey(k)?.label).filter(Boolean);
+    return h("section", { class: "layer-off" },
+      h("h4", null, st.who === "player" ? `Needs: ${st.label}` : `When ${st.label}`),
+      rows.length > 0 && h("dl", null, rows.map(([k, v]) => [h("dt", null, k), h("dd", null, v)])),
+      feats.length > 0 && h("p", { class: "small" }, "Also: " + feats.join(", ")),
+      (L.locks || []).length > 0 && h("p", { class: "small" }, `Only the ${term("gm")} can change: ` + L.locks.map(k => stateByKey(k)?.label || k).join(", ")),
+      L.effect && h("p", { class: "desc" }, L.effect),
+      L.description && String(L.description).split("\n\n").map(p => h("p", { class: "desc" }, p)),
+      null);
+  }));
+}
+
+// One field of a layer: empty means "as the item is" (its value shows greyed as the placeholder).
+function layerFieldInput(f, layer, base) {
+  const set = v => { if (v === "" || v == null || (Array.isArray(v) && !v.length)) delete layer[f.key]; else layer[f.key] = v; };
+  const cls = "field" + (["textarea", "tags"].includes(f.kind) ? " full" : "");
+  const label = h("span", null, fieldLabel(f));
+  const ph = base[f.key] == null ? "" : Array.isArray(base[f.key]) ? base[f.key].join(", ") : String(base[f.key]);
+  switch (f.kind) {
+    case "textarea":
+      return h("label", { class: cls }, label, h("textarea", { rows: 3, value: layer[f.key] || "", placeholder: ph, oninput: e => set(e.target.value) }));
+    case "number":
+      return h("label", { class: cls }, label, h("input", { type: "number", step: f.step || "any", inputmode: "decimal", value: layer[f.key] ?? "", placeholder: ph,
+        oninput: e => set(e.target.value === "" ? undefined : +e.target.value) }));
+    case "cost":
+      return h("label", { class: cls }, h("span", null, `${f.label} (${showCoin().key})`), h("input", { type: "number", step: "any", min: 0, inputmode: "decimal",
+        value: layer[f.key] != null ? layer[f.key] / showCoin().value : "", placeholder: base[f.key] != null ? String(base[f.key] / showCoin().value) : "",
+        oninput: e => set(e.target.value === "" ? undefined : Math.round(+e.target.value * showCoin().value)) }));
+    case "select":
+    case "checkbox": {
+      const opts = f.kind === "checkbox" ? [[true, "Yes"], [false, "No"]] : f.options.filter(o => o !== "").map(o => [o, f.labels?.[o] || o]);
+      const cur = layer[f.key];
+      return h("label", { class: cls }, label, h("select", { onchange: e => set(e.target.value === "" ? undefined : opts[+e.target.value][0]) },
+        h("option", { value: "", selected: cur === undefined }, `As the item is${ph ? ` (${f.kind === "checkbox" ? (base[f.key] ? "Yes" : "No") : ph})` : ""}`),
+        opts.map(([v, l], i) => h("option", { value: i, selected: cur === v }, l))));
+    }
+    case "tags":
+      return h("label", { class: cls }, label, h("input", { type: "text", value: (layer[f.key] || []).join(", "), placeholder: ph || "Comma separated",
+        oninput: e => set(e.target.value.split(",").map(x => x.trim()).filter(Boolean)) }));
+    default:
+      return h("label", { class: cls }, label, h("input", { type: "text", value: layer[f.key] || "", placeholder: ph, oninput: e => set(e.target.value) }));
+  }
+}
+
+// A layer's tab in the item form: its fields, the features it turns on, the states it locks.
+function layerForm(st, draft, tpl, onRemove) {
+  const layer = draft.layers[st.key];
+  const featBox = h("div", { class: "layer-features" });
+  const drawFeats = () => setChildren(featBox,
+    h("p", { class: "muted small" }, "Turns on (while " + st.label.toLowerCase() + "):"),
+    h("div", { class: "inline wrap" }, allFeatures().filter(ft => !mainFeatures(tpl).includes(ft.key) && !ft.flag).map(ft => h("label", { class: "check" },
+      h("input", { type: "checkbox", checked: !!layer.features?.[ft.key], onchange: e => {
+        layer.features = { ...(layer.features || {}) };
+        if (e.target.checked) layer.features[ft.key] = true; else delete layer.features[ft.key];
+        if (!Object.keys(layer.features).length) delete layer.features;
+        drawFeats();
+      } }), " " + ft.label))),
+    // The turned-on features' settings.
+    h("div", { class: "form grid" }, Object.keys(layer.features || {}).flatMap(k => (featureByKey(k)?.fields || []).filter(f => LAYER_KINDS.has(f.kind))
+      .map(f => layerFieldInput(f, layer, draft)))));
+  drawFeats();
+  const others = systemStates().filter(o => o.key !== st.key);
+  return h("div", { class: "layer-form" },
+    h("p", { class: "muted small" }, `While ${st.label.toLowerCase()}, the item changes to what's here. Leave a field empty to keep it as it is.`),
+    h("div", { class: "form grid" }, layerFields(tpl).map(f => layerFieldInput(f, layer, draft))),
+    featBox,
+    others.length > 0 && h("div", { class: "layer-locks" }, h("p", { class: "muted small" }, `While ${st.label.toLowerCase()}, only the ${term("gm")} can change:`),
+      h("div", { class: "inline wrap" }, others.map(o => h("label", { class: "check" },
+        h("input", { type: "checkbox", checked: (layer.locks || []).includes(o.key), onchange: e => {
+          const set = new Set(layer.locks || []);
+          if (e.target.checked) set.add(o.key); else set.delete(o.key);
+          if (set.size) layer.locks = [...set]; else delete layer.locks;
+        } }), " " + o.label)))),
+    h("button", { class: "btn danger", type: "button", onclick: onRemove }, icon("trash"), `Remove the ${st.label} state`));
+}
+
 // Template fields the details show in their own way (the rest are listed by label).
 const DETAILS_SHOWN = new Set(["poisonType", "saveDC", "effect"]);
 
@@ -1051,9 +1066,11 @@ function itemDetails(item, onIcon = null, srcId = item.id, vars = null, watermar
   const has = key => hasFeature(item, key, srcId);
   const rows = [];
   const add = (k, v) => { if (v !== undefined && v !== null && v !== "" && v !== false) rows.push([k, v]); };
-  const tpl = itemTemplate(item), weapon = has("weapon"), armor = has("armor");
+  // D&D 5e's weapons and armor have rows written for them; any other system's features list their fields.
+  const dnd = activeSystem() === DND5E_SYSTEM;
+  const tpl = itemTemplate(item), weapon = dnd && has("weapon"), armor = dnd && has("armor");
   // A weapon's category is simple or martial (listed below); other templates' show with the type.
-  const weaponCats = mainFeatures(tpl).includes("weapon") || (weapon && !tpl.categories?.length);
+  const weaponCats = weapon && (mainFeatures(tpl).includes("weapon") || !tpl.categories?.length);
   add("Type", tpl.name + (!weaponCats && item.category ? ` — ${item.category}` : ""));
   if (weaponCats) {
     add("Simple / martial", item.category || "—");
@@ -1062,16 +1079,19 @@ function itemDetails(item, onIcon = null, srcId = item.id, vars = null, watermar
   add("Cost", item.cost ? fmtCost(item.cost) + (item.bundle > 1 ? ` per ${item.bundle}` : "") : null);
   add("Weight", item.weight ? fmtWeight(item.weight) + (item.bundle > 1 ? ` per ${item.bundle}` : "") : null);
   add("Rarity", item.rarity);
-  add("Attunement", item.attunement && "Required");
+  // Toggles that need a feature (5e: attunement): the feature is "required".
+  // States that need a feature (5e: attunement): the feature is "required".
+  for (const st of systemStates()) if (st.requires && has(st.requires)) add(featureByKey(st.requires)?.label || st.label, "Required");
   if (weapon) add("Damage", [item.damage, item.damageType].filter(Boolean).join(" ") || "—");
-  if (weapon || armor || has("ammunition")) add("Magic bonus", item.bonus && fmtMod(item.bonus));
+  if (weapon || armor || (dnd && has("ammunition"))) add("Magic bonus", item.bonus && fmtMod(item.bonus));
+  if (!dnd) for (const ft of activeSystem().features || []) if (has(ft.key)) for (const f of ft.fields) add(fieldLabel(f), fieldDisplay(f, item[f.key]));
   if (armor) {
     add("Armor Class", armorSummary(item).split(" · ")[0]);
     add("Strength", item.strength && `Str ${item.strength}`);
     add("Stealth", item.stealthDisadvantage && "Disadvantage");
   }
   if (has("holds")) {
-    add("Capacity", item.capacity || (item.capacityLb && item.capacityLb + " lb"));
+    add("Capacity", item.capacity || (item.capacityLb && item.capacityLb + " " + weightUnitFor(item.capacityLb)));
     add("Weightless", item.weightless && "Contents don't count toward carried weight");
     add("Straps", item.straps && "Gear can be strapped to the outside");
     const spec = HOLDERS[item.holds];
@@ -1156,7 +1176,7 @@ function openEntry(entryUid) {
     commit((s, c) => { const x = c.items.find(x => x.uid === entryUid); if (x) fillDeck(c, x); });
     return openEntry(entryUid);
   }
-  const it = e.item;
+  const base = e.item, it = currentItem(e, char); // kept as `base`; shown as it is now
   let close;
   const moveSel = h("select", { onchange: ev => {
     const loc = parseLocation(ev.target.value);
@@ -1188,12 +1208,16 @@ function openEntry(entryUid) {
         onchange: ev => commit((s, c) => { c.items.find(x => x.uid === e.uid).charges = Math.max(0, Math.min(it.maxCharges, +ev.target.value)); }) })),
     isEquipable(e) && h("label", { class: "check" },
       h("input", { type: "checkbox", checked: e.equipped, onchange: () => toggleEquip(e.uid) }), " Equipped / worn"),
-    it.attunement && h("label", { class: "check" },
-      h("input", { type: "checkbox", checked: e.attuned, onchange: ev => {
-        const count = char.items.filter(x => x.attuned).length;
-        if (ev.target.checked && count >= 3) toast("You can attune to at most 3 items (keeping it anyway)");
-        commit((s, c) => { c.items.find(x => x.uid === e.uid).attuned = ev.target.checked; });
-      } }), " Attuned"),
+    // The player's states (Attuned…): a checkbox each, unless only the GM can change it now.
+    statesFor(e).filter(st => st.who === "player").map(st => {
+      const locked = !canPlayerSet(char, e, st.key), lim = stateLimit(char, st);
+      return h("label", { class: "check", title: locked ? `Only the ${term("gm")} can change this now` : "" },
+        h("input", { type: "checkbox", checked: stateOn(char, e, st.key), disabled: locked && !isGmDevice(), onchange: ev => {
+          if (!playerSetState(e.uid, st.key, ev.target.checked)) ev.target.checked = !ev.target.checked;
+        } }), " " + st.label, lim != null && h("span", { class: "muted small" }, ` (${stateCount(char, st.key)} / ${lim})`),
+        locked && h("span", { class: "muted small" }, " · locked"));
+    }),
+    isGmDevice() && gmStateControls(char, e),
     h("label", { class: "field full" }, h("span", null, "Notes"),
       h("textarea", { rows: 2, placeholder: "Engravings, who it came from, etc.", value: e.notes,
         onchange: ev => commit((s, c) => { c.items.find(x => x.uid === e.uid).notes = ev.target.value; }) })));
@@ -1216,9 +1240,9 @@ function openEntry(entryUid) {
     planner && h("button", { class: "btn primary", onclick: unpack }, icon("package"), "Unpack"),
     h("button", { class: "btn", onclick: () => { close(); openSell(e.uid); } }, icon("coins"), "Sell"),
     // Player mode: no editing items (a copy can still be renamed with its display name).
-    !playerOnly() && h("button", { class: "btn", onclick: () => { close(); openItemForm(it, { entryUid: e.uid }); } }, icon("edit"), "Edit"),
+    !playerOnly() && h("button", { class: "btn", onclick: () => { close(); openItemForm(base, { entryUid: e.uid }); } }, icon("edit"), "Edit"),
     !playerOnly() && h("button", { class: "btn", title: "Save a copy of this item as a reusable custom item", onclick: () => {
-      commit(s => s.customItems.unshift({ ...clone(it), id: "custom-" + uid(), source: it.source || "Homebrew" }), `Saved “${it.name}” to custom items`);
+      commit(s => s.customItems.unshift({ ...clone(base), id: "custom-" + uid(), source: base.source || "Homebrew" }), `Saved “${base.name}” to custom items`);
     } }, icon("copy"), "Save as custom"),
     party.active && party.others().length > 0 &&
       h("button", { class: "btn", onclick: () => { close(); openTradeBuilder(null, e.uid); } }, icon("move"), "Trade"),
@@ -1252,7 +1276,7 @@ function openEntry(entryUid) {
   };
   close = openModal(entryName(e), [e.customName && h("p", { class: "muted small" }, it.name),
     readBtn, liquidCap(e) > 0 && liquidControls(e), isDeckEntry(e) && deckSection(e, reopen, () => close()),
-    cardBackButton(e, () => close()), controls, planner?.el, itemDetails(shown, changeIcon, e.srcId, vars, true)],
+    cardBackButton(e, () => close()), controls, planner?.el, itemDetails(shown, changeIcon, e.srcId, vars, true), layerSections(base, key => stateOn(char, e, key))],
   { footer, wide: !!planner, head: iconFocusSwitch(), backdrop: iconBackdrop(it, vars) });
 }
 
@@ -1330,7 +1354,7 @@ function openSplit(entryUid) {
       if (!x || x.qty <= n) return;
       x.qty -= n;
       // Same item, notes and contents; not equipped or attuned (that stays with the original).
-      c.items.splice(c.items.indexOf(x) + 1, 0, { ...clone(x), uid: newUid, qty: n, equipped: false, attuned: false });
+      c.items.splice(c.items.indexOf(x) + 1, 0, { ...clone(x), uid: newUid, qty: n, equipped: false, attuned: false, toggles: {}, states: {} });
     }, `Split ${n} × ${entryName(e)} into a new stack`, true);
     const loc = parseLocation(where.value);
     if (loc.parent !== (e.parent || null) || loc.strapped !== !!e.strapped) {
@@ -1370,7 +1394,8 @@ function combineStacks(entryUid) {
       x.qty += o.qty;
       if (o.notes && !x.notes.includes(o.notes)) x.notes = [x.notes, o.notes].filter(Boolean).join("\n");
       x.equipped = x.equipped || o.equipped;
-      x.attuned = x.attuned || o.attuned;
+      x.states = { ...ownStates(o), ...ownStates(x) };
+      delete x.attuned; delete x.toggles;
     }
     c.items = c.items.filter(o => !ids.has(o.uid));
   }, `Combined ${others.length + 1} stacks of ${entryName(e)}`, true);
@@ -1412,28 +1437,28 @@ function openCoins() {
   const char = store.char();
   const coins = { ...char.coins };
   let close;
-  let amt = 0, denom = "gp";
+  let amt = 0, denom = currency().show;
   const body = h("div", { class: "form" },
-    h("div", { class: "coin-grid" }, COIN_ORDER.map(k => h("label", { class: "field coin-field " + k },
+    h("div", { class: "coin-grid" }, coinOrder().map(k => h("label", { class: "field coin-field " + k },
       h("span", null, k.toUpperCase()),
       h("input", { type: "number", min: 0, inputmode: "numeric", value: coins[k] || 0,
         oninput: ev => { coins[k] = Math.max(0, Math.floor(+ev.target.value || 0)); } })))),
     h("h4", null, "Quick transaction"),
     h("div", { class: "inline" },
       h("input", { type: "number", min: 0, inputmode: "decimal", placeholder: "Amount", oninput: ev => { amt = +ev.target.value || 0; } }),
-      h("select", { onchange: ev => { denom = ev.target.value; } }, COIN_ORDER.map(k => h("option", { value: k, selected: k === "gp" }, k))),
+      h("select", { onchange: ev => { denom = ev.target.value; } }, coinOrder().map(k => h("option", { value: k, selected: k === denom }, k))),
       h("button", { class: "btn", onclick: () => txn(1) }, icon("plus"), "Gain"),
       h("button", { class: "btn", onclick: () => txn(-1) }, icon("minus"), "Spend")),
-    h("p", { class: "muted small" }, "Spending makes change automatically (e.g. paying 5 sp with only gold returns silver)."),
+    h("p", { class: "muted small" }, "Spending makes change automatically: paying with a bigger coin gives smaller ones back."),
     h("button", { class: "btn", onclick: () => {
       close();
       commit((s, c) => {
-        c.coins = receiveCoins({ pp: 0, gp: 0, ep: 0, sp: 0, cp: 0 }, coinTotalCp(c.coins));
-      }, "Converted coins to gp/sp/cp", true);
-    } }, "Consolidate into gp / sp / cp"));
+        c.coins = receiveCoins(Object.fromEntries(coinOrder().map(k => [k, 0])), coinTotalCp(c.coins));
+      }, `Converted coins to ${changeCoins().join("/")}`, true);
+    } }, `Consolidate into ${changeCoins().join(" / ")}`));
 
   function txn(sign) {
-    const cp = Math.round(amt * COIN_VALUES[denom]);
+    const cp = Math.round(amt * coinValue(denom));
     if (!cp) return;
     if (sign > 0) {
       close();
@@ -1518,7 +1543,7 @@ function catalogItemsView() {
       h("label", { class: "search" }, icon("search"),
         h("input", { type: "search", placeholder: "Search items, properties, descriptions…", value: ui.catSearch,
           oninput: e => { ui.catSearch = e.target.value; ui.catLimit = 150; draw(); } })),
-      (activeSystem().tables || []).length > 0 && h("button", { class: "btn", onclick: openTrinketRoller }, icon("dice"), h("span", null, "Roll trinket")),
+      (activeSystem().tables || []).length > 0 && h("button", { class: "btn", onclick: openTrinketRoller }, icon("dice"), h("span", null, term("rollTable"))),
       h("button", { class: "btn primary", onclick: () => openItemForm(null) }, icon("plus"), h("span", { class: "hide-sm" }, "New custom item")),
       layoutToggle(), tileLabelToggles()),
     chips, subs, count, list);
@@ -1628,7 +1653,7 @@ function openCatalogItem(item) {
     close();
     openReader(item, isCustom ? { onEdit: () => openItemForm(store.findCustom(item.id) || item) } : {});
   } }, icon(item.imageOnly ? "image" : "book"), item.imageOnly ? "View" : "Read");
-  close = openModal(item.name, [readBtn, controls, planner?.el, itemDetails(item, changeIcon, item.id, null, true)],
+  close = openModal(item.name, [readBtn, controls, planner?.el, itemDetails(item, changeIcon, item.id, null, true), layerSections(item, () => false)],
     { footer, wide: !!planner, head: iconFocusSwitch(), backdrop: iconBackdrop(item) });
 }
 
@@ -1884,7 +1909,7 @@ function openTrinketRoller() {
       h("p", { class: "muted small" }, `${t.name} — ${t.book}`));
     result.classList.remove("pop"); void result.offsetWidth; result.classList.add("pop");
   };
-  close = openModal("Roll a trinket", h("div", { class: "form" },
+  close = openModal(term("rollTitle"), h("div", { class: "form" },
     h("label", { class: "field" }, h("span", null, "Table"), sel), result), { footer: [
     h("button", { class: "btn", onclick: roll }, icon("dice"), "Roll"),
     h("button", { class: "btn primary", onclick: () => {
@@ -1926,6 +1951,32 @@ function openItemForm(item, opts = {}) {
   const form = h("form", { class: "form grid", onsubmit: e => { e.preventDefault(); save(); } }, els.map(([, el]) => el));
   let close;
 
+  // Its states' layers, a tab each (an item that needs attunement starts with an empty Attuned one).
+  draft.layers = clone(draft.layers || {});
+  for (const st of systemStates()) if (st.requires && !draft.layers[st.key] && hasFeature(draft, st.requires, srcId)) draft.layers[st.key] = {};
+  let tab = "basic";
+  const tabsBox = h("div"), layerBox = h("div");
+  const triggersBox = triggersEditor(draft);
+  const drawTabs = () => {
+    const present = systemStates().filter(st => draft.layers[st.key]);
+    const missing = systemStates().filter(st => !draft.layers[st.key]);
+    if (tab !== "basic" && tab !== "triggers" && !draft.layers[tab]) tab = "basic";
+    setChildren(tabsBox, (present.length || missing.length) && h("div", { class: "inline wrap layer-tabs" },
+      subTabs("Item states", [["basic", "Basic"], ...present.map(st => [st.key, st.label]), ["triggers", "Triggers"]], tab, k => { tab = k; drawTabs(); }),
+      missing.length > 0 && h("select", { class: "add-state", "aria-label": "Add a state", onchange: e => {
+        if (!e.target.value) return;
+        draft.layers[e.target.value] = {};
+        tab = e.target.value;
+        drawTabs();
+      } }, h("option", { value: "" }, "+ Add a state…"), missing.map(st => h("option", { value: st.key }, st.label)))));
+    form.hidden = tab !== "basic";
+    const st = stateByKey(tab);
+    setChildren(layerBox, st ? layerForm(st, draft, tpl, () => { delete draft.layers[st.key]; tab = "basic"; drawTabs(); })
+      : tab === "triggers" && [h("p", { class: "muted small" }, "What happens by itself: when the item enters an inventory, or one of its states turns on or off, it can turn states on or off and tell the player."),
+        triggersBox]);
+  };
+  drawTabs();
+
   function save() {
     if (!draft.name?.trim()) return toast("Give the item a name");
     draft.name = draft.name.trim();
@@ -1940,6 +1991,9 @@ function openItemForm(item, opts = {}) {
     const flags = Object.fromEntries(all.filter(ft => !ft.flag && on[ft.key] !== featureDefault(draft, ft.key, srcId)).map(ft => [ft.key, on[ft.key]]));
     if (Object.keys(flags).length) draft.features = flags;
     if (on.pack) draft.contents = (draft.contents || []).filter(c => c.name);
+    if (!Object.keys(draft.layers || {}).length) delete draft.layers;
+    draft.triggers = cleanTriggers(draft.triggers);
+    if (!draft.triggers.length) delete draft.triggers;
     for (const k of Object.keys(draft)) if (draft[k] === "" || draft[k] == null) delete draft[k];
     delete draft.noStack;
     if (opts.entryUid) {
@@ -1965,7 +2019,7 @@ function openItemForm(item, opts = {}) {
   close = openModal(title, [
     h("p", { class: "muted small" }, templateBadge(tpl), ` Template: ${tpl.name}`,
       opts.entryUid ? " — changes apply only to this copy in the inventory." : ""),
-    form,
+    tabsBox, form, layerBox,
   ], { wide: true, footer: [
     h("button", { class: "btn", onclick: () => close() }, "Cancel"),
     h("button", { class: "btn primary", onclick: save }, icon("check"), "Save"),
@@ -2220,8 +2274,8 @@ const ICON_VARIABLES = [
 
 // The values for an inventory entry (only those that apply; the rest keep the drawing's own).
 function entryIconVars(char, e) {
-  const it = e.item;
-  const v = { qty: e.qty, equipped: e.equipped ? 1 : 0, attuned: e.attuned ? 1 : 0,
+  const it = currentItem(e, char);
+  const v = { qty: e.qty, equipped: e.equipped ? 1 : 0, attuned: char && stateOn(char, e, "attuned") ? 1 : 0,
     worth: entryTotalValue(char, e) / 100, weight: entryTotalWeight(char, e) };
   const fill = fillLevel(char, e);
   if (fill) {
@@ -2537,7 +2591,7 @@ function featuresPanel(draft, isOn, chosen, tpl) {
 function fieldInput(f, draft) {
   const set = v => { draft[f.key] = v; };
   const cls = "field" + (["textarea", "tags"].includes(f.kind) ? " full" : "");
-  const label = h("span", null, f.label, f.required ? " *" : "");
+  const label = h("span", null, fieldLabel(f), f.required ? " *" : "");
   switch (f.kind) {
     case "textarea":
       return h("label", { class: cls }, label, h("textarea", { rows: 3, value: draft[f.key] || "", oninput: e => set(e.target.value) }));
@@ -2612,14 +2666,14 @@ function fieldInput(f, draft) {
           label2));
     }
     case "cost": {
-      // Stored in cp; edited as amount + denomination.
+      // Stored in the smallest coin; edited as an amount of one (the largest change coin it's a whole number of).
       const cp = draft.cost || 0;
-      let denom = cp && cp % 100 === 0 ? "gp" : cp && cp % 10 === 0 ? "sp" : cp ? "cp" : "gp";
-      let amount = cp ? cp / COIN_VALUES[denom] : "";
-      const upd = () => set(amount === "" ? 0 : Math.round(amount * COIN_VALUES[denom]));
+      let denom = cp ? changeCoins().find(k => cp % coinValue(k) === 0) || coinOrder().at(-1) : currency().show;
+      let amount = cp ? cp / coinValue(denom) : "";
+      const upd = () => set(amount === "" ? 0 : Math.round(amount * coinValue(denom)));
       return h("label", { class: cls }, label, h("div", { class: "inline" },
         h("input", { type: "number", min: 0, step: "any", inputmode: "decimal", value: amount, oninput: e => { amount = e.target.value === "" ? "" : +e.target.value; upd(); } }),
-        h("select", { onchange: e => { denom = e.target.value; upd(); } }, COIN_ORDER.map(k => h("option", { value: k, selected: k === denom }, k)))));
+        h("select", { onchange: e => { denom = e.target.value; upd(); } }, coinOrder().map(k => h("option", { value: k, selected: k === denom }, k)))));
     }
     default:
       return h("label", { class: cls }, label, h("input", { type: "text", value: draft[f.key] ?? "", placeholder: f.placeholder || "",
@@ -2655,7 +2709,9 @@ function packContentsField(f, draft) {
 
 // A new item made with a template (the system's or a package's), with its defaults filled in. Its
 // `type` is the system template it descends from (what older versions and the party servers know).
-const newItemFrom = tpl => ({ type: rootTemplate(tpl).id, template: isSystemTemplate(tpl) ? undefined : tpl.id, ...clone(tpl.defaults || {}) });
+const newItemFrom = tpl => ({ type: rootTemplate(tpl).id, template: isSystemTemplate(tpl) ? undefined : tpl.id, ...clone(tpl.defaults || {}),
+  ...(tpl.layers && Object.keys(tpl.layers).length ? { layers: clone(tpl.layers) } : {}),
+  ...(tpl.triggers?.length ? { triggers: clone(tpl.triggers) } : {}) });
 
 // A new template that starts as a copy of another (the system's or yours).
 function copyTemplate(tpl) {
@@ -2723,7 +2779,9 @@ function templatesSection() {
   return h("section", null,
       h("div", { class: "section-head" }, h("h2", null, "Templates"),
         h("button", { class: "btn", onclick: newTemplate }, icon("plus"), "New template")),
-      h("p", { class: "muted small" }, `Templates decide which fields an item has and what it can do (its features: a container holds things, armor counts toward AC…). The built-in ones come with ${sys.name}; make your own from a copy of any of them.`),
+      h("p", { class: "muted small" }, "Templates decide which fields an item has and what it can do (its features: a container holds things, a weapon shows in the Combat panel…). "
+        + (sys.none ? "With no game system there's one plain template, Item; make your own from a copy of it, or from a blank one."
+          : `The game system's come with ${sys.name}; make your own from a copy of any of them.`)),
       h("div", { class: "tpl-grid" },
         // The system's templates, by group: each group has a hue, its subcategories are shades of it.
         systemGroups().map(g => {
@@ -2749,6 +2807,13 @@ function templatesSection() {
                 h("button", { class: "link", onclick: () => copyTemplate(tpls[0]) }, "Copy"),
               ]));
         }),
+        // The game system's example templates you haven't got (D&D 5e: Spell Scroll, Gemstone, Cursed Item).
+        (sys.starterTemplates || []).filter(t => !store.template(t.id)).map(t => h("div", { class: "tpl-tile static example" },
+          h("span", { class: "tpl-swatch", style: { background: templateColor(t) } }),
+          h("b", null, t.name),
+          h("small", { class: "muted" }, `Example · ${templateNote(t)}`),
+          h("div", { class: "tpl-actions" },
+            h("button", { class: "link", onclick: () => commit(() => store.homePackage().templates.push(clone(t)), `Added the template ${t.name}`, true) }, "Add to my templates")))),
         store.templates().filter(t => !isSystemTemplate(t)).map(t => h("div", { class: "tpl-tile static" },
           h("span", { class: "tpl-swatch", style: { background: templateColor(t) } }),
           h("b", null, t.name),
@@ -2831,13 +2896,14 @@ function openTemplateEditor(tpl, copy = false) {
   draft.features = { ...(draft.features || {}) };
   if (draft.hue == null) draft.hue = templateHue(draft);
   let close;
+  const tplTriggers = triggersEditor(draft);
   const fieldsBox = h("div", { class: "tpl-fields" });
   const coreInfo = h("p", { class: "muted small" });
   const shadeBox = h("div", { class: "field full shade-field" });
 
   const drawCore = () => {
     coreInfo.textContent = "Every item also has: " + [...CORE_HEAD, WEIGHT_FIELD, ...(activeSystem().commonFields || []), ...CORE_TAIL]
-      .filter(f => !(draft.hide || []).includes(f.key)).map(f => f.label).join(", ") + ".";
+      .filter(f => !(draft.hide || []).includes(f.key)).map(fieldLabel).join(", ") + ".";
   };
   // Colour: the template's own hue; its categories show as shades of it.
   const drawShade = () => setChildren(shadeBox, huePicker("Colour", draft.hue, templateSubcategories(draft), hue => { draft.hue = hue; },
@@ -2878,6 +2944,8 @@ function openTemplateEditor(tpl, copy = false) {
       return { ...f, key, label: f.label.trim(), options: f.kind === "select" ? (f.options?.length ? f.options : ["Option"]) : undefined };
     });
     draft.name = draft.name.trim();
+    draft.triggers = cleanTriggers(draft.triggers);
+    if (!draft.triggers.length) delete draft.triggers;
     if (!draft.categories?.length) { delete draft.categories; delete draft.categoryLabel; }
     delete draft.builtin;
     if (isNew) draft.id = "tpl-" + uid();
@@ -2907,6 +2975,16 @@ function openTemplateEditor(tpl, copy = false) {
     h("h4", null, "Fields"),
     coreInfo,
     fieldsBox,
+    systemStates().length > 0 && [h("h4", null, "States"),
+      h("p", { class: "muted small" }, "Which states its items start with a tab for (fill each in per item: what changes in that state)."),
+      h("div", { class: "inline wrap" }, systemStates().map(st => h("label", { class: "check" },
+        h("input", { type: "checkbox", checked: !!draft.layers?.[st.key], onchange: e => {
+          draft.layers = { ...(draft.layers || {}) };
+          if (e.target.checked) draft.layers[st.key] = draft.layers[st.key] || {}; else delete draft.layers[st.key];
+          if (!Object.keys(draft.layers).length) delete draft.layers;
+        } }), " " + st.label)))],
+    systemStates().length > 0 && [h("h4", null, "Triggers"),
+      h("p", { class: "muted small" }, "Its items start with these (each item can change them)."), tplTriggers],
     h("h4", null, "Features"),
     h("p", { class: "muted small" }, "What its items can do to begin with. “Yes” can be changed for each item; “Always” can't, and puts the feature's fields with the template's own."),
     featureRows), { wide: true, footer: [
@@ -2958,10 +3036,12 @@ async function importData(data, fileName = "Imported") {
   const takeTemplates = tpls => { for (const t of tpls || []) if (!store.template(t.id)) store.homePackage().templates.push(standardiseTemplate(t)); };
   const takeDrawings = list => { for (const d of list || []) if (!findDrawing(d.id)) store.data.iconLibrary.push(d); };
   if (data.packrat === "system") {
-    const sys = cleanSystem(data);
-    const had = store.data.systems.find(x => x.id === sys.id);
-    commit(() => { store.data.systems = [...store.data.systems.filter(x => x.id !== sys.id), sys]; },
-      `${had ? "Updated" : "Imported"} the system ${sys.name}`, true);
+    if (typeof data.id !== "string") throw new Error("Not a Pack Rat system file");
+    const had = !!systemById(data.id);
+    if (had && bundledSystem(data.id)) throw new Error(`you have ${bundledSystem(data.id).name} already (it comes with Pack Rat). To import your own version, give it an id of its own`);
+    let name;
+    commit(() => { name = installSystem(data); }, null, true);
+    toast(`${had ? "Updated" : "Added"} the game system ${name}`);
   } else if (data.kind === "character" && data.character) {
     commit(s => {
       const c = { ...cleanChar(data.character), id: uid() }; // no party-server fields (owner, rev…)
@@ -2973,7 +3053,9 @@ async function importData(data, fileName = "Imported") {
     commit(() => {
       const camp = { ...data.campaign, id: "cmp" + uid() };
       for (const p of data.packages || []) if (!store.data.packages.some(x => x.id === p.id)) store.data.packages.push(p);
-      if (data.system && !systemById(data.system.id)) store.data.systems.push(cleanSystem(data.system));
+      // Its game system: the one in the file, or one that comes with Pack Rat (added back if removed).
+      if (data.system && !systemById(data.system.id)) installSystem(data.system);
+      else if (camp.system && !systemById(camp.system) && bundledSystem(camp.system)) installSystem({ id: camp.system });
       takeDrawings(data.drawings);
       reclassifyAll({ characters: camp.characters || [], shops: camp.shops || [] });
       store.data.campaigns.push(camp);
@@ -3051,9 +3133,9 @@ function renderSettings() {
       h("span", null, h("b", null, "Role on this device"),
         h("span", { class: "muted small" }, party.active
           ? (party.isGm() ? "You're a GM in this party." : "In a party, the host decides who's a GM.")
-          : "As GM, prepare each campaign's shops, GM values and controls without hosting a party. In a party, the host chooses the GM.")),
+          : `As ${term("gm")}, prepare each campaign's shops, GM values and controls without hosting a party. In a party, the host chooses the ${term("gm")}.`)),
       h("div", { class: "seg seg-field", role: "radiogroup", "aria-label": "Role" },
-        [["player", "Player"], ["gm", "GM"]].map(([k, label]) => h("button", { type: "button", role: "radio", class: ui.role === k ? "active" : "",
+        [["player", "Player"], ["gm", term("gm")]].map(([k, label]) => h("button", { type: "button", role: "radio", class: ui.role === k ? "active" : "",
           "aria-checked": String(ui.role === k), disabled: party.active, onclick: () => setRole(k) }, label)))),
     h("p", { class: "muted small device-line" }, "In parties this device is called ", h("b", null, deviceName()), ". ",
       h("button", { class: "link", onclick: renameDevice }, "Rename")));
@@ -3067,16 +3149,16 @@ function renderSettings() {
     ui.role !== "gm" && h("section", null,
       h("label", { class: "switch-row" },
         h("span", null, h("b", null, "Player mode"),
-          h("span", { class: "muted small" }, "Hides the Catalog tab and item editing, for players whose gear comes from the DM, shops and trades. Items can still be renamed (Display name) and written in.")),
+          h("span", { class: "muted small" }, `Hides the Catalog tab and item editing, for players whose gear comes from the ${term("gm")}, shops and trades. Items can still be renamed (Display name) and written in.`)),
         h("input", { type: "checkbox", role: "switch", class: "switch", checked: ui.playerMode, onchange: ev => setPlayerMode(ev.target.checked) }))),
     partySettings(),
     h("section", null,
-      h("div", { class: "section-head" }, h("h2", null, "Characters"),
-        h("button", { class: "btn primary", onclick: () => newCharPrompt() }, icon("plus"), "New character")),
+      h("div", { class: "section-head" }, h("h2", null, termCap("characters")),
+        h("button", { class: "btn primary", onclick: () => newCharPrompt() }, icon("plus"), "New " + term("character"))),
       h("div", { class: "group" }, s.characters.map(c => h("div", { class: "row" + (c.id === s.activeId ? " equipped" : "") },
         h("button", { class: "row-main", onclick: () => { commit(st => { st.activeId = c.id; }); go("inventory"); } },
           h("div", { class: "row-title" }, c.name, c.id === s.activeId && h("span", { class: "tag on" }, "active")),
-          h("div", { class: "row-sub" }, `${entriesLabel(c)} · ${coinSummary(c.coins)} · STR ${c.str}`)),
+          h("div", { class: "row-sub" }, `${entriesLabel(c)} · ${coinSummary(c.coins)}`)),
         iconBtn("edit", "Rename", () => renamePrompt(c)),
         iconBtn("download", "Export character", async () => download(`${c.name.replace(/\W+/g, "_")}.json`,
           { kind: "character", character: c, templates: store.allTemplates().filter(t => c.items.some(e => e.item.template === t.id)),
@@ -3088,16 +3170,18 @@ function renderSettings() {
     h("section", null,
       h("h2", null, `Rules for ${store.campaign().name}`),
       h("div", { class: "form grid" },
-        h("label", { class: "field" }, h("span", null, "Encumbrance"),
+        h("label", { class: "field" }, h("span", null, "Game system"),
+          h("button", { class: "btn", type: "button", onclick: () => editCampaign(store.campaign()) }, icon("book"), activeSystem().name)),
+        usesSetting("encumbrance") && h("label", { class: "field" }, h("span", null, "Encumbrance"),
           h("select", { onchange: e => setSetting("encumbrance", e.target.value) },
             [["standard", "Standard (capacity = STR × 15)"], ["variant", "Variant (speed penalties at STR × 5 / × 10)"], ["off", "Off"]]
               .map(([v, l]) => h("option", { value: v, selected: s.settings.encumbrance === v }, l)))),
-        h("label", { class: "field" }, h("span", null, `Carry multiplier for ${store.char().name}`),
-          h("select", { onchange: e => commit((st, c) => { c.carryMultiplier = +e.target.value; }) },
+        usesSetting("carryMultiplier") && h("label", { class: "field" }, h("span", null, `Carry multiplier for ${store.char().name}`),
+          h("select", { onchange: e => commit((st, c) => { c.stats = { ...statsOf(c), carryMultiplier: +e.target.value }; }) },
             [[0.5, "×½ (Tiny)"], [1, "×1 (Small / Medium)"], [2, "×2 (Large, Powerful Build)"], [4, "×4 (Huge)"], [8, "×8 (Gargantuan)"]]
-              .map(([v, l]) => h("option", { value: v, selected: (store.char().carryMultiplier || 1) === v }, l)))),
-        h("label", { class: "check field" }, h("input", { type: "checkbox", checked: s.settings.coinWeight, onchange: e => setSetting("coinWeight", e.target.checked) }),
-          " Coins have weight (50 coins = 1 lb)"))),
+              .map(([v, l]) => h("option", { value: v, selected: (statsOf(store.char()).carryMultiplier || 1) === v }, l)))),
+        currency().perWeight > 0 && h("label", { class: "check field" }, h("input", { type: "checkbox", checked: s.settings.coinWeight, onchange: e => setSetting("coinWeight", e.target.checked) }),
+          ` Coins have weight (${currency().perWeight} coins = 1 ${weightUnit()})`))),
     h("section", null,
       h("h2", null, "Data"),
       h("p", { class: "muted small" }, party.app?.localStore
@@ -3142,7 +3226,7 @@ function partySettings() {
 
 function newCharPrompt() {
   let name = "", close;
-  close = openModal("New character", h("form", { class: "form", onsubmit: e => { e.preventDefault(); ok(); } },
+  close = openModal("New " + term("character"), h("form", { class: "form", onsubmit: e => { e.preventDefault(); ok(); } },
     h("label", { class: "field" }, h("span", null, "Name"), h("input", { type: "text", oninput: e => { name = e.target.value; } }))),
   { footer: [h("button", { class: "btn", onclick: () => close() }, "Cancel"), h("button", { class: "btn primary", onclick: () => ok() }, "Create")] });
   function ok() {
@@ -3171,14 +3255,14 @@ function openCharSwitcher() {
     icon("book"), h("span", null, h("span", { class: "muted small" }, "Campaign"), h("b", null, store.campaign().name)),
     !party.active && h("span", { class: "link" }, "Change"));
   if (!party.active) {
-    close = openModal("Characters", h("div", { class: "group" }, campaignLine,
+    close = openModal(termCap("characters"), h("div", { class: "group" }, campaignLine,
       s.characters.map(row),
-      h("button", { class: "btn wide", onclick: () => { close(); newCharPrompt(); } }, icon("plus"), "New character")));
+      h("button", { class: "btn wide", onclick: () => { close(); newCharPrompt(); } }, icon("plus"), "New " + term("character"))));
     return;
   }
   // In a party: switch between the characters playing; others on this device can be brought in.
   const others = bringableCharacters();
-  close = openModal("Characters", [
+  close = openModal(termCap("characters"), [
     campaignLine,
     h("h4", null, "Playing in this party"),
     h("div", { class: "group" }, party.linked().map(row)),
@@ -3187,7 +3271,7 @@ function openCharSwitcher() {
         icon("user"), h("div", { class: "row-main static" }, h("div", { class: "row-title" }, c.name),
           h("div", { class: "row-sub" }, entriesLabel(c))),
         h("button", { class: "btn", onclick: async () => { close(); await party.bring(c.id); } }, icon("users"), "Bring into party"))))],
-    h("button", { class: "btn wide", onclick: () => { close(); openJoinModal(); } }, icon("plus"), "New character or take over"),
+    h("button", { class: "btn wide", onclick: () => { close(); openJoinModal(); } }, icon("plus"), `New ${term("character")} or take over`),
   ]);
 }
 
@@ -3288,7 +3372,7 @@ async function boot() {
   store.subscribe(render);
   const nav = document.getElementById("nav");
   nav.replaceChildren(...Object.entries(VIEWS).map(([k, v]) =>
-    h("button", { class: "nav-btn", "data-view": k, onclick: () => go(k) }, icon(v.icon), h("span", null, v.label),
+    h("button", { class: "nav-btn", "data-view": k, onclick: () => go(k) }, icon(v.icon), h("span", { class: "nav-label" }, viewLabel(k)),
       v.partyOnly && h("span", { class: "badge", hidden: true }))));
   document.getElementById("char-switch").addEventListener("click", openCharSwitcher);
   const hash = location.hash.slice(1);

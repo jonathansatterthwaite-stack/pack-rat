@@ -26,8 +26,8 @@ const CORE_FIELD_KEYS = new Set([...CORE_HEAD, WEIGHT_FIELD, ...CORE_TAIL].map(f
 // it's ticked. A template says which features its items start with (a "main" one's fields show with
 // the template's own); an item says only where it differs, in `features` ({ holds: true, deck: false }).
 // See featureDefault in store.js. A feature with a `flag` is that yes/no field of the item itself
-// (attunement, imageOnly). Two features that `exclude` each other can't both be ticked. Systems add
-// features of their own (D&D 5e: Weapon, Armor, Ammunition).
+// (imageOnly; 5e's attunement). Two features that `exclude` each other can't both be ticked. Systems
+// add features of their own (D&D 5e: Weapon, Armor, Ammunition, Attunement).
 const CORE_FEATURES = [
   { key: "holds", label: "Container", hint: "Other items go inside it. Set how much it holds, whether gear can be strapped outside, or that it only holds certain things.", fields: [
     { key: "capacity", label: "Capacity (text)", kind: "text", placeholder: "1 cubic foot/30 pounds of gear" },
@@ -61,10 +61,6 @@ const CORE_FEATURES = [
     { key: "maxCharges", label: "Max charges", kind: "number" },
     { key: "recharge", label: "Recharge", kind: "text", placeholder: "1d6+1 at dawn" },
   ] },
-  { key: "attunement", label: "Attunement", hint: "Requires attunement to use (a character can attune to 3 items).", flag: "attunement", fields: [] },
-  { key: "worn", label: "Armor bonus", hint: "Adds to Armor Class while worn.", fields: [
-    { key: "acBonus", label: "AC bonus while worn", kind: "number" },
-  ] },
   { key: "bundle", label: "Bundle", hint: "Sold in bundles (like 20 arrows): cost and weight are per bundle.", fields: [
     { key: "bundle", label: "Bundle size", kind: "number", min: 1 },
   ] },
@@ -94,6 +90,11 @@ function templateFields(tpl) {
   const tail = CORE_TAIL.filter(f => !(tpl.hide || []).includes(f.key));
   return [...CORE_HEAD, categoryField(tpl), ...main, ...(tpl.fields || []), WEIGHT_FIELD, ...(activeSystem().commonFields || []), ...tail]
     .filter(f => f && !seen.has(f.key) && seen.add(f.key));
+}
+
+// A field's label, in the system's weight unit ("Weight (lb)", "Capacity (kg)").
+function fieldLabel(f) {
+  return f.label.replace("(lb)", `(${weightUnit()})`);
 }
 
 // ------------------------------------------------------------------ groups & colours

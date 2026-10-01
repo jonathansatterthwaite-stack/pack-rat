@@ -1,8 +1,6 @@
 // State, persistence and game-rule calculations.
 
 const STORAGE_KEY = "rpg-inventory-v1"; // the old single bundle: read once to make the first campaign (see DATA_KEY)
-const COIN_VALUES = { pp: 1000, gp: 100, ep: 50, sp: 10, cp: 1 };
-const COIN_ORDER = ["pp", "gp", "ep", "sp", "cp"];
 
 // Older phone browsers (iOS < 15.4, Chrome < 98) lack structuredClone and
 // (iOS < 14) replaceChildren; all app data is plain JSON, so this is enough.
@@ -158,7 +156,7 @@ async function moveBrowserDataToPc() {
 
 function newCharacter(name) {
   return {
-    id: uid(), name: name || "New Character", str: 10, dex: 10, carryMultiplier: 1,
+    id: uid(), name: name || "New Character", stats: {}, // the system's starting stats until set (statsOf)
     coins: { pp: 0, gp: 0, ep: 0, sp: 0, cp: 0 }, items: [], notes: "",
   };
 }
@@ -174,7 +172,7 @@ function newCharacter(name) {
 
 const DATA_KEY = "packrat-data-v2";
 
-function newCampaign(name = "My campaign", packages = [], system = DEFAULT_SYSTEM) {
+function newCampaign(name = "My campaign", packages = [], system = defaultSystemId()) {
   const c = newCharacter("Adventurer");
   return { id: "cmp" + uid(), name, notes: "", created: Date.now(), system, packages, home: packages[0] || null,
     settings: { encumbrance: "standard", coinWeight: true }, characters: [c], activeId: c.id,
@@ -188,8 +186,9 @@ function newPackage(name = "My homebrew") {
 function defaultData() {
   const pkg = newPackage();
   pkg.templates = clone(DND5E_SYSTEM.starterTemplates);
-  const camp = newCampaign("My campaign", [pkg.id]);
-  return { version: 2, activeCampaign: camp.id, campaigns: [camp], packages: [pkg], systems: [], iconLibrary: [] };
+  const camp = newCampaign("My campaign", [pkg.id], DND5E_SYSTEM.id); // the system list is made below
+  return { version: 2, activeCampaign: camp.id, campaigns: [camp], packages: [pkg], iconLibrary: [],
+    systems: DEFAULT_BUNDLED.map(x => ({ id: x.id, bundled: true })), systemsListed: true, triggersSeen: true };
 }
 
 // The old single bundle -> one campaign and one package (nothing dropped).
@@ -213,7 +212,12 @@ function normalizeData(d) {
   if (!Array.isArray(d.packages)) d.packages = [];
   if (!Array.isArray(d.iconLibrary)) d.iconLibrary = [];
   // Imported systems (the built-in ones aren't saved).
-  d.systems = (Array.isArray(d.systems) ? d.systems : []).filter(x => x && x.id && !BUILTIN_SYSTEMS.some(b => b.id === x.id));
+  // The systems you have. Saves from before systems could be removed have the bundled ones too.
+  d.systems = (Array.isArray(d.systems) ? d.systems : []).filter(x => x && x.id && (x.bundled ? bundledSystem(x.id) : !bundledSystem(x.id)));
+  if (!d.systemsListed) {
+    d.systems.unshift(...DEFAULT_BUNDLED.filter(b => !d.systems.some(x => x.id === b.id)).map(b => ({ id: b.id, bundled: true })));
+    d.systemsListed = true;
+  }
   for (const p of d.packages) {
     p.customItems = Array.isArray(p.customItems) ? p.customItems : [];
     p.templates = (Array.isArray(p.templates) ? p.templates : []).map(t => standardiseTemplate(t));
@@ -223,7 +227,7 @@ function normalizeData(d) {
   for (const c of d.campaigns) {
     c.id = c.id || "cmp" + uid();
     c.name = c.name || "Campaign";
-    if (!c.system) c.system = DEFAULT_SYSTEM;
+    if (c.system === undefined) c.system = LEGACY_SYSTEM; // from before game systems; null: none
     c.settings = { encumbrance: "standard", coinWeight: true, ...(c.settings || {}) };
     for (const k of ["characters", "shops", "gmControls"]) if (!Array.isArray(c[k])) c[k] = [];
     if (!c.characters.length) c.characters.push(newCharacter("Adventurer"));
@@ -233,6 +237,11 @@ function normalizeData(d) {
     if (!c.packages.includes(c.home)) c.home = c.packages[0] || null;
   }
   if (!d.campaigns.some(c => c.id === d.activeCampaign)) d.activeCampaign = d.campaigns[0].id;
+  // Items from before triggers count as seen: nothing fires for them (see js/triggers.js).
+  if (!d.triggersSeen) {
+    for (const c of d.campaigns) markEntriesSeen(c.characters);
+    d.triggersSeen = true;
+  }
   return d;
 }
 
@@ -412,14 +421,15 @@ function featureDefault(item, key, srcId) {
     case "deck": { const list = field("deckCards"); return Array.isArray(list) && list.length > 0; }
     case "writable": return !item.imageOnly && (byTpl || (!item.card && WRITABLE_NAME.test(item.name || "")));
     case "picture": return !!item.imageOnly;
-    case "attunement": return !!item.attunement;
     case "charges": return item.maxCharges > 0;
     case "worn": return !!item.acBonus;
     case "bundle": return item.bundle > 1 || byTpl;
     case "equippable": return byTpl || !!item.acBonus;
     case "stacks": return templateFeatureDefaults(itemTemplate(item)).stacks !== false;
   }
-  return byTpl;
+  // A yes/no field of the item (5e's attunement).
+  const flag = featureByKey(key)?.flag;
+  return flag ? !!item[flag] : byTpl;
 }
 
 function hasFeature(item, key, srcId) {
@@ -457,7 +467,7 @@ function addToInventory(char, item, qty = null, parent = null, strapped = false)
     return existing;
   }
   const entry = { uid: uid(), srcId: id, item: clone(snapshot), qty, equipped: false,
-    attuned: false, parent, strapped, notes: "" };
+    states: {}, parent, strapped, notes: "" };
   if (item.maxCharges) entry.charges = item.maxCharges;
   char.items.push(entry);
   if (deckList(item, id)) fillDeck(char, entry);
@@ -497,7 +507,7 @@ function cardItem(name, noun = "card", image = null) {
 function fillDeck(char, deck) {
   const noun = pieceNoun(deck.item);
   for (const { name, image } of (deckList(deck.item, deck.srcId) || []).map(pieceSpec).filter(p => p.name)) {
-    char.items.push({ uid: uid(), srcId: null, item: cardItem(name, noun, image), qty: 1, equipped: false, attuned: false,
+    char.items.push({ uid: uid(), srcId: null, item: cardItem(name, noun, image), qty: 1, equipped: false, states: {},
       parent: deck.uid, strapped: false, notes: "", fromDeck: deck.uid });
   }
   deck.deckFilled = true;
@@ -588,7 +598,7 @@ function unpackPack(char, rows, { into = null, parent = null, strapped = false }
 }
 
 // What an inventory copy is called: the player's own name for it, else the item's.
-const entryName = e => (e.customName || "").trim() || e.item.name;
+const entryName = e => (e.customName || "").trim() || currentItem(e).name;
 
 // Inventory copies in order of what they're called.
 const byName = entries => [...entries].sort((a, b) => entryName(a).localeCompare(entryName(b)));
@@ -605,7 +615,7 @@ function removeEntry(char, entryUid) {
 // Items that hold gear (containers, not waterskins or vials; or anything given the "holds" feature),
 // or that still have something in them.
 function holdsItems(char, e) {
-  return hasFeature(e.item, "holds", e.srcId) || char.items.some(x => x.parent === e.uid && !x.item.card);
+  return hasFeature(currentItem(e), "holds", e.srcId) || char.items.some(x => x.parent === e.uid && !x.item.card);
 }
 
 // Containers that take only certain things, counted rather than weighed: a map case holds ten
@@ -628,7 +638,7 @@ function containerField(e, key) {
 }
 
 function holderSpec(e) {
-  if (!hasFeature(e.item, "holds", e.srcId)) return null;
+  if (!hasFeature(currentItem(e), "holds", e.srcId)) return null;
   const key = containerField(e, "holds");
   const spec = HOLDERS[key];
   return spec ? { ...spec, key, limit: e.item.holdLimit || spec.limit } : null;
@@ -641,7 +651,7 @@ function holderUsed(char, e, spec = holderSpec(e)) {
 
 // Liquid capacity in pints (0 = not a liquid container).
 function liquidCap(e) {
-  return hasFeature(e.item, "liquid", e.srcId) ? +containerField(e, "liquidPints") || 0 : 0;
+  return hasFeature(currentItem(e), "liquid", e.srcId) ? +containerField(e, "liquidPints") || 0 : 0;
 }
 
 function fmtVolume(pints) {
@@ -667,7 +677,7 @@ function fillLevel(char, e) {
     const used = holderUsed(char, e, spec);
     return { ratio: used / spec.limit, over: used > spec.limit, kind: "gear", used, limit: spec.limit, unit: spec.unit };
   }
-  if (e.item.capacityLb > 0 && hasFeature(e.item, "holds", e.srcId)) {
+  if (e.item.capacityLb > 0 && hasFeature(currentItem(e), "holds", e.srcId)) {
     const w = contentsWeight(char, e);
     return { ratio: w / e.item.capacityLb, over: w > e.item.capacityLb, kind: "gear" };
   }
@@ -679,7 +689,7 @@ function fillLevel(char, e) {
 // Backpacks (and custom containers with the option) can have gear strapped to the outside.
 // Older inventory copies of the backpack predate the `straps` flag, hence the srcId check.
 function canStrap(e) {
-  return hasFeature(e.item, "holds", e.srcId) && !!(e.item.straps || e.srcId === "container-backpack");
+  return hasFeature(currentItem(e), "holds", e.srcId) && !!(e.item.straps || e.srcId === "container-backpack");
 }
 
 function childrenOf(char, parentUid) { return char.items.filter(e => e.parent === parentUid); }
@@ -694,12 +704,15 @@ function isDescendant(char, maybeChild, ancestorUid) {
 }
 
 // Weight of the entry itself (qty-adjusted; ammunition cost/weight is per bundle).
+// Weight and value as the item is now (a curse can make it heavier, identifying it worth more).
 function entryOwnWeight(e) {
-  return (e.item.weight || 0) * e.qty / (e.item.bundle || 1);
+  const it = currentItem(e);
+  return (it.weight || 0) * e.qty / (it.bundle || 1);
 }
 
 function entryValue(e) {
-  return (e.item.cost || 0) * e.qty / (e.item.bundle || 1);
+  const it = currentItem(e);
+  return (it.cost || 0) * e.qty / (it.bundle || 1);
 }
 
 // Worth including anything inside or strapped to it (containers).
@@ -726,164 +739,67 @@ function strappedWeight(char, e) {
   return childrenOf(char, e.uid).filter(c => c.strapped).reduce((s, c) => s + entryTotalWeight(char, c), 0);
 }
 
-function coinCount(coins) { return COIN_ORDER.reduce((s, k) => s + (coins[k] || 0), 0); }
-function coinTotalCp(coins) { return COIN_ORDER.reduce((s, k) => s + (coins[k] || 0) * COIN_VALUES[k], 0); }
+// Coins counted, and their worth in the smallest coin (the names say cp: D&D 5e's copper).
+function coinCount(coins) { return coinOrder().reduce((s, k) => s + (coins[k] || 0), 0); }
+function coinTotalCp(coins) { return currency().coins.reduce((s, c) => s + (coins[c.key] || 0) * c.value, 0); }
 
 function carriedWeight(char, settings) {
   let w = childrenOf(char, null).reduce((s, e) => s + entryTotalWeight(char, e), 0);
-  if (settings.coinWeight) w += coinCount(char.coins) / 50;
+  const per = currency().perWeight;
+  if (settings.coinWeight && per) w += coinCount(char.coins) / per;
   return w;
 }
 
-function encumbrance(char, settings) {
-  const str = char.str || 10, mult = char.carryMultiplier || 1;
-  const weight = carriedWeight(char, settings);
-  const capacity = str * 15 * mult;
-  let status = "ok", label = "Unencumbered";
-  if (settings.encumbrance === "variant") {
-    if (weight > str * 10 * mult) { status = "heavy"; label = "Heavily encumbered (-20 ft, disadv.)"; }
-    else if (weight > str * 5 * mult) { status = "warn"; label = "Encumbered (-10 ft speed)"; }
-  }
-  if (weight > capacity) { status = "over"; label = "Over carrying capacity"; }
-  return { weight, capacity, status, label, off: settings.encumbrance === "off" };
-}
-
-const mod = score => Math.floor(((score || 10) - 10) / 2);
-
-function armorClass(char) {
-  const dex = mod(char.dex);
-  const worn = char.items.filter(e => e.equipped);
-  const isArmor = e => hasFeature(e.item, "armor", e.srcId);
-  const armor = worn.find(e => isArmor(e) && e.item.category !== "Shield");
-  const shield = worn.find(e => isArmor(e) && e.item.category === "Shield");
-  let ac = 10 + dex, parts = [`10 + Dex ${fmtMod(dex)}`];
-  if (armor) {
-    const d = armor.item.dex === "full" ? dex : armor.item.dex === "max2" ? Math.min(dex, 2) : 0;
-    ac = (armor.item.ac || 10) + d + (armor.item.bonus || 0);
-    parts = [`${armor.item.name} ${(armor.item.ac || 10) + (armor.item.bonus || 0)}`];
-    if (armor.item.dex !== "none") parts.push(`Dex ${fmtMod(d)}`);
-  }
-  if (shield) { ac += (shield.item.ac || 2) + (shield.item.bonus || 0); parts.push(`Shield +${(shield.item.ac || 2) + (shield.item.bonus || 0)}`); }
-  for (const e of worn) {
-    if (e.item.acBonus && hasFeature(e.item, "worn", e.srcId) && (!e.item.attunement || e.attuned)) {
-      ac += e.item.acBonus;
-      parts.push(`${entryName(e)} ${fmtMod(e.item.acBonus)}`);
-    }
-  }
-  const strPenalty = !!(armor && armor.item.strength && (char.str || 10) < armor.item.strength);
-  const stealth = worn.some(e => e.item.stealthDisadvantage);
-  return { ac, breakdown: parts.join(" + ").replace(/\+ -/g, "- "), strPenalty, stealth };
-}
-
-// ------------------------------------------------------------------ attacks
-
-const hasProp = (item, name) => (item.properties || []).some(p => p.toLowerCase().startsWith(name));
-const propArg = (item, name) => (item.properties || []).find(p => p.toLowerCase().startsWith(name))?.match(/\(([^)]*)\)/)?.[1];
-
-// Characters are proficient with simple and martial weapons unless told otherwise.
-function weaponProficient(char, item) {
-  return (char.weaponProfs || ["Simple", "Martial"]).includes(weaponCategory(item) || "Simple");
-}
-
-// Simple or martial: a weapon template's category (an item of another template that's also a
-// weapon, like spiked armor, has its own kind of category).
-const weaponCategory = item => mainFeatures(itemTemplate(item)).includes("weapon") ? item.category : null;
-
-// "1d8" + 3 -> "1d8 + 3"; "1" + 3 -> "4"
-function damageText(dice, bonus) {
-  if (!dice) return "—";
-  if (/^\d+$/.test(dice)) return String(Math.max(0, +dice + bonus));
-  return bonus ? `${dice} ${bonus > 0 ? "+" : "−"} ${Math.abs(bonus)}` : dice;
-}
-
-// Everything needed to attack with a weapon: to-hit, damage, reach or range.
-function weaponAttack(char, item) {
-  const str = mod(char.str), dex = mod(char.dex);
-  // Finesse uses the better of Str and Dex; ranged weapons use Dex, melee (and thrown melee) Str.
-  const ability = hasProp(item, "finesse") ? (dex > str ? "dex" : "str") : item.kind === "Ranged" ? "dex" : "str";
-  const abil = ability === "dex" ? dex : str;
-  const magic = item.bonus || 0;
-  const prof = weaponProficient(char, item);
-  const toHit = abil + (prof ? (char.prof ?? 2) : 0) + magic;
-  const dmgBonus = abil + magic;
-  const type = item.damageType || "";
-  const range = propArg(item, "range") || propArg(item, "ammunition")?.replace(/^range\s*/i, "");
-  const thrown = propArg(item, "thrown");
-  const reach = item.kind === "Ranged" ? null : hasProp(item, "reach") ? 10 : 5;
-  const versatile = propArg(item, "versatile");
-  return {
-    ability, prof, toHit,
-    damage: damageText(item.damage, dmgBonus), type,
-    twoHanded: versatile && damageText(versatile, dmgBonus),
-    // Off-hand (two-weapon fighting): no ability bonus to damage unless it's negative.
-    offHand: hasProp(item, "light") && damageText(item.damage, Math.min(0, abil) + magic),
-    reach: reach && `${reach} ft`,
-    range: (range || thrown) && `${(range || thrown).trim()} ft`,
-    thrown: !!thrown,
-    ammo: hasProp(item, "ammunition"),
-    loading: hasProp(item, "loading"),
-  };
-}
-
-// Which ammunition a weapon fires (by name); unknown launchers accept any ammunition.
-const AMMO_FOR = [[/crossbow/, /bolt/], [/blowgun/, /needle/], [/sling/, /sling|bullet/], [/bow/, /arrow/],
-  [/pistol|musket|rifle|gun|revolver/, /bullet|cartridge|shot/]];
-
-function ammoEntries(char, item) {
-  const rule = AMMO_FOR.find(([w]) => w.test(item.name.toLowerCase()));
-  return char.items.filter(e => hasFeature(e.item, "ammunition", e.srcId) && (!rule || rule[1].test(e.item.name.toLowerCase())));
-}
-
 // ------------------------------------------------------------------ coins
+// By the system's currency (D&D 5e: pp gp ep sp cp; shops pay in gp sp cp). The same as payout,
+// pay_coins and receive_coins in server.py and PartyServer.java.
 
-const PAYOUT_COINS = ["gp", "sp", "cp"];
-
-// Greedy split of copper into the allowed denominations.
+// Greedy split of an amount into the allowed coins.
 function coinsFor(amount, allowed) {
   const out = {};
   for (const k of allowed) {
-    out[k] = Math.floor(amount / COIN_VALUES[k]);
-    amount -= out[k] * COIN_VALUES[k];
+    out[k] = Math.floor(amount / coinValue(k));
+    amount -= out[k] * coinValue(k);
   }
   return out;
 }
 
-// Coins handed over by a shop (same as payout() in server.py / PartyServer.java):
-// mostly the largest coins up to `top`, but `margin`% of it in the next smaller
-// coin, the way a shopkeeper gives some small change.
-function payout(amount, margin = 0, top = "gp") {
-  const allowed = PAYOUT_COINS.slice(PAYOUT_COINS.indexOf(top));
+// Coins handed over by a shop: mostly the largest change coins up to `top`, but `margin`% of it
+// in the next smaller coin, the way a shopkeeper gives some small change.
+function payout(amount, margin = 0, top = changeCoins()[0]) {
+  const change = changeCoins();
+  const allowed = change.slice(change.indexOf(top));
   const small = Math.floor(amount * margin / 100);
   const main = coinsFor(amount - small, allowed);
   const largest = allowed.find(k => main[k] > 0) || allowed[allowed.length - 1];
-  const smaller = PAYOUT_COINS.slice(PAYOUT_COINS.indexOf(largest) + 1);
+  const smaller = change.slice(change.indexOf(largest) + 1);
   const extra = coinsFor(small, smaller.length ? smaller : [largest]);
-  return Object.fromEntries(PAYOUT_COINS.map(k => [k, (main[k] || 0) + (extra[k] || 0)]));
+  return Object.fromEntries(change.map(k => [k, (main[k] || 0) + (extra[k] || 0)]));
 }
 
-// Pay `cost` cp from a purse, spending big coins first without overpaying,
-// then breaking the smallest coin that covers the remainder. Returns the
-// new purse, or null if the character can't afford it.
+// Pay `cost` from a purse, spending big coins first without overpaying, then breaking the
+// smallest coin that covers the remainder. Returns the new purse, or null if it can't.
 function payCoins(coins, cost, margin = 0) {
   if (coinTotalCp(coins) < cost) return null;
+  const order = coinOrder(), change = changeCoins();
   const c = { ...coins };
   let remaining = cost;
-  for (const d of COIN_ORDER) {
-    const n = Math.min(c[d] || 0, Math.floor(remaining / COIN_VALUES[d]));
+  for (const d of order) {
+    const n = Math.min(c[d] || 0, Math.floor(remaining / coinValue(d)));
     c[d] = (c[d] || 0) - n;
-    remaining -= n * COIN_VALUES[d];
+    remaining -= n * coinValue(d);
   }
   if (remaining > 0) {
-    const d = [...COIN_ORDER].reverse().find(k => c[k] > 0 && COIN_VALUES[k] > remaining);
+    const d = [...order].reverse().find(k => c[k] > 0 && coinValue(k) > remaining);
     c[d] -= 1;
     // Change comes in coins smaller than the one broken (with a small-change margin at shops).
-    const top = PAYOUT_COINS.find(k => COIN_VALUES[k] < COIN_VALUES[d]);
-    for (const [k, n] of Object.entries(payout(COIN_VALUES[d] - remaining, margin, top))) c[k] = (c[k] || 0) + n;
+    const top = change.find(k => coinValue(k) < coinValue(d));
+    for (const [k, n] of Object.entries(payout(coinValue(d) - remaining, margin, top))) c[k] = (c[k] || 0) + n;
   }
   return c;
 }
 
-// Add cp to a purse as gp/sp/cp (see payout for the margin).
+// Add an amount to a purse in change coins (see payout for the margin).
 function receiveCoins(coins, amount, margin = 0) {
   const c = { ...coins };
   for (const [k, n] of Object.entries(payout(amount, margin))) c[k] = (c[k] || 0) + n;
@@ -903,20 +819,45 @@ function coinSummary(coins) {
   return cp ? `${fmtCost(cp)} in coin` : "no coin";
 }
 
+// An amount in the coin prices are shown in, else the largest smaller change coin it's a whole
+// number of (D&D 5e: "15 gp", "1.5 gp", "5 sp", "7 cp"). Money that isn't decimal (12 pence a
+// shilling) shows as coins instead of fractions: "4 sh 2 d".
 function fmtCost(cp) {
   if (!cp) return "—";
-  if (cp >= 100 && cp % 100 === 0) return (cp / 100).toLocaleString() + " gp";
-  if (cp >= 100) return (cp / 100).toLocaleString(undefined, { maximumFractionDigits: 2 }) + " gp";
-  if (cp >= 10 && cp % 10 === 0) return cp / 10 + " sp";
-  return +cp.toFixed(2) + " cp";
+  const cur = currency(), show = showCoin(cur);
+  const below = changeCoins(cur).map(k => cur.coins.find(c => c.key === k)).filter(c => c && c.value < show.value);
+  const decimal = below.every(c => Number.isInteger(Math.log10(show.value / c.value)));
+  if (!decimal && Number.isInteger(cp) && cp % show.value) {
+    let left = cp;
+    const parts = [show, ...below].map(c => { const n = Math.floor(left / c.value); left -= n * c.value; return n ? `${n.toLocaleString()} ${c.key}` : ""; });
+    return parts.filter(Boolean).join(" ") + (left ? ` ${+left.toFixed(2)} ${below.at(-1)?.key || show.key}` : "");
+  }
+  if (cp >= show.value) return (cp / show.value).toLocaleString(undefined, { maximumFractionDigits: 2 }) + " " + show.key;
+  const exact = below.find(c => cp >= c.value && cp % c.value === 0);
+  if (exact) return (cp / exact.value).toLocaleString() + " " + exact.key;
+  const small = below[below.length - 1] || show;
+  return +(cp / small.value).toFixed(2) + " " + small.key;
 }
 
 // An amount of money, "0 gp" rather than a dash when there's none (purses, tills).
-const fmtMoney = cp => cp ? fmtCost(cp) : "0 gp";
+const fmtMoney = cp => cp ? fmtCost(cp) : "0 " + showCoin().key;
 
 function fmtWeight(lb) {
   if (!lb) return "—";
-  return +lb.toFixed(2) + " lb";
+  return +lb.toFixed(2) + " " + weightUnitFor(+lb.toFixed(2));
+}
+
+// Simple or martial: a weapon template's category (an item of another template that's also a
+// weapon, like spiked armor, has its own kind of category).
+const weaponCategory = item => mainFeatures(itemTemplate(item)).includes("weapon") ? item.category : null;
+
+function genericSummary(item) {
+  if (hasFeature(item, "holds") && (item.capacity || item.capacityLb)) return item.capacity || `${item.capacityLb} ${weightUnitFor(item.capacityLb)} capacity`;
+  if (hasFeature(item, "pack")) return plural((item.contents || []).length, "item");
+  const main = mainFeatures(itemTemplate(item)).flatMap(k => featureByKey(k)?.fields || []);
+  const vals = main.map(f => [f, fieldDisplay(f, item[f.key])]).filter(([, v]) => v != null && v !== "" && v !== "—").slice(0, 3)
+    .map(([f, v]) => `${fieldLabel(f)} ${v}`);
+  return [item.category, ...vals].filter(Boolean).join(" · ");
 }
 
 // "Martial melee", "Simple ranged", ...
@@ -932,7 +873,10 @@ function armorSummary(item) {
     (item.strength ? ` · Str ${item.strength}` : "") + (item.stealthDisadvantage ? " · Stealth disadv." : "");
 }
 
+// The line under an item's name. D&D 5e's are written for it; any other system's say its category
+// and what its template's main features hold ("Weapon · d8 · 1").
 function itemSummary(item) {
+  if (activeSystem() !== DND5E_SYSTEM) return genericSummary(item);
   // What it mainly is: its template's main feature (spiked armor is armor), else weapon or armor if it's either.
   const main = mainFeatures(itemTemplate(item)).find(k => k === "weapon" || k === "armor");
   const kind = main || (hasFeature(item, "weapon") ? "weapon" : hasFeature(item, "armor") ? "armor" : itemRootId(item));
@@ -944,7 +888,7 @@ function itemSummary(item) {
     }
     case "armor": return armorSummary(item);
     case "ammunition": return `Bundle of ${item.bundle || 1}`;
-    case "container": return item.capacity || (item.capacityLb ? `${item.capacityLb} lb capacity` : "Container");
+    case "container": return item.capacity || (item.capacityLb ? `${item.capacityLb} ${weightUnit()} capacity` : "Container");
     case "tool": return item.category || "Tool";
     case "poison": return item.poisonType || "Poison";
     case "document": {

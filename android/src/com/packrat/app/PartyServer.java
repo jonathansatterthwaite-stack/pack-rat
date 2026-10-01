@@ -55,7 +55,66 @@ public class PartyServer {
     static final java.util.regex.Pattern DATA_URL = java.util.regex.Pattern.compile("^data:(image/[a-z]+);base64,(.+)$", java.util.regex.Pattern.DOTALL);
     static final int KEEP_RESOLVED_TRADES = 50;
     static final Set<String> NON_STACKING = new HashSet<>(Arrays.asList("weapon", "armor", "container", "magic", "pack"));
-    static final String[] COINS = {"pp", "gp", "ep", "sp", "cp"};
+    /** A game system's money (as server.py's clean_currency): coins largest first, each worth `values` of
+     *  the smallest; `change` (indexes into keys): what shops pay out and give change in. */
+    static final class Currency {
+        final String[] keys; final long[] values; final int[] change;
+        Currency(String[] keys, long[] values, int[] change) { this.keys = keys; this.values = values; this.change = change; }
+        int index(String key) { for (int i = 0; i < keys.length; i++) if (keys[i].equals(key)) return i; return -1; }
+    }
+    /** Parties from before game systems, and GMs on older versions: D&D 5e's coins. */
+    static final Currency DEFAULT_CURRENCY = new Currency(new String[]{"pp", "gp", "ep", "sp", "cp"}, new long[]{1000, 100, 50, 10, 1}, new int[]{1, 3, 4});
+
+    /** A currency sent by a GM's device ({coins: [[key, value]…], change: [keys]}), checked; null if it isn't one. */
+    static Currency cleanCurrency(JSONObject raw) throws JSONException {
+        if (raw == null || raw.optJSONArray("coins") == null) return null;
+        JSONArray in = raw.getJSONArray("coins");
+        List<String> keys = new ArrayList<>();
+        List<Long> values = new ArrayList<>();
+        for (int i = 0; i < in.length() && i < 12; i++) {
+            JSONArray c = in.optJSONArray(i);
+            if (c == null || c.length() != 2 || !(c.opt(0) instanceof String) || !(c.opt(1) instanceof Integer || c.opt(1) instanceof Long)) continue;
+            String k = c.getString(0);
+            long v = c.getLong(1);
+            if (!k.matches("^[a-z][a-z0-9]{0,7}$") || v < 1 || v > 1000000000L || keys.contains(k)) continue;
+            int at = 0;
+            while (at < values.size() && values.get(at) > v) at++; // largest first
+            keys.add(at, k);
+            values.add(at, v);
+        }
+        if (!values.contains(1L)) return null;
+        JSONArray asked = raw.optJSONArray("change");
+        List<Integer> change = new ArrayList<>();
+        for (int i = 0; i < keys.size(); i++) {
+            boolean want = asked == null;
+            for (int j = 0; asked != null && j < asked.length(); j++) if (keys.get(i).equals(asked.optString(j))) want = true;
+            if (want) change.add(i);
+        }
+        if (!change.contains(keys.size() - 1)) change.add(keys.size() - 1);
+        long[] vals = new long[values.size()];
+        for (int i = 0; i < vals.length; i++) vals[i] = values.get(i);
+        int[] ch = new int[change.size()];
+        for (int i = 0; i < ch.length; i++) ch[i] = change.get(i);
+        return new Currency(keys.toArray(new String[0]), vals, ch);
+    }
+
+    /** The money of the campaign being played. */
+    Currency currency() {
+        try {
+            Currency c = campaign == null ? null : cleanCurrency(campaign.optJSONObject("currency"));
+            return c == null ? DEFAULT_CURRENCY : c;
+        } catch (JSONException e) {
+            return DEFAULT_CURRENCY;
+        }
+    }
+
+    /** The currency as it's kept with the campaign. */
+    static JSONObject currencyJson(Currency c) throws JSONException {
+        JSONArray coins = new JSONArray(), change = new JSONArray();
+        for (int i = 0; i < c.keys.length; i++) coins.put(new JSONArray().put(c.keys[i]).put(c.values[i]));
+        for (int i : c.change) change.put(c.keys[i]);
+        return new JSONObject().put("coins", coins).put("change", change);
+    }
     static final String[] STATIC_PREFIXES = {"/index.html", "/manifest.webmanifest", "/sw.js", "/css/", "/js/", "/icons/"};
     static final String[] NO_TOKEN = {"/api/info", "/api/presence", "/api/host", "/api/quit"};
 
@@ -532,7 +591,7 @@ public class PartyServer {
         }
         JSONObject coins = new JSONObject();
         JSONObject inCoins = side.optJSONObject("coins");
-        for (String k : COINS) {
+        for (String k : currency().keys) {
             int v = inCoins == null ? 0 : intOf(inCoins.opt(k));
             if (v < 0) throw new TradeError("Coin amounts can't be negative.");
             if (v > 0) coins.put(k, v);
@@ -590,65 +649,67 @@ public class PartyServer {
 
     // ------------------------------------------------------------------ shops (same rules as server.py)
 
-    static final int[] COIN_VALUE = {1000, 100, 50, 10, 1}; // matches COINS order: pp gp ep sp cp
-
-    static final int[] PAYOUT = {1, 3, 4}; // gp, sp, cp (indexes into COINS)
-
-    /** payout() in server.py/store.js: mostly the largest coins up to `top`, but `margin` % in the next smaller coin. */
-    static long[] payout(long amount, int margin, int top) {
-        long[] out = new long[COINS.length];
+    /** payout() in server.py/store.js: mostly the largest change coins up to `top`, but `margin` % in the next smaller coin. */
+    static long[] payout(Currency cur, long amount, int margin, int top) {
+        long[] out = new long[cur.keys.length];
+        int[] change = cur.change;
         int start = 0;
-        while (PAYOUT[start] != top) start++;
+        while (change[start] != top) start++;
         long small = amount * margin / 100;
         long main = amount - small;
-        int largest = PAYOUT[PAYOUT.length - 1];
+        int largest = change[change.length - 1];
         boolean found = false;
-        for (int j = start; j < PAYOUT.length; j++) {
-            int i = PAYOUT[j];
-            out[i] = main / COIN_VALUE[i];
-            main -= out[i] * COIN_VALUE[i];
+        for (int j = start; j < change.length; j++) {
+            int i = change[j];
+            out[i] = main / cur.values[i];
+            main -= out[i] * cur.values[i];
             if (out[i] > 0 && !found) { largest = i; found = true; }
         }
         int from = 0;
-        while (PAYOUT[from] != largest) from++;
-        from = Math.min(from + 1, PAYOUT.length - 1); // next smaller coin (cp stays cp)
-        for (int j = from; j < PAYOUT.length; j++) {
-            int i = PAYOUT[j];
-            long n = small / COIN_VALUE[i];
+        while (change[from] != largest) from++;
+        from = Math.min(from + 1, change.length - 1); // the next smaller coin (the smallest stays itself)
+        for (int j = from; j < change.length; j++) {
+            int i = change[j];
+            long n = small / cur.values[i];
             out[i] += n;
-            small -= n * COIN_VALUE[i];
+            small -= n * cur.values[i];
         }
         return out;
     }
 
+    static long[] payout(long amount, int margin, int top) { return payout(DEFAULT_CURRENCY, amount, margin, top); }
+
     /** payCoins() from store.js: big coins first without overpaying, then break one coin; change comes as payout(margin). */
-    static JSONObject payCoins(JSONObject coins, int cost, int margin) throws JSONException {
-        int[] c = new int[COINS.length];
+    static JSONObject payCoins(Currency cur, JSONObject coins, long cost, int margin) throws JSONException {
+        int n = cur.keys.length;
+        long[] c = new long[n];
         long total = 0;
-        for (int i = 0; i < COINS.length; i++) {
-            c[i] = coins == null ? 0 : coins.optInt(COINS[i]);
-            total += (long) c[i] * COIN_VALUE[i];
+        for (int i = 0; i < n; i++) {
+            c[i] = coins == null ? 0 : coins.optLong(cur.keys[i]);
+            total += c[i] * cur.values[i];
         }
         if (total < cost) return null;
-        int remaining = cost;
-        for (int i = 0; i < COINS.length; i++) {
-            int n = Math.min(c[i], remaining / COIN_VALUE[i]);
-            c[i] -= n;
-            remaining -= n * COIN_VALUE[i];
+        long remaining = cost;
+        for (int i = 0; i < n; i++) {
+            long k = Math.min(c[i], remaining / cur.values[i]);
+            c[i] -= k;
+            remaining -= k * cur.values[i];
         }
         if (remaining > 0) {
             int d = -1;
-            for (int i = COINS.length - 1; i >= 0; i--) if (c[i] > 0 && COIN_VALUE[i] > remaining) { d = i; break; }
+            for (int i = n - 1; i >= 0; i--) if (c[i] > 0 && cur.values[i] > remaining) { d = i; break; }
             c[d] -= 1;
-            int top = 4;
-            for (int i : PAYOUT) if (COIN_VALUE[i] < COIN_VALUE[d]) { top = i; break; }
-            long[] change = payout(COIN_VALUE[d] - remaining, margin, top);
-            for (int i = 0; i < COINS.length; i++) c[i] += (int) change[i];
+            int top = cur.change[cur.change.length - 1];
+            for (int i : cur.change) if (cur.values[i] < cur.values[d]) { top = i; break; }
+            long[] change = payout(cur, cur.values[d] - remaining, margin, top);
+            for (int i = 0; i < n; i++) c[i] += change[i];
         }
         JSONObject out = new JSONObject();
-        for (int i = 0; i < COINS.length; i++) out.put(COINS[i], c[i]);
+        for (int i = 0; i < n; i++) out.put(cur.keys[i], c[i]);
         return out;
     }
+
+    static JSONObject payCoins(JSONObject coins, int cost, int margin) throws JSONException { return payCoins(DEFAULT_CURRENCY, coins, cost, margin); }
 
     static int listingPrice(JSONObject shop, JSONObject listing) {
         double base = listing.isNull("price") ? listing.optJSONObject("item").optDouble("cost", 0) : listing.optDouble("price", 0);
@@ -731,10 +792,47 @@ public class PartyServer {
 
     private static String cut(String s, int n) { return s.length() > n ? s.substring(0, n) : s; }
 
-    /** sell_offer() in server.py: this item's rule, then its type's %, then the shop's default %. */
-    static long sellOffer(JSONObject shop, JSONObject entry, int qty) throws JSONException {
-        if (!shop.optBoolean("buys")) return 0;
+    /** current_item() in server.py: an inventory item as it is now, with the layers of the states that are
+     *  on (the entry's own, or the GM's override gm_state_<key>), in the system's order. */
+    JSONObject currentItem(JSONObject entry, String charId) throws JSONException {
         JSONObject item = entry.optJSONObject("item");
+        JSONObject layers = item == null ? null : item.optJSONObject("layers");
+        if (layers == null || layers.length() == 0) return item;
+        JSONObject own = new JSONObject();
+        if (entry.optBoolean("attuned")) own.put("attuned", true);
+        for (String src : new String[]{"toggles", "states"}) {
+            JSONObject o = entry.optJSONObject(src);
+            if (o == null) continue;
+            Iterator<String> it = o.keys();
+            while (it.hasNext()) { String k = it.next(); own.put(k, o.optBoolean(k)); }
+        }
+        JSONObject items = gm.optJSONObject("items");
+        JSONObject over = charId == null || items == null ? null : items.optJSONObject(charId + "/" + entry.optString("uid"));
+        List<String> order = new ArrayList<>();
+        JSONArray st = campaign == null ? null : campaign.optJSONArray("states");
+        if (st != null) for (int i = 0; i < st.length(); i++) order.add(st.optString(i));
+        else { Iterator<String> it = layers.keys(); while (it.hasNext()) order.add(it.next()); }
+        JSONObject out = new JSONObject(item.toString());
+        for (String k : order) {
+            Object v = over == null ? null : over.opt("gm_state_" + k);
+            boolean on = v instanceof Number ? ((Number) v).doubleValue() != 0 : own.optBoolean(k);
+            JSONObject layer = layers.optJSONObject(k);
+            if (!on || layer == null) continue;
+            Iterator<String> it = layer.keys();
+            while (it.hasNext()) {
+                String f = it.next();
+                Object x = layer.opt(f);
+                if (f.equals("locks") || f.equals("features") || x == null || x == JSONObject.NULL || "".equals(x)) continue;
+                out.put(f, x);
+            }
+        }
+        return out;
+    }
+
+    /** sell_offer() in server.py: this item's rule, then its type's %, then the shop's default % (as it is now). */
+    long sellOffer(JSONObject shop, JSONObject entry, int qty, String charId) throws JSONException {
+        if (!shop.optBoolean("buys")) return 0;
+        JSONObject item = currentItem(entry, charId);
         if (item == null) return 0;
         long bundle = Math.max(1, item.optInt("bundle", 1));
         JSONObject rule = null;
@@ -753,13 +851,15 @@ public class PartyServer {
         return (long) item.optDouble("cost", 0) * qty * pct / (bundle * 100);
     }
 
-    /** receiveCoins() in store.js: add copper as gp/sp/cp (see payout). */
-    static JSONObject receiveCoins(JSONObject coins, long amount, int margin) throws JSONException {
+    /** receiveCoins() in store.js: add an amount in change coins (see payout). */
+    static JSONObject receiveCoins(Currency cur, JSONObject coins, long amount, int margin) throws JSONException {
         JSONObject c = new JSONObject();
-        long[] add = payout(amount, margin, 1);
-        for (int i = 0; i < COINS.length; i++) c.put(COINS[i], (coins == null ? 0 : coins.optLong(COINS[i])) + add[i]);
+        long[] add = payout(cur, amount, margin, cur.change[0]);
+        for (int i = 0; i < cur.keys.length; i++) c.put(cur.keys[i], (coins == null ? 0 : coins.optLong(cur.keys[i])) + add[i]);
         return c;
     }
+
+    static JSONObject receiveCoins(JSONObject coins, long amount, int margin) throws JSONException { return receiveCoins(DEFAULT_CURRENCY, coins, amount, margin); }
 
     /** A shop as players see it: the stockroom is the host's business. */
     static JSONObject publicShop(JSONObject shop) throws JSONException {
@@ -922,7 +1022,7 @@ public class PartyServer {
                         throw new ApiError(409, "Empty the " + entry.getJSONObject("item").optString("name", "container") + " before selling it");
                     }
                 }
-                long paid = sellOffer(shop, entry, qty);
+                long paid = sellOffer(shop, entry, qty, c.optString("id", null));
                 if (paid <= 0) throw new ApiError(409, shop.optString("name") + " won't buy " + entry.getJSONObject("item").optString("name", "that"));
                 boolean limitedFunds = !shop.isNull("funds") && shop.has("funds");
                 if (limitedFunds && shop.optLong("funds") < paid) throw new ApiError(409, shop.optString("name") + " can't afford that right now");
@@ -938,7 +1038,7 @@ public class PartyServer {
                     }
                     c.put("items", keep);
                 }
-                c.put("coins", receiveCoins(c.optJSONObject("coins"), paid, shop.optInt("changeMargin", 10)));
+                c.put("coins", receiveCoins(currency(), c.optJSONObject("coins"), paid, shop.optInt("changeMargin", 10)));
                 c.put("rev", c.optLong("rev") + 1);
                 changed(true);
                 JSONObject r = new JSONObject();
@@ -964,7 +1064,7 @@ public class PartyServer {
                     JSONObject c = characters.optJSONObject(body.optString("character"));
                     if (c == null || !c.optString("owner").equals(token)) throw new ApiError(403, "You can only buy for your own character");
                     int total = listingPrice(shop, listing) * lots;
-                    JSONObject purse = payCoins(c.optJSONObject("coins"), total, shop.optInt("changeMargin", 10));
+                    JSONObject purse = payCoins(currency(), c.optJSONObject("coins"), total, shop.optInt("changeMargin", 10));
                     if (purse == null) throw new ApiError(409, c.optString("name") + " can't afford that");
                     c.put("coins", purse);
                     mergeInto(c, shopEntry(listing, lots));
@@ -991,7 +1091,7 @@ public class PartyServer {
                 String src = body.isNull("srcId") ? "" : cut(body.optString("srcId"), 80);
                 entry.put("srcId", src.isEmpty() ? JSONObject.NULL : src);
                 entry.put("item", item);
-                long paid = sellOffer(shop, entry, qty);
+                long paid = sellOffer(shop, entry, qty, null);
                 if (paid <= 0) throw new ApiError(409, shop.optString("name") + " won't buy " + item.optString("name"));
                 boolean limitedFunds = shop.has("funds") && !shop.isNull("funds");
                 if (limitedFunds && shop.optLong("funds") < paid) throw new ApiError(409, shop.optString("name") + " can't afford that right now");
@@ -1080,6 +1180,9 @@ public class PartyServer {
         e.put("strapped", false);
         e.put("equipped", false);
         e.put("attuned", false);
+        e.put("toggles", new JSONObject()); // the game system's states (attuned…) are off
+        e.put("states", new JSONObject());
+        e.put("seen", JSONObject.NULL); // new to its receiver: its "acquired" triggers fire there
     }
 
     private void transfer(JSONObject src, JSONObject dst, String uid, int qty) throws JSONException {
@@ -1099,6 +1202,9 @@ public class PartyServer {
             for (JSONObject k : kids) {
                 k.put("equipped", false);
                 k.put("attuned", false);
+                k.put("toggles", new JSONObject());
+                k.put("states", new JSONObject());
+                k.put("seen", JSONObject.NULL);
             }
             if (kids.isEmpty()) mergeInto(dst, e);
             else dst.getJSONArray("items").put(e);
@@ -1825,17 +1931,28 @@ public class PartyServer {
             seedShops.put(shop);
         }
         JSONObject seedGm = cleanGmValues(body.optJSONObject("gmValues"));
+        // The game system it plays, as the GM's device names it (null: none).
+        JSONObject sys = body.optJSONObject("system"), system = null;
+        if (sys != null && !sys.optString("id").isEmpty())
+            system = new JSONObject().put("id", cut(sys.optString("id"), 80)).put("name", cut(sys.optString("name", sys.optString("id")), 80));
         synchronized (lock) {
-            switchCampaign(cid, name, seedShops, seedGm);
+            Currency money = cleanCurrency(body.optJSONObject("currency"));
+            JSONArray rawStates = body.optJSONArray("states"), states = null;
+            if (rawStates != null) {
+                states = new JSONArray();
+                for (int i = 0; i < rawStates.length() && i < 30; i++) if (rawStates.opt(i) instanceof String) states.put(cut(rawStates.getString(i), 40));
+            }
+            switchCampaign(cid, name, system, money == null ? null : currencyJson(money), states, seedShops, seedGm);
             changed(false);
         }
         return new JSONObject().put("ok", true);
     }
 
     /** Call with `lock` held: save this campaign's party and make `cid` current (see switch_campaign in server.py). */
-    private void switchCampaign(String cid, String name, JSONArray seedShops, JSONObject seedGm) throws JSONException {
+    private void switchCampaign(String cid, String name, JSONObject system, JSONObject money, JSONArray states, JSONArray seedShops, JSONObject seedGm) throws JSONException {
         String current = campaign == null ? "" : campaign.optString("id");
-        JSONObject named = new JSONObject().put("id", cid).put("name", name);
+        JSONObject named = new JSONObject().put("id", cid).put("name", name).put("system", system == null ? JSONObject.NULL : system)
+            .put("currency", money == null ? JSONObject.NULL : money).put("states", states == null ? JSONObject.NULL : states);
         if (current.equals(cid)) {
             campaign = named;
             save();

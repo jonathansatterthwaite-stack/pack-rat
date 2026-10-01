@@ -189,6 +189,13 @@ input:invalid { border-color: var(--bad); }
 .char-panel .stat { box-shadow: none; }
 .char-panel.closed .group-head { border-bottom: 0; flex-wrap: wrap; }
 .char-panel.closed .collapse { flex: none; }
+.panels { display: flex; flex-direction: column; gap: 12px; margin-bottom: 12px; }
+.sys-panel .panel-frame { display: block; width: 100%; height: 0; border: 0; background: transparent; }
+.sys-panel.closed .group-head { border-bottom: 0; flex-wrap: wrap; }
+.sys-panel.closed .collapse { flex: none; }
+.panel-summary { display: inline-flex; align-items: center; gap: 4px; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
+.panel-summary .icon { width: 15px; height: 15px; flex: none; }
+.panel-compute { display: none; }
 .purse-btn {
   display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 2px 12px; min-width: 0;
   border: 1px solid var(--border); border-radius: 99px; background: var(--surface); color: var(--text); cursor: pointer;
@@ -1024,3 +1031,31 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
 .campaign-banner { margin-bottom: 14px; }
 .devices-card { margin-bottom: 18px; }
 .device-line { margin: 8px 0 0; }
+
+/* Item states: the GM's switches and a character's limits */
+.gm-state-list { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.gm-state { display: inline-flex; align-items: center; gap: 6px; }
+.gm-state select { width: auto; }
+.gm-limits { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 6px 14px 10px; }
+.gm-limit { display: inline-flex; align-items: center; gap: 8px; }
+.gm-limit input { width: 64px; }
+.gm-inv-row .gm-states-btn { margin-left: auto; width: 30px; height: 30px; }
+
+/* Item layers: inactive ones faded in details; tabs in the item form */
+.layer-sections { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.layer-off { opacity: .55; border: 1px dashed var(--border); border-radius: 10px; padding: 8px 12px; }
+.layer-off h4 { margin: 0 0 4px; }
+.layer-tabs { align-items: center; gap: 8px; margin-bottom: 10px; }
+.layer-tabs .sub-tabs { margin: 0; }
+.layer-tabs .add-state { width: auto; }
+.layer-form { display: flex; flex-direction: column; gap: 10px; }
+.layer-form .btn.danger { align-self: flex-start; }
+
+/* Triggers */
+.triggers-edit { display: flex; flex-direction: column; gap: 10px; }
+.trigger-row { position: relative; border: 1px solid var(--border); border-radius: 10px; padding: 10px 44px 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.trigger-row > .icon-btn { position: absolute; top: 6px; right: 6px; }
+.trigger-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.trigger-line select { width: auto; }
+.triggers-edit > .btn { align-self: flex-start; }
+.tpl-tile.example { border-style: dashed; }

@@ -85,7 +85,7 @@ function joinOptions(onDone = () => {}) {
           h("div", { class: "row-sub" }, `${entriesLabel(c)} · ${coinSummary(c.coins)}`)),
         h("button", { class: "btn primary", onclick: async () => { if (await party.bring(c.id)) onDone(); } }, icon("users"), "Play"))))),
     h("section", { class: "join-card" },
-      h("h3", null, "New character"),
+      h("h3", null, "New " + term("character")),
       h("form", { class: "inline", onsubmit: e => { e.preventDefault(); create(); } },
         h("input", { type: "text", placeholder: "Character name", "aria-label": "Character name", oninput: e => { name = e.target.value; } }),
         h("button", { class: "btn" + (mine.length ? "" : " primary"), type: "submit" }, icon("plus"), "Create"))),
@@ -198,7 +198,7 @@ function confirmLeave() {
 function describeSide(side) {
   const parts = [
     ...side.items.map(i => (i.qty > 1 ? `${i.qty} × ` : "") + i.name),
-    ...COIN_ORDER.filter(k => side.coins[k]).map(k => `${side.coins[k].toLocaleString()} ${k}`),
+    ...coinOrder().filter(k => side.coins[k]).map(k => `${side.coins[k].toLocaleString()} ${k}`),
   ];
   return parts.length ? parts.join(", ") : "nothing";
 }
@@ -427,28 +427,27 @@ function gmValuesView() {
 // attunement and attacks, and their whole inventory (searchable across everyone).
 function gmPlayersView() {
   const q = (ui.gmSearch || "").trim().toLowerCase();
-  const rules = store.state.settings;
   const chars = [...party.chars].sort((a, b) => (b.online - a.online) || a.name.localeCompare(b.name));
-  const matches = (c, e) => !q || [entryName(e), e.item.name, e.item.category, e.notes].some(t => t && t.toLowerCase().includes(q));
+  const matches = (c, e) => !q || [entryName(e), e.item.name, currentItem(e, c).category, e.notes].some(t => t && t.toLowerCase().includes(q));
 
   // Their inventory as a tree: on person, then what's in (and strapped to) each container.
   const tree = (c, parent, depth) => byName(c.items.filter(e => (e.parent || null) === parent && !inDeck(c, e))).flatMap(e => {
     const kids = tree(c, e.uid, depth + 1);
     if (!matches(c, e) && !kids.length) return [];
     return [h("li", { class: "gm-inv-row" + (matches(c, e) && q ? " hit" : ""), style: { paddingLeft: 10 + depth * 18 + "px" } },
-      itemIcon(e.item, "row-icon small", () => entryIconVars(c, e)),
+      itemIcon(currentItem(e, c), "row-icon small", () => entryIconVars(c, e)),
       h("span", null, entryName(e), e.qty > 1 && h("span", { class: "muted" }, ` ×${e.qty.toLocaleString()}`)),
       e.strapped && h("span", { class: "tag" }, "strapped"),
       e.equipped && h("span", { class: "tag on" }, equipWord(e)),
-      e.attuned && h("span", { class: "tag attuned" }, "attuned"),
-      e.liquid?.pints > 0 && h("span", { class: "muted small" }, liquidLabel(e))), ...kids];
+      statesOnFor(c, e).map(st => h("span", { class: "tag attuned" }, st.label.toLowerCase())),
+      e.liquid?.pints > 0 && h("span", { class: "muted small" }, liquidLabel(e)),
+      statesFor(e).length > 0 && iconBtn("wand", `States of ${entryName(e)}`, () => openGmStates(c, e), "gm-states-btn")), ...kids];
   });
 
   const card = c => {
     const key = "gmp:" + c.id, open = q ? true : ui.collapsed.has(key);
     const toggle = () => { ui.collapsed.has(key) ? ui.collapsed.delete(key) : ui.collapsed.add(key); render(); };
-    const ac = armorClass(c), enc = encumbrance(c, rules);
-    const weapons = c.items.filter(e => hasFeature(e.item, "weapon", e.srcId) && e.equipped);
+    const sums = panelSummaries(c).map(x => x.result);
     const rows = tree(c, null, 0);
     if (q && !rows.length) return null;
     return h("div", { class: "group gm-player-card" },
@@ -456,18 +455,14 @@ function gmPlayersView() {
         onlineDot(c.online),
         h("div", { class: "gm-player-name" }, h("b", null, c.name), c.mine && h("span", { class: "tag" }, "yours")),
         h("button", { class: "btn", onclick: toggle, "aria-expanded": String(open) }, icon(open ? "up" : "down"), open ? "Hide inventory" : `Inventory (${entriesLabel(c)})`)),
+      // The system's summary (its gm-player panels: 5e's AC, load, attunement…), and the coins.
       h("div", { class: "gm-stats" },
-        h("div", { class: "gm-stat", title: ac.breakdown }, h("small", null, "AC"), h("b", null, ac.ac)),
-        !enc.off && h("div", { class: "gm-stat" + (enc.status !== "ok" ? " warn" : ""), title: enc.label },
-          h("small", null, "Carried"), h("b", null, `${+enc.weight.toFixed(1)} / ${enc.capacity} lb`), enc.status !== "ok" && h("span", { class: "small" }, enc.label)),
-        h("div", { class: "gm-stat" }, h("small", null, "Coins"), h("b", null, fmtMoney(coinTotalCp(c.coins || {})))),
-        h("div", { class: "gm-stat" }, h("small", null, "Attuned"), h("b", null, `${c.items.filter(e => e.attuned).length} / 3`)),
-        h("div", { class: "gm-stat" }, h("small", null, "STR / DEX"), h("b", null, `${c.str || 10} / ${c.dex || 10}`))),
-      weapons.length > 0 && h("div", { class: "gm-attacks" }, weapons.map(e => {
-        const a = weaponAttack(c, e.item);
-        return h("span", { class: "chip" }, `${entryName(e)} ${fmtMod(a.toHit)} · ${a.damage}${a.type ? " " + a.type : ""}`);
-      })),
-      ac.strPenalty && h("p", { class: "warn-text small pad" }, "Strength too low for their armour (−10 ft speed)."),
+        sums.flatMap(r => r.stats).map(st => h("div", { class: "gm-stat" + (st.warn ? " warn" : ""), title: st.title },
+          h("small", null, st.label), h("b", null, st.value), st.sub && h("span", { class: "small" }, st.sub))),
+        h("div", { class: "gm-stat" }, h("small", null, "Coins"), h("b", null, fmtMoney(coinTotalCp(c.coins || {}))))),
+      sums.some(r => r.chips.length) && h("div", { class: "gm-attacks" }, sums.flatMap(r => r.chips).map(t => h("span", { class: "chip" }, t))),
+      sums.flatMap(r => r.notes).map(n => h("p", { class: "warn-text small pad" }, n)),
+      gmLimits(c),
       open && (rows.length ? h("ul", { class: "gm-inv" }, rows) : h("p", { class: "muted pad" }, "Carrying nothing.")));
   };
   const cards = chars.map(card).filter(Boolean);
@@ -832,14 +827,14 @@ function openTradeBuilder(targetId = null, preselectUid = null) {
     h("input", { type: "search", placeholder: "Search items…", "aria-label": "Search items",
       oninput: ev => { queries.set(box, ev.target.value); drawPicker(box, getChar(), map); } }));
   const askSearch = searchBox(askBox, () => target, ask);
-  const coinInputs = (obj, have) => h("div", { class: "coin-grid small" }, COIN_ORDER.map(k =>
+  const coinInputs = (obj, have) => h("div", { class: "coin-grid small" }, coinOrder().map(k =>
     h("label", { class: "field coin-field " + k },
       h("span", null, k.toUpperCase() + (have ? ` (${(have[k] || 0).toLocaleString()})` : "")),
       h("input", { type: "number", min: 0, max: have?.[k], inputmode: "numeric", value: obj[k] || "",
         oninput: ev => { obj[k] = Math.max(0, Math.floor(+ev.target.value || 0)); } }))));
 
   const drawAsk = () => {
-    for (const k of COIN_ORDER) delete askCoins[k];
+    for (const k of coinOrder()) delete askCoins[k];
     ask.clear();
     queries.delete(askBox);
     askSearch.querySelector("input").value = "";
@@ -860,8 +855,8 @@ function openTradeBuilder(targetId = null, preselectUid = null) {
       ask: { ...side(ask, target), coins: { ...askCoins } },
     };
     if (!offer.give.items.length && !offer.ask.items.length &&
-        !COIN_ORDER.some(k => giveCoins[k] || askCoins[k])) return toast("Pick something to trade");
-    const short = COIN_ORDER.find(k => (giveCoins[k] || 0) > (me.coins[k] || 0));
+        !coinOrder().some(k => giveCoins[k] || askCoins[k])) return toast("Pick something to trade");
+    const short = coinOrder().find(k => (giveCoins[k] || 0) > (me.coins[k] || 0));
     if (short) return toast(`You don't have ${giveCoins[short]} ${short}`);
     try {
       // Make sure the server has our latest inventory before referencing it.
@@ -888,4 +883,31 @@ function openTradeBuilder(targetId = null, preselectUid = null) {
     h("button", { class: "btn", onclick: () => close() }, "Cancel"),
     h("button", { class: "btn primary", onclick: send }, icon("move"), "Send offer"),
   ] });
+}
+
+// ------------------------------------------------------------------ the GM's states and limits
+
+// An item's states, for the GM (from the Players list).
+function openGmStates(c, e) {
+  let close;
+  close = openModal(`${entryName(e)} — ${c.name}`, h("div", { class: "form" }, gmStateControls(c, e),
+    h("p", { class: "muted small" }, "On or Off holds a state whatever the player does; the player's choice lets them switch it (if it's theirs to switch).")),
+    { footer: [h("button", { class: "btn primary", onclick: () => close() }, "Done")] });
+}
+
+// A character's limits (5e: attunement slots), which only the GM sets.
+function gmLimits(c) {
+  const lims = systemStates().filter(st => st.limit?.gmValue);
+  if (!lims.length) return null;
+  return h("div", { class: "gm-limits" }, lims.map(st => {
+    const own = (gmValuesNow().characters || {})[c.id]?.[st.limit.gmValue];
+    return h("label", { class: "gm-limit" }, h("span", { class: "small muted" }, st.limit.label || `${st.label} limit`),
+      h("input", { type: "number", min: 0, max: 99, value: stateLimit(c, st) ?? "", placeholder: String(st.limit.default ?? ""),
+        "aria-label": `${st.limit.label || st.label + " limit"} for ${c.name}`, onchange: async ev => {
+          const v = ev.target.value === "" ? null : Math.max(0, Math.min(99, Math.round(+ev.target.value)));
+          try { await setGmValue("character", c.id, st.limit.gmValue, v); } catch (err) { toast(err.message); }
+          render();
+        } }),
+      h("span", { class: "small muted" }, `${stateCount(c, st.key)} ${st.label.toLowerCase()}` + (typeof own === "number" ? "" : " · default")));
+  }));
 }

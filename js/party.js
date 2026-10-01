@@ -303,13 +303,31 @@ const party = {
   // it has there.
 
   async loadCampaign(camp) {
-    await this.api("POST", "api/campaign", { id: camp.id, name: camp.name, shops: camp.shops, gmValues: camp.gmValues });
+    await this.api("POST", "api/campaign", { id: camp.id, name: camp.name, shops: camp.shops, gmValues: camp.gmValues,
+      system: camp.system ? { id: camp.system, name: systemName(camp.system) } : null,
+      // The servers work out shop payments in its money, and sale prices with its states' layers.
+      currency: currencyRules(sysOf(camp)), states: systemStates(sysOf(camp)).map(st => st.key) });
+  },
+
+  // The game system the GM's campaign plays (hosts from before systems don't say: keep ours).
+  takeSystem(camp, pc) {
+    if (!pc || !("system" in pc)) return false;
+    const id = pc.system?.id || null;
+    if (camp.system === id && camp.systemName === pc.system?.name) return false;
+    camp.system = id;
+    camp.systemName = pc.system?.name; // to name it if this device hasn't got it
+    return true;
   },
 
   // Called once the device's data is loaded and after each snapshot. Returns true if it switched.
   followCampaign() {
     const pc = this.campaign;
-    if (!this.active || !pc || pc.id === store.campaign().id) return false;
+    if (!this.active || !pc) return false;
+    if (pc.id === store.campaign().id) {
+      // Same campaign: the GM may have changed its game system.
+      if (this.takeSystem(store.campaign(), pc)) store.save();
+      return false;
+    }
     // Let go of the characters linked in the campaign we're leaving: they stay in the party's save
     // of it (and on this device), just not playing now. (Without this, saving would remove them.)
     for (const t of this.timers.values()) clearTimeout(t);
@@ -321,6 +339,7 @@ const party = {
       camp.id = pc.id;
       store.data.campaigns.push(camp);
     } else if (camp.name !== pc.name) camp.name = pc.name;
+    this.takeSystem(camp, pc);
     // My characters in this campaign's party that this device keeps in another campaign (a party
     // from before campaigns, taken over by this one) move here, rather than being copied.
     const mineHere = new Set(this.owned().map(c => c.id));
