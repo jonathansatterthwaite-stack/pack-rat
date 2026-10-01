@@ -24,7 +24,7 @@ REPO = "jonathansatterthwaite-stack/pack-rat"
 AUTHOR = ("jonathansatterthwaite-stack", "231256534+jonathansatterthwaite-stack@users.noreply.github.com")
 
 PUBLISH = ["index.html", "manifest.webmanifest", "sw.js", "css", "js", "icons", "site", ".github", ".gitignore", ".gitattributes",
-           "server.py", "desktop.py", "start-party.bat", "README.md", "android", "tools", "parked"]
+           "server.py", "desktop.py", "start-party.bat", "README.md", "planned-updates.md", "android", "tools", "parked"]
 SKIP_DIRS = {"keystore", ".cache", ".build", "__pycache__"}
 # Local-only things kept in the stage between runs (never committed; see .gitignore).
 KEEP = {".git", "dist", "tools/.build", "tools/.cache", "android/keystore"}
