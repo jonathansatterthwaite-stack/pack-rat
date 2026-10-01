@@ -434,6 +434,11 @@ button.tpl-tile:hover { border-color: var(--accent); }
 .tpl-field select { width: auto; flex: 0 1 150px; }
 .tpl-field .grow { flex: 1 1 200px; width: auto; }
 .tpl-fields > .btn { align-self: flex-start; }
+.tpl-features { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.tpl-feature { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 8px 12px; }
+.tpl-feature + .tpl-feature { border-top: 1px solid var(--border); }
+.tpl-feature > span { flex: 1 1 auto; min-width: 0; }
+.tpl-feature select { width: 96px; flex: 0 0 auto; }
 
 /* ------------------------------------------------------------ modal */
 .overlay {

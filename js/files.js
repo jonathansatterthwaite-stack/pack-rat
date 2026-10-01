@@ -25,8 +25,8 @@ function switchCampaign(id) {
 // Make, or edit, a campaign: its name, notes, rules settings and the rule packages it uses.
 function editCampaign(camp = null) {
   const isNew = !camp;
-  const draft = isNew ? { name: "", notes: "", packages: [...store.campaign().packages], home: store.campaign().home, settings: { ...store.campaign().settings } }
-    : { name: camp.name, notes: camp.notes || "", packages: [...camp.packages], home: camp.home, settings: { ...camp.settings } };
+  const draft = isNew ? { name: "", notes: "", system: store.campaign().system, packages: [...store.campaign().packages], home: store.campaign().home, settings: { ...store.campaign().settings } }
+    : { name: camp.name, notes: camp.notes || "", system: camp.system, packages: [...camp.packages], home: camp.home, settings: { ...camp.settings } };
   let close;
   const pkgBox = h("div", { class: "group pkg-choice" });
   const drawPkgs = () => setChildren(pkgBox, store.packages().length ? store.packages().map(p => {
@@ -46,12 +46,12 @@ function editCampaign(camp = null) {
     close();
     commit(() => {
       if (isNew) {
-        const c = newCampaign(name, draft.packages);
+        const c = newCampaign(name, draft.packages, draft.system);
         Object.assign(c, { notes: draft.notes, home: draft.home, settings: draft.settings, lastPlayed: Date.now() });
         store.data.campaigns.push(c);
         if (!party.active) store.data.activeCampaign = c.id;
       } else {
-        Object.assign(camp, { name, notes: draft.notes, packages: draft.packages, home: draft.home, settings: { ...camp.settings, ...draft.settings } });
+        Object.assign(camp, { name, notes: draft.notes, system: draft.system, packages: draft.packages, home: draft.home, settings: { ...camp.settings, ...draft.settings } });
       }
       normalizeData(store.data);
     }, isNew ? `Made the campaign ${name}` : `Saved ${name}`, true);
@@ -62,6 +62,10 @@ function editCampaign(camp = null) {
     h("label", { class: "field" }, h("span", null, "Notes"),
       h("textarea", { rows: 2, value: draft.notes, placeholder: "Where you left off, house rules, who's playing…", oninput: e => { draft.notes = e.target.value; } })),
     h("h4", null, "Rules"),
+    systems().length > 1 && h("label", { class: "field" }, h("span", null, "Game system"),
+      h("select", { onchange: e => { draft.system = e.target.value; } },
+        systems().map(x => h("option", { value: x.id, selected: (draft.system || DEFAULT_SYSTEM) === x.id }, x.name))),
+      !isNew && h("span", { class: "muted small" }, "Its templates, catalog and groups. Items already made keep their details.")),
     h("div", { class: "form grid" },
       h("label", { class: "field" }, h("span", null, "Encumbrance"),
         h("select", { onchange: e => { draft.settings.encumbrance = e.target.value; } },
@@ -113,7 +117,9 @@ const drawingsUsedBy = items => {
 async function exportCampaign(camp) {
   const packages = store.packages().filter(p => camp.packages.includes(p.id));
   const items = [...camp.characters.flatMap(c => c.items.map(e => e.item)), ...packages.flatMap(p => p.customItems)];
-  download(`${safeName(camp.name)}.campaign.json`, { kind: "campaign", campaign: camp, packages, drawings: drawingsUsedBy(items),
+  // An imported system goes with it (the built-in ones are in every copy of Pack Rat).
+  const sys = store.data.systems.find(x => x.id === camp.system);
+  download(`${safeName(camp.name)}.campaign.json`, { kind: "campaign", campaign: camp, packages, system: sys, drawings: drawingsUsedBy(items),
     images: await bundleImages(new Set([...campaignImageRefs([camp]), ...allImageRefs([], packages.flatMap(p => p.customItems))])) });
 }
 
@@ -194,6 +200,7 @@ function duplicatePackage(pkg) {
     // New ids for its items and templates, so both packages can be used at once.
     const tplIds = {};
     for (const t of copy.templates) { tplIds[t.id] = "tpl-" + uid(); t.id = tplIds[t.id]; }
+    for (const t of copy.templates) if (tplIds[t.from]) t.from = tplIds[t.from];
     for (const i of copy.customItems) { i.id = "custom-" + uid(); if (tplIds[i.template]) i.template = tplIds[i.template]; }
     store.data.packages.push(copy);
   }, `Copied ${pkg.name}`, true);
@@ -215,6 +222,13 @@ async function exportPackage(pkg) {
 }
 
 // ------------------------------------------------------------------ the Files view
+
+function deleteSystem(sys) {
+  const users = store.campaigns().filter(c => c.system === sys.id);
+  if (users.length) return toast(`${users.map(c => c.name).join(", ")} ${users.length === 1 ? "plays" : "play"} ${sys.name}: choose another system for ${users.length === 1 ? "it" : "them"} first`);
+  confirmDialog(`Delete the game system “${sys.name}”?`, "Delete", () =>
+    commit(() => { store.data.systems = store.data.systems.filter(x => x.id !== sys.id); }, `Deleted ${sys.name}`, true));
+}
 
 function moveCharacter(char, from) {
   if (party.isLinked(char.id)) return toast(`${char.name} is playing in the party: leave it first, or move another character`);
@@ -277,6 +291,7 @@ function filesView() {
   const total = sizeOf(store.data);
   const camps = store.campaigns();
   const usedPkg = p => camps.filter(c => c.packages.includes(p.id)).map(c => c.name);
+  const usedSys = x => camps.filter(c => (c.system || DEFAULT_SYSTEM) === x.id).map(c => c.name);
 
   const picturesBox = h("div", { class: "files-pictures" }, h("p", { class: "muted pad" }, "Looking for pictures…"));
   drawPictures(picturesBox);
@@ -313,6 +328,14 @@ function filesView() {
         fileBtn("trash", `Delete ${p.name}`, () => deletePackage(p), "danger-hover"),
       ])), h("button", { class: "btn", onclick: () => editPackage(null) }, icon("plus"), "New"),
       "Custom items and templates. Each campaign chooses the packages it uses (Campaigns → Edit)."),
+
+    filesSection("Game systems", systems().map(x => fileRow(icon("book"), [x.name, x.builtin && h("span", { class: "tag" }, "built in")],
+      `${plural((x.templates || []).length, "template")} · ${plural((x.catalog || []).length, "catalog item")} · ${usedSys(x).length ? "used by " + usedSys(x).join(", ") : "not used by any campaign"}`,
+      x.builtin ? null : sizeOf(x), [
+        fileBtn("download", `Export ${x.name}`, () => download(`${safeName(x.name)}.system.json`, systemFile(x))),
+        !x.builtin && fileBtn("trash", `Delete ${x.name}`, () => deleteSystem(x), "danger-hover"),
+      ])), null,
+      "What a campaign plays: its templates, groups, features and catalog. D&D 5e is built in; others come as files to import (Import a file)."),
 
     filesSection("Drawings", drawingLibrary().map(d => fileRow(h("span", { class: "file-thumb" }, drawnIcon(d.svg, "file-svg") || icon("image")), d.name,
       `Used by ${plural(drawingUsers(d.id).length, "item")}${isLiveDrawing(d.doc) ? " · live" : ""}`, sizeOf(d), [

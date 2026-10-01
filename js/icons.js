@@ -102,32 +102,28 @@ const POISON_TYPE_ICON = { Inhaled: "poisoner", Contact: "acid", Injury: "venom"
 
 const DOCUMENT_KIND_ICON = { Letter: "letter", Note: "paper", Book: "book", Journal: "spellbook", Scroll: "scroll", Map: "map" };
 
-const TYPE_ICON = {
-  document: "paper",
-  weapon: "swords", armor: "armor-breastplate", ammunition: "arrows", gear: "sack", container: "chest",
-  pack: "backpack", tool: "toolbox", poison: "poison", trinket: "trinket", consumable: "potion",
-  magic: "sparkles", treasure: "gem",
-};
-
 const autoIconCache = new Map();
 
+// An automatic icon: by name, for the system template the item comes from (D&D 5e's are matched
+// here), else its template's icon.
 function autoIconId(item) {
-  const key = item.type + "|" + item.name + "|" + (item.category || "");
+  const tpl = itemTemplate(item), root = rootTemplate(tpl)?.id;
+  const key = tpl.id + "|" + item.name + "|" + (item.category || "");
   if (autoIconCache.has(key)) return autoIconCache.get(key);
   const name = (item.name || "").toLowerCase();
-  const rules = item.type === "weapon" ? WEAPON_ICON_RULES
-    : item.type === "ammunition" ? AMMO_ICON_RULES
-    : item.type === "armor" ? ARMOR_ICON_RULES
-    : item.type === "trinket" ? TRINKET_ICON_RULES
-    : item.type === "poison" ? [[/venom|wyvern|purple worm/, "venom"], [/vial/, "poison"]]
-    : item.type === "document" ? [[/map|chart/, "map"], [/letter|note from|message/, "letter"], [/journal|diary/, "book"]]
-    : item.type === "treasure" ? TREASURE_ICON_RULES.concat(GEAR_ICON_RULES)
+  const rules = root === "weapon" ? WEAPON_ICON_RULES
+    : root === "ammunition" ? AMMO_ICON_RULES
+    : root === "armor" ? ARMOR_ICON_RULES
+    : root === "trinket" ? TRINKET_ICON_RULES
+    : root === "poison" ? [[/venom|wyvern|purple worm/, "venom"], [/vial/, "poison"]]
+    : root === "document" ? [[/map|chart/, "map"], [/letter|note from|message/, "letter"], [/journal|diary/, "book"]]
+    : root === "treasure" ? TREASURE_ICON_RULES.concat(GEAR_ICON_RULES)
     : GEAR_ICON_RULES;
   let id = rules.find(([re]) => re.test(name))?.[1];
-  if (!id && item.type === "poison") id = POISON_TYPE_ICON[item.poisonType];
-  if (!id && item.type === "document") id = DOCUMENT_KIND_ICON[item.category];
+  if (!id && root === "poison") id = POISON_TYPE_ICON[item.poisonType];
+  if (!id && root === "document") id = DOCUMENT_KIND_ICON[item.category];
   if (!id && item.category) id = GEAR_ICON_RULES.find(([re]) => re.test(item.category.toLowerCase()))?.[1];
-  if (!id || !ICON_BY_ID.has(id)) id = TYPE_ICON[item.type] || "question";
+  if (!id || !ICON_BY_ID.has(id)) id = [tpl.icon, rootTemplate(tpl)?.icon].find(x => x && ICON_BY_ID.has(x)) || "question";
   autoIconCache.set(key, id);
   return id;
 }

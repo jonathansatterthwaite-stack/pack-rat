@@ -399,12 +399,12 @@ function openStockPicker(opts) {
   const chips = h("div");
   const draw = () => {
     const inGroup = catalogFiltered(type, query, null);
-    const subMatch = sub && GROUP_BY_ID[type] ? subcategories(type).find(sc => sc.key === sub)?.match : null;
+    const subMatch = sub && groupById(type) ? subcategories(type).find(sc => sc.key === sub)?.match : null;
     const items = (subMatch ? inGroup.filter(subMatch) : inGroup).slice(0, 200);
     setChildren(chips,
       chipRow("Item types", catTypes().map(([k, label]) => h("button", { type: "button", class: "chip-btn" + (type === k ? " active" : ""),
-        onclick: () => { type = k; sub = null; draw(); } }, GROUP_BY_ID[k] && colorDot(groupColor(k), label), label))),
-      GROUP_BY_ID[type] && subChips(type, sub, sc => inGroup.filter(sc.match).length, key => { sub = key; draw(); }));
+        onclick: () => { type = k; sub = null; draw(); } }, groupById(k) && colorDot(groupColor(k), label), label))),
+      groupById(type) && subChips(type, sub, sc => inGroup.filter(sc.match).length, key => { sub = key; draw(); }));
     setChildren(list, items.map(i => {
       const inShop = opts.has(i.id);
       return h("div", { class: "row" },
@@ -414,6 +414,7 @@ function openStockPicker(opts) {
         inShop ? h("span", { class: "tag on" }, "added")
           : iconBtn("plus", "Add", () => {
             const { id, ...snapshot } = clone(i);
+            if (!stacks(snapshot, id)) snapshot.noStack = true; // the party server stacks what's bought by this
             opts.add(id, snapshot);
             draw();
           }, "add"));
@@ -441,11 +442,13 @@ function sellSettings(d) {
     h("p", { class: "muted small" }, "Leave empty to use the default. 0 = won't buy that kind of item."),
     // By group, like the rest of the app; each type in a combined group keeps its own rate.
     // Packs aren't listed: they unpack into their contents, so players never sell one.
-    h("div", { class: "type-rates" }, TYPE_GROUPS.map(g => [g, g.types.filter(t => t !== "pack")]).map(([g, types]) => h("div", { class: "type-rate-group" },
-      types.length > 1 && h("div", { class: "type-rate-head" }, colorDot(groupColor(g.id), g.name), g.name),
-      types.map(type => h("label", { class: "type-rate" + (types.length > 1 ? " sub" : "") },
-        typeBadge(type), h("span", null, TYPE_PLURALS[type]),
-        pctInput(d.typeRates[type], String(d.sellRate ?? 50), v => { if (v == null) delete d.typeRates[type]; else d.typeRates[type] = v; }),
+    // (Rates are by the system's templates: items made with a copy go by the one it was copied from.)
+    h("div", { class: "type-rates" }, systemGroups().map(g => [g, groupTemplates(g).filter(t => !templateFeatureDefaults(t).pack)])
+      .filter(([, tpls]) => tpls.length).map(([g, tpls]) => h("div", { class: "type-rate-group" },
+      tpls.length > 1 && h("div", { class: "type-rate-head" }, colorDot(groupColor(g.id), g.name), g.name),
+      tpls.map(t => h("label", { class: "type-rate" + (tpls.length > 1 ? " sub" : "") },
+        templateBadge(t), h("span", null, templatePlural(t)),
+        pctInput(d.typeRates[t.id], String(d.sellRate ?? 50), v => { if (v == null) delete d.typeRates[t.id]; else d.typeRates[t.id] = v; }),
         h("span", { class: "muted small" }, "%")))))),
     h("div", { class: "section-head shop-items-head" }, h("h4", null, `Specific items (${d.sellItems.length})`),
       h("button", { class: "btn", type: "button", onclick: () => openStockPicker({

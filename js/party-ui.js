@@ -448,7 +448,7 @@ function gmPlayersView() {
     const key = "gmp:" + c.id, open = q ? true : ui.collapsed.has(key);
     const toggle = () => { ui.collapsed.has(key) ? ui.collapsed.delete(key) : ui.collapsed.add(key); render(); };
     const ac = armorClass(c), enc = encumbrance(c, rules);
-    const weapons = c.items.filter(e => e.item.type === "weapon" && e.equipped);
+    const weapons = c.items.filter(e => hasFeature(e.item, "weapon", e.srcId) && e.equipped);
     const rows = tree(c, null, 0);
     if (q && !rows.length) return null;
     return h("div", { class: "group gm-player-card" },
@@ -806,7 +806,7 @@ function openTradeBuilder(targetId = null, preselectUid = null) {
   const queries = new Map();
   const holderName = (char, e) => { const p = e.parent && char.items.find(x => x.uid === e.parent); return p ? entryName(p) : null; };
   const matches = (char, e, q) => !q ||
-    [entryName(e), e.item.name, e.item.category, e.item.type, holderName(char, e)].some(t => t && t.toLowerCase().includes(q));
+    [entryName(e), e.item.name, e.item.category, itemTemplate(e.item).name, holderName(char, e)].some(t => t && t.toLowerCase().includes(q));
   const drawPicker = (box, char, map) => {
     const q = (queries.get(box) || "").trim().toLowerCase();
     // Cards in a deck go with the deck, like a container's contents.

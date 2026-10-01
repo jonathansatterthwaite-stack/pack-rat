@@ -174,9 +174,9 @@ function newCharacter(name) {
 
 const DATA_KEY = "packrat-data-v2";
 
-function newCampaign(name = "My campaign", packages = []) {
+function newCampaign(name = "My campaign", packages = [], system = DEFAULT_SYSTEM) {
   const c = newCharacter("Adventurer");
-  return { id: "cmp" + uid(), name, notes: "", created: Date.now(), packages, home: packages[0] || null,
+  return { id: "cmp" + uid(), name, notes: "", created: Date.now(), system, packages, home: packages[0] || null,
     settings: { encumbrance: "standard", coinWeight: true }, characters: [c], activeId: c.id,
     shops: [], gmControls: [], gmValues: {} };
 }
@@ -187,9 +187,9 @@ function newPackage(name = "My homebrew") {
 
 function defaultData() {
   const pkg = newPackage();
-  pkg.templates = STARTER_TEMPLATES.map(t => ({ ...t }));
+  pkg.templates = clone(DND5E_SYSTEM.starterTemplates);
   const camp = newCampaign("My campaign", [pkg.id]);
-  return { version: 2, activeCampaign: camp.id, campaigns: [camp], packages: [pkg], iconLibrary: [] };
+  return { version: 2, activeCampaign: camp.id, campaigns: [camp], packages: [pkg], systems: [], iconLibrary: [] };
 }
 
 // The old single bundle -> one campaign and one package (nothing dropped).
@@ -212,15 +212,18 @@ function normalizeData(d) {
   d.version = 2;
   if (!Array.isArray(d.packages)) d.packages = [];
   if (!Array.isArray(d.iconLibrary)) d.iconLibrary = [];
+  // Imported systems (the built-in ones aren't saved).
+  d.systems = (Array.isArray(d.systems) ? d.systems : []).filter(x => x && x.id && !BUILTIN_SYSTEMS.some(b => b.id === x.id));
   for (const p of d.packages) {
     p.customItems = Array.isArray(p.customItems) ? p.customItems : [];
-    p.templates = Array.isArray(p.templates) ? p.templates : [];
+    p.templates = (Array.isArray(p.templates) ? p.templates : []).map(t => standardiseTemplate(t));
     p.name = p.name || "Rule package";
   }
   if (!Array.isArray(d.campaigns) || !d.campaigns.length) d.campaigns = [newCampaign("My campaign", d.packages.map(p => p.id))];
   for (const c of d.campaigns) {
     c.id = c.id || "cmp" + uid();
     c.name = c.name || "Campaign";
+    if (!c.system) c.system = DEFAULT_SYSTEM;
     c.settings = { encumbrance: "standard", coinWeight: true, ...(c.settings || {}) };
     for (const k of ["characters", "shops", "gmControls"]) if (!Array.isArray(c[k])) c[k] = [];
     if (!c.characters.length) c.characters.push(newCharacter("Adventurer"));
@@ -257,6 +260,7 @@ function mergeData(base, extra) {
     addById(same.templates, p.templates, false);
   }
   addById(base.iconLibrary, extra.iconLibrary, false);
+  addById(base.systems || (base.systems = []), extra.systems, false);
   normalizeData(base);
   return added;
 }
@@ -348,25 +352,21 @@ const store = {
   // The active character; if it's gone (deleted, e.g. in another window), the first one.
   char() { return this.state.characters.find(c => c.id === this.state.activeId) || this.state.characters[0]; },
 
-  catalog() { return [...this.customItems(), ...SRD_ITEMS]; },
+  catalog() { return [...this.customItems(), ...(activeSystem().catalog || [])]; },
 
-  findItem(id) { return this.findCustom(id) || SRD_BY_ID.get(id); },
+  findItem(id) { return this.findCustom(id) || catalogItem(id); },
 
-  // Templates for new items: the built-in ones and those of the packages in use. Any package's
+  // Templates for new items: the system's and those of the packages in use. Any package's
   // template is still found by id, so items made with one keep their fields.
-  templates() { return [...BUILTIN_TEMPLATES.filter(t => !t.hidden), ...this.enabledPackages().flatMap(p => p.templates)]; },
+  templates() { return [...systemTemplates().filter(t => !t.hidden), ...this.enabledPackages().flatMap(p => p.templates)]; },
   allTemplates() { return this.data.packages.flatMap(p => p.templates); },
 
-  template(id) {
-    return this.allTemplates().find(t => t.id === id) || BUILTIN_TEMPLATES.find(t => t.id === id);
-  },
+  template(id) { return templateById(id); },
 
   // Start again: one empty campaign (the drawings library and rule packages go too).
   reset() { this.data = defaultData(); },
 };
 
-const SRD_BY_ID = new Map(SRD_ITEMS.map(i => [i.id, i]));
-const SRD_BY_NAME = new Map(SRD_ITEMS.map(i => [i.name, i]));
 
 // Catalog items that moved type (see RECLASSIFY in tools/build_srd.py): older inventory
 // copies are brought in line when loaded. Returns true if the item changed.
@@ -385,7 +385,7 @@ function reclassifyAll({ characters = [], shops = [] }) {
 
 function reclassify(item, srcId) {
   if (!item || RECLASSIFIED[srcId] !== item.type) return false;
-  const now = SRD_BY_ID.get(srcId);
+  const now = catalogItem(srcId);
   if (!now || now.type === item.type) return false;
   item.type = now.type;
   for (const k of ["category", "poisonType", "rarity"]) {
@@ -395,34 +395,43 @@ function reclassify(item, srcId) {
 }
 
 // ------------------------------------------------------------------ features
-// See FEATURES in templates.js. An item's own `features` flags win; otherwise the default for
-// its kind: containers hold items (or liquid), packs unpack, paper and books can be written in…
+// See CORE_FEATURES in templates.js. An item's own `features` flags win; otherwise its template's
+// defaults (and for some, what the item is like: paper and books can be written in, an item with
+// an AC bonus can be worn…). A template's "main" features can't be turned off.
 const WRITABLE_NAME = /\b(paper|parchment|book|spellbook|journal|diary|notebook|ledger)\b/i;
 
 function featureDefault(item, key, srcId) {
-  const cat = srcId ? SRD_BY_ID.get(srcId) : null;
+  const cat = catalogItem(srcId);
   const field = k => item[k] !== undefined ? item[k] : cat?.[k]; // older copies: the catalog's fields
+  const byTpl = !!templateFeatureDefaults(itemTemplate(item))[key];
   switch (key) {
-    case "holds": return item.type === "container" &&
+    // The catalog's containers that hold liquid only (bottles, flasks) say so by having no capacity.
+    case "holds": return byTpl &&
       (field("capacityLb") > 0 || !!item.weightless || !!item.straps || !!field("holds") || srcId === "container-backpack");
     case "liquid": return +field("liquidPints") > 0;
-    case "pack": return item.type === "pack";
     case "deck": { const list = field("deckCards"); return Array.isArray(list) && list.length > 0; }
-    case "writable": return !item.imageOnly && (item.type === "document" || (!item.card && WRITABLE_NAME.test(item.name || "")));
+    case "writable": return !item.imageOnly && (byTpl || (!item.card && WRITABLE_NAME.test(item.name || "")));
     case "picture": return !!item.imageOnly;
     case "attunement": return !!item.attunement;
     case "charges": return item.maxCharges > 0;
     case "worn": return !!item.acBonus;
-    case "bundle": return item.bundle > 1 || item.type === "ammunition";
+    case "bundle": return item.bundle > 1 || byTpl;
+    case "equippable": return byTpl || !!item.acBonus;
+    case "stacks": return templateFeatureDefaults(itemTemplate(item)).stacks !== false;
   }
-  return false;
+  return byTpl;
 }
 
 function hasFeature(item, key, srcId) {
   if (!item) return false;
+  if (templateFeatureDefaults(itemTemplate(item))[key] === "main") return true;
   if (item.features && key in item.features) return !!item.features[key];
   return featureDefault(item, key, srcId);
 }
+
+// Whether copies of an item share a row (the party servers go by the `noStack` it's given).
+const stacks = (item, srcId) => hasFeature(item, "stacks", srcId) && !deckList(item, srcId)
+  && !hasFeature(item, "holds", srcId) && !hasFeature(item, "pack", srcId);
 
 // ------------------------------------------------------------------ inventory
 
@@ -439,8 +448,8 @@ function addToInventory(char, item, qty = null, parent = null, strapped = false)
     for (let i = 0; i < qty; i++) last = addToInventory(char, item, 1, parent, strapped);
     return last;
   }
-  const stackable = !["weapon", "armor", "container", "magic", "pack"].includes(item.type) && !deckList(item, id)
-    && !hasFeature(item, "holds", id) && !hasFeature(item, "pack", id);
+  const stackable = stacks(item, id);
+  if (stackable) delete snapshot.noStack; else snapshot.noStack = true;
   const existing = stackable && char.items.find(e => e.srcId === id && e.parent === parent && !e.customName &&
     !!e.strapped === strapped && JSON.stringify(e.item) === JSON.stringify(snapshot));
   if (existing) {
@@ -463,7 +472,7 @@ function addToInventory(char, item, qty = null, parent = null, strapped = false)
 // The deck's card names: from the item, or for older inventory copies, from the catalog.
 function deckList(item, srcId) {
   if (item.features?.deck === false) return null;
-  const list = item.deckCards || (srcId && SRD_BY_ID.get(srcId)?.deckCards);
+  const list = item.deckCards || catalogItem(srcId)?.deckCards;
   return Array.isArray(list) && list.length ? list : null;
 }
 
@@ -537,7 +546,7 @@ const PACK_PLACES = [["holder", "Holds the rest"], ["in", "Inside"], ["strap", "
 
 // Items named in a pack: the player's custom items first, then the catalog.
 function findItemByName(name) {
-  return store.data && store.customItems().find(i => i.name === name) || SRD_BY_NAME.get(name) || null;
+  return store.data && store.customItems().find(i => i.name === name) || systemIndex().byName.get(name) || null;
 }
 
 // The rows to unpack, each with its item and place filled in.
@@ -607,15 +616,15 @@ const HOLDERS = {
   scrolls: { label: "Paper, parchment, maps & scrolls", limit: 10, unit: "sheet",
     size: it => hasFeature(it, "holds") ? 0
       : /parchment/i.test(it.name) ? 2
-      : (it.type === "document" && ROLLED_DOCS.includes(it.category)) || (it.type === "consumable" && it.category === "Scroll")
+      : (itemRootId(it) === "document" && ROLLED_DOCS.includes(it.category)) || (itemRootId(it) === "consumable" && it.category === "Scroll")
         || /\b(paper|map|chart|scroll|letter|deed|sheet)s?\b/i.test(it.name) ? 1 : 0 },
-  arrows: { label: "Arrows", limit: 20, unit: "arrow", size: it => it.type === "ammunition" && /arrow/i.test(it.name) ? 1 : 0 },
-  bolts: { label: "Crossbow bolts", limit: 20, unit: "bolt", size: it => it.type === "ammunition" && /bolt/i.test(it.name) ? 1 : 0 },
+  arrows: { label: "Arrows", limit: 20, unit: "arrow", size: it => hasFeature(it, "ammunition") && /arrow/i.test(it.name) ? 1 : 0 },
+  bolts: { label: "Crossbow bolts", limit: 20, unit: "bolt", size: it => hasFeature(it, "ammunition") && /bolt/i.test(it.name) ? 1 : 0 },
 };
 
 // Inventory copies made before a container learnt these fields fall back to the catalog's.
 function containerField(e, key) {
-  return e.item[key] !== undefined ? e.item[key] : SRD_BY_ID.get(e.srcId)?.[key];
+  return e.item[key] !== undefined ? e.item[key] : catalogItem(e.srcId)?.[key];
 }
 
 function holderSpec(e) {
@@ -744,8 +753,9 @@ const mod = score => Math.floor(((score || 10) - 10) / 2);
 function armorClass(char) {
   const dex = mod(char.dex);
   const worn = char.items.filter(e => e.equipped);
-  const armor = worn.find(e => e.item.type === "armor" && e.item.category !== "Shield");
-  const shield = worn.find(e => e.item.type === "armor" && e.item.category === "Shield");
+  const isArmor = e => hasFeature(e.item, "armor", e.srcId);
+  const armor = worn.find(e => isArmor(e) && e.item.category !== "Shield");
+  const shield = worn.find(e => isArmor(e) && e.item.category === "Shield");
   let ac = 10 + dex, parts = [`10 + Dex ${fmtMod(dex)}`];
   if (armor) {
     const d = armor.item.dex === "full" ? dex : armor.item.dex === "max2" ? Math.min(dex, 2) : 0;
@@ -772,8 +782,12 @@ const propArg = (item, name) => (item.properties || []).find(p => p.toLowerCase(
 
 // Characters are proficient with simple and martial weapons unless told otherwise.
 function weaponProficient(char, item) {
-  return (char.weaponProfs || ["Simple", "Martial"]).includes(item.category || "Simple");
+  return (char.weaponProfs || ["Simple", "Martial"]).includes(weaponCategory(item) || "Simple");
 }
+
+// Simple or martial: a weapon template's category (an item of another template that's also a
+// weapon, like spiked armor, has its own kind of category).
+const weaponCategory = item => mainFeatures(itemTemplate(item)).includes("weapon") ? item.category : null;
 
 // "1d8" + 3 -> "1d8 + 3"; "1" + 3 -> "4"
 function damageText(dice, bonus) {
@@ -817,7 +831,7 @@ const AMMO_FOR = [[/crossbow/, /bolt/], [/blowgun/, /needle/], [/sling/, /sling|
 
 function ammoEntries(char, item) {
   const rule = AMMO_FOR.find(([w]) => w.test(item.name.toLowerCase()));
-  return char.items.filter(e => e.item.type === "ammunition" && (!rule || rule[1].test(e.item.name.toLowerCase())));
+  return char.items.filter(e => hasFeature(e.item, "ammunition", e.srcId) && (!rule || rule[1].test(e.item.name.toLowerCase())));
 }
 
 // ------------------------------------------------------------------ coins
@@ -907,21 +921,28 @@ function fmtWeight(lb) {
 
 // "Martial melee", "Simple ranged", ...
 function weaponClass(item) {
-  const s = [item.category, item.kind && item.kind.toLowerCase()].filter(Boolean).join(" ");
+  const s = [weaponCategory(item), item.kind && item.kind.toLowerCase()].filter(Boolean).join(" ");
   return s && s[0].toUpperCase() + s.slice(1);
 }
 
+// "AC 18 · Str 15 · Stealth disadv.", "AC +2"
+function armorSummary(item) {
+  if (item.category === "Shield") return `AC +${(item.ac || 2) + (item.bonus || 0)}`;
+  return `AC ${(item.ac || 10) + (item.bonus || 0)}${item.dex === "full" ? " + Dex" : item.dex === "max2" ? " + Dex (max 2)" : ""}` +
+    (item.strength ? ` · Str ${item.strength}` : "") + (item.stealthDisadvantage ? " · Stealth disadv." : "");
+}
+
 function itemSummary(item) {
-  switch (item.type) {
+  // What it mainly is: its template's main feature (spiked armor is armor), else weapon or armor if it's either.
+  const main = mainFeatures(itemTemplate(item)).find(k => k === "weapon" || k === "armor");
+  const kind = main || (hasFeature(item, "weapon") ? "weapon" : hasFeature(item, "armor") ? "armor" : itemRootId(item));
+  switch (kind) {
     case "weapon": {
       const dmg = [item.damage, item.damageType].filter(Boolean).join(" ");
       const bonus = item.bonus ? `+${item.bonus} ` : "";
       return [weaponClass(item), bonus + (dmg || "no damage"), ...(item.properties || [])].filter(Boolean).join(" · ");
     }
-    case "armor":
-      if (item.category === "Shield") return `AC +${(item.ac || 2) + (item.bonus || 0)}`;
-      return `AC ${(item.ac || 10) + (item.bonus || 0)}${item.dex === "full" ? " + Dex" : item.dex === "max2" ? " + Dex (max 2)" : ""}` +
-        (item.strength ? ` · Str ${item.strength}` : "") + (item.stealthDisadvantage ? " · Stealth disadv." : "");
+    case "armor": return armorSummary(item);
     case "ammunition": return `Bundle of ${item.bundle || 1}`;
     case "container": return item.capacity || (item.capacityLb ? `${item.capacityLb} lb capacity` : "Container");
     case "tool": return item.category || "Tool";

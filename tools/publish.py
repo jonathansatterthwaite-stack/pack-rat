@@ -24,10 +24,13 @@ REPO = "jonathansatterthwaite-stack/pack-rat"
 AUTHOR = ("jonathansatterthwaite-stack", "231256534+jonathansatterthwaite-stack@users.noreply.github.com")
 
 PUBLISH = ["index.html", "manifest.webmanifest", "sw.js", "css", "js", "icons", "site", ".github", ".gitignore", ".gitattributes",
-           "server.py", "desktop.py", "start-party.bat", "README.md", "planned-updates.md", "android", "tools", "parked"]
+           "server.py", "desktop.py", "start-party.bat", "README.md", "android", "tools", "parked"]
 SKIP_DIRS = {"keystore", ".cache", ".build", "__pycache__"}
-# Local-only things kept in the stage between runs (never committed; see .gitignore).
-KEEP = {".git", "dist", "tools/.build", "tools/.cache", "android/keystore"}
+# Files edited on GitHub itself: the repository's copy is kept as it is (and copied into the
+# project for reference), never replaced from the project.
+GITHUB_OWNED = ["planned-updates.md"]
+# Kept in the stage between runs: local-only things (never committed; see .gitignore) and the above.
+KEEP = {".git", "dist", "tools/.build", "tools/.cache", "android/keystore", *GITHUB_OWNED}
 PRIVATE = ("keystore", ".keystore", "password")
 
 
@@ -45,6 +48,11 @@ def stage():
         run("gh", "repo", "clone", REPO, STAGE, cwd=os.path.dirname(ROOT))
     git("config", "user.name", AUTHOR[0])
     git("config", "user.email", AUTHOR[1])
+    # Take anything committed on GitHub since the last publish (edits made on the website).
+    git("pull", "-q", "--ff-only", "origin", "main")
+    for name in GITHUB_OWNED:
+        if os.path.exists(os.path.join(STAGE, name)):
+            shutil.copy2(os.path.join(STAGE, name), os.path.join(ROOT, name))
     # Start clean (deleted files disappear from the repo too), keeping only the local-only folders.
     for name in os.listdir(STAGE):
         path = os.path.join(STAGE, name)

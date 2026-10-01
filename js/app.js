@@ -83,8 +83,8 @@ function iconBtn(name, label, onclick, cls = "") {
   return h("button", { class: "icon-btn " + cls, type: "button", title: label, "aria-label": label, onclick }, icon(name));
 }
 
-function typeBadge(type) {
-  return h("span", { class: "type-dot", style: { background: typeColor(type) }, title: TYPE_LABELS[type] || type });
+function templateBadge(tpl) {
+  return h("span", { class: "type-dot", style: { background: templateColor(tpl) }, title: tpl.name });
 }
 
 function colorDot(color, title) {
@@ -170,7 +170,7 @@ const ui = {
   catType: "all",
   catSub: null,
   catLimit: 150,
-  trinketTable: TRINKET_TABLES[0]?.id,
+  trinketTable: null,
   views: loadViewPrefs(),
   sort: readPref("packrat-sort", "smart"),
   sortReverse: readPref("packrat-sort-rev", "") === "1",
@@ -461,7 +461,7 @@ function coinChips(coins) {
 function combatPanel(char) {
   const open = ui.combatOpen;
   const toggle = () => { ui.combatOpen = !open; writePref("packrat-combat", ui.combatOpen ? "1" : "0"); render(); };
-  const weapons = char.items.filter(e => e.item.type === "weapon");
+  const weapons = char.items.filter(e => hasFeature(e.item, "weapon", e.srcId));
   const ready = weapons.filter(e => e.equipped);
   // Nothing equipped yet: show every weapon so the panel is still useful.
   const shown = ready.length ? ready : weapons;
@@ -556,7 +556,7 @@ function unarmedCard(char) {
 function invTypeMatches(e, group, sub = null) {
   if (group === "all") return true;
   if (group === "equipped") return e.equipped;
-  if (GROUP_OF[e.item.type] !== group) return false;
+  if (groupOfItem(e.item)?.id !== group) return false;
   return !sub || !!subcategories(group).find(s => s.key === sub)?.match(e.item);
 }
 
@@ -591,8 +591,9 @@ function subChips(groupId, active, count, onPick) {
     class: "chip-btn" + (active === key ? " active" : ""), role: "tab", "aria-selected": String(active === key),
     onclick: () => onPick(key),
   }, dot, label, n != null && h("span", { class: "chip-count" }, n));
-  return chipRow("Filter within " + GROUP_BY_ID[groupId].name, [
-    chip(null, "All " + GROUP_BY_ID[groupId].name.toLowerCase(), null),
+  const g = groupById(groupId);
+  return chipRow("Filter within " + g.name, [
+    chip(null, "All " + g.name.toLowerCase(), null),
     shown.map(s => chip(s.key, s.label, s.n, colorDot(shade(groupHue(groupId), s.i, subs.length), s.label))),
   ], "sub-chips");
 }
@@ -604,7 +605,7 @@ function inventoryTypeChips(char) {
   const items = listed(char);
   if (!items.length) return null;
   const counts = {};
-  for (const e of items) { const g = GROUP_OF[e.item.type] || "gear"; counts[g] = (counts[g] || 0) + 1; }
+  for (const e of items) { const g = groupOfItem(e.item)?.id; counts[g] = (counts[g] || 0) + 1; }
   const equipped = items.filter(e => e.equipped).length;
   const active = activeInvType(char);
   const chip = (key, label, n, dot) => h("button", {
@@ -614,9 +615,9 @@ function inventoryTypeChips(char) {
   const row = chipRow("Filter by type", [
     chip("all", "All", items.length),
     equipped > 0 && chip("equipped", "Equipped", equipped),
-    TYPE_GROUPS.filter(g => counts[g.id]).map(g => chip(g.id, g.name, counts[g.id], colorDot(groupColor(g.id), g.name))),
+    systemGroups().filter(g => counts[g.id]).map(g => chip(g.id, g.name, counts[g.id], colorDot(groupColor(g.id), g.name))),
   ]);
-  const sub = GROUP_BY_ID[active] && subChips(active, activeInvSub(char, active),
+  const sub = groupById(active) && subChips(active, activeInvSub(char, active),
     s => items.filter(e => invTypeMatches(e, active, s.key)).length,
     key => { ui.invSub = key; render(); });
   return [row, sub];
@@ -633,7 +634,7 @@ function abilityInput(label, key) {
 function matchesSearch(item, q) {
   if (!q) return true;
   q = q.toLowerCase();
-  return [item.name, item.category, item.description, item.body, item.author, item.damageType, TYPE_LABELS[item.type], groupOf(item.type).name, ...(item.properties || [])]
+  return [item.name, item.category, item.description, item.body, item.author, item.damageType, itemTemplate(item).name, groupOfItem(item)?.name, ...(item.properties || [])]
     .some(v => v && String(v).toLowerCase().includes(q));
 }
 
@@ -642,7 +643,7 @@ function matchesSearch(item, q) {
 const INV_SORTS = {
   smart: { label: "Equipped first", cmp: (a, b) => b.equipped - a.equipped },
   name: { label: "Name", cmp: () => 0 },
-  type: { label: "Type", cmp: (a, b) => typeOrder(a.item.type) - typeOrder(b.item.type) },
+  type: { label: "Type", cmp: (a, b) => templateOrder(a.item) - templateOrder(b.item) },
   weight: { label: "Heaviest", cmp: (a, b, char) => entryTotalWeight(char, b) - entryTotalWeight(char, a) },
   value: { label: "Most valuable", cmp: (a, b) => entryValue(b) - entryValue(a) },
   qty: { label: "Quantity", cmp: (a, b) => b.qty - a.qty },
@@ -924,7 +925,7 @@ function entryRow(char, e, showPath = false) {
       h("div", { class: "row-sub" }, [liquidLabel(e) || containerLoad(char, e) || itemSummary(it), e.notes].filter(Boolean).join(" — "))),
     h("div", { class: "row-weight muted" }, fmtWeight(entryOwnWeight(e))),
     writingButton(e),
-    isEquipable(e) && iconBtn(it.type === "weapon" ? "sword" : "shield", e.equipped ? "Unequip" : "Equip",
+    isEquipable(e) && iconBtn(hasFeature(it, "weapon", e.srcId) ? "sword" : "shield", e.equipped ? "Unequip" : "Equip",
       () => toggleEquip(e.uid), "equip" + (e.equipped ? " on" : "")),
     h("div", { class: "qty" },
       iconBtn("minus", "Decrease", () => setQty(e.qty - 1)),
@@ -947,8 +948,11 @@ function pageKind(it, srcId) {
   return hasFeature(it, "picture", srcId) ? "picture" : hasFeature(it, "writable", srcId) ? "writing" : null;
 }
 
-// Something to read or look at already (documents always open in the reader, even blank).
-const hasPage = (it, kind) => hasWriting(it) || (kind === "writing" && it.type === "document");
+// Documents: items whose template is for writing (they always open in the reader, even blank).
+const isDocument = it => !!templateFeatureDefaults(itemTemplate(it)).writable;
+
+// Something to read or look at already.
+const hasPage = (it, kind) => hasWriting(it) || (kind === "writing" && isDocument(it));
 
 // On an item's row: read or view what's there, or write in it / add a picture.
 function writingButton(e, onDone = () => {}, cls = "equip") {
@@ -994,10 +998,10 @@ function writeEntry(entryUid) {
   ] });
 }
 
-// Weapons, armor, magic items and anything worn for an AC bonus can be equipped; armor is "worn".
+// Equippable items (weapons, armor, magic items…) and anything worn for an AC bonus; armor is "worn".
 const wornForAc = e => !!e.item.acBonus && hasFeature(e.item, "worn", e.srcId);
-const isEquipable = e => ["weapon", "armor", "magic"].includes(e.item.type) || wornForAc(e);
-const equipWord = e => e.item.type === "armor" || wornForAc(e) ? "worn" : "equipped";
+const isEquipable = e => hasFeature(e.item, "equippable", e.srcId) || wornForAc(e);
+const equipWord = e => hasFeature(e.item, "armor", e.srcId) || wornForAc(e) ? "worn" : "equipped";
 
 // Set a stack's quantity; at 0 it's removed (with Undo).
 function setEntryQty(e, n) {
@@ -1015,10 +1019,11 @@ function toggleEquip(entryUid) {
     const e = c.items.find(x => x.uid === entryUid);
     e.equipped = !e.equipped;
     // Only one suit of armor and one shield at a time.
-    if (e.equipped && e.item.type === "armor") {
+    const isArmor = x => hasFeature(x.item, "armor", x.srcId);
+    if (e.equipped && isArmor(e)) {
       const shield = e.item.category === "Shield";
       c.items.forEach(o => {
-        if (o !== e && o.equipped && o.item.type === "armor" && (o.item.category === "Shield") === shield) o.equipped = false;
+        if (o !== e && o.equipped && isArmor(o) && (o.item.category === "Shield") === shield) o.equipped = false;
       });
     }
   });
@@ -1036,6 +1041,9 @@ function iconFocusSwitch() {
       onchange: e => e.target.closest(".modal").classList.toggle("icon-focus", e.target.checked) }));
 }
 
+// Template fields the details show in their own way (the rest are listed by label).
+const DETAILS_SHOWN = new Set(["poisonType", "saveDC", "effect"]);
+
 // onIcon(id): when given, the item's icon can be changed from its details.
 // srcId: the catalog item an inventory copy came from (older copies take missing fields from it).
 // watermarked: the dialog shows the icon behind the details (iconBackdrop), so they leave it out.
@@ -1043,24 +1051,22 @@ function itemDetails(item, onIcon = null, srcId = item.id, vars = null, watermar
   const has = key => hasFeature(item, key, srcId);
   const rows = [];
   const add = (k, v) => { if (v !== undefined && v !== null && v !== "" && v !== false) rows.push([k, v]); };
-  add("Type", TYPE_LABELS[item.type] + (item.type !== "weapon" && item.category ? ` — ${item.category}` : ""));
-  if (item.type === "weapon") {
+  const tpl = itemTemplate(item), weapon = has("weapon"), armor = has("armor");
+  // A weapon's category is simple or martial (listed below); other templates' show with the type.
+  const weaponCats = mainFeatures(tpl).includes("weapon") || (weapon && !tpl.categories?.length);
+  add("Type", tpl.name + (!weaponCats && item.category ? ` — ${item.category}` : ""));
+  if (weaponCats) {
     add("Simple / martial", item.category || "—");
     add("Melee / ranged", item.kind || "—");
-  }
-  const tpl = item.template && store.template(item.template);
-  if (tpl) add("Template", tpl.name);
+  } else if (weapon) add("Melee / ranged", item.kind || "—");
   add("Cost", item.cost ? fmtCost(item.cost) + (item.bundle > 1 ? ` per ${item.bundle}` : "") : null);
   add("Weight", item.weight ? fmtWeight(item.weight) + (item.bundle > 1 ? ` per ${item.bundle}` : "") : null);
   add("Rarity", item.rarity);
   add("Attunement", item.attunement && "Required");
-  if (item.type === "weapon") {
-    add("Damage", [item.damage, item.damageType].filter(Boolean).join(" ") || "—");
-    add("Magic bonus", item.bonus && fmtMod(item.bonus));
-  }
-  if (item.type === "armor" || item.type === "ammunition") add("Magic bonus", item.bonus && fmtMod(item.bonus));
-  if (item.type === "armor") {
-    add("Armor Class", itemSummary(item).split(" · ")[0]);
+  if (weapon) add("Damage", [item.damage, item.damageType].filter(Boolean).join(" ") || "—");
+  if (weapon || armor || has("ammunition")) add("Magic bonus", item.bonus && fmtMod(item.bonus));
+  if (armor) {
+    add("Armor Class", armorSummary(item).split(" · ")[0]);
     add("Strength", item.strength && `Str ${item.strength}`);
     add("Stealth", item.stealthDisadvantage && "Disadvantage");
   }
@@ -1073,8 +1079,8 @@ function itemDetails(item, onIcon = null, srcId = item.id, vars = null, watermar
       (item.holds === "scrolls" ? " (parchment takes 2)" : ""));
   }
   if (has("liquid")) add("Liquid", item.liquidPints > 0 && `Holds ${fmtVolume(item.liquidPints)}`);
-  add("Writing", has("writable") && item.type !== "document" && (hasWriting(item) ? "Written in" : "Blank — can be written in"));
-  add("Picture", has("picture") && item.type !== "document" && (hasWriting(item) ? "Has a picture" : "No picture yet"));
+  add("Writing", has("writable") && !isDocument(item) && (hasWriting(item) ? "Written in" : "Blank — can be written in"));
+  add("Picture", has("picture") && !isDocument(item) && (hasWriting(item) ? "Has a picture" : "No picture yet"));
   add("Poison type", item.poisonType);
   add("Save DC", item.saveDC);
   if (has("charges")) {
@@ -1084,8 +1090,8 @@ function itemDetails(item, onIcon = null, srcId = item.id, vars = null, watermar
   add("AC bonus", has("worn") && item.acBonus && fmtMod(item.acBonus));
   add("Trinket table", item.table && `${item.table} (${item.roll})`);
   add("Set", has("deck") && item.deckCards?.length && plural(item.deckCards.length, pieceNoun(item)));
-  // Fields from user templates.
-  if (tpl && !tpl.builtin) for (const f of tpl.fields || []) add(f.label, fieldDisplay(f, item[f.key]));
+  // The template's other fields.
+  for (const f of tpl.fields || []) if (!DETAILS_SHOWN.has(f.key)) add(f.label, fieldDisplay(f, item[f.key]));
   add("Source", item.source);
 
   return h("div", { class: "details" },
@@ -1108,8 +1114,9 @@ function itemDetails(item, onIcon = null, srcId = item.id, vars = null, watermar
 // Weapon properties as chips, each with its rule as a tooltip.
 function propertyChips(props) {
   return props.map(p => {
-    const key = Object.keys(WEAPON_PROPERTIES).find(k => p.toLowerCase().startsWith(k.toLowerCase()));
-    return h("span", { class: "chip", title: key ? WEAPON_PROPERTIES[key] : "" }, p);
+    const glossary = activeSystem().glossary || {};
+    const key = Object.keys(glossary).find(k => p.toLowerCase().startsWith(k.toLowerCase()));
+    return h("span", { class: "chip", title: key ? glossary[key] : "" }, p);
   });
 }
 
@@ -1451,17 +1458,17 @@ function openCoins() {
 
 // Catalog tabs: everything, each group that has items, and the player's own custom items.
 function catTypes() {
-  const has = new Set(store.catalog().map(i => GROUP_OF[i.type]));
-  return [["all", "All"], ...TYPE_GROUPS.filter(g => has.has(g.id)).map(g => [g.id, g.name]), ["custom", "Custom"]];
+  const has = new Set(store.catalog().map(i => groupOfItem(i)?.id));
+  return [["all", "All"], ...systemGroups().filter(g => has.has(g.id)).map(g => [g.id, g.name]), ["custom", "Custom"]];
 }
 
 // Catalog items in a tab (catTypes), matching a search, optionally in one subcategory.
 function catalogFiltered(t = ui.catType, q = ui.catSearch, sub = ui.catSub) {
   q = q.trim();
-  const subMatch = sub && GROUP_BY_ID[t] ? subcategories(t).find(s => s.key === sub)?.match : null;
+  const subMatch = sub && groupById(t) ? subcategories(t).find(s => s.key === sub)?.match : null;
   return store.catalog().filter(i => {
     if (t === "custom") { if (!i.id.startsWith("custom-")) return false; }
-    else if (t !== "all" && GROUP_OF[i.type] !== t) return false;
+    else if (t !== "all" && groupOfItem(i)?.id !== t) return false;
     if (subMatch && !subMatch(i)) return false;
     return matchesSearch(i, q);
   });
@@ -1501,17 +1508,17 @@ function catalogItemsView() {
   const chips = chipRow("Item types", catTypes().map(([k, label]) =>
     h("button", { class: "chip-btn" + (ui.catType === k ? " active" : ""), role: "tab", "aria-selected": String(ui.catType === k),
       onclick: () => { ui.catType = k; ui.catSub = null; ui.catLimit = 150; render(); } },
-      GROUP_BY_ID[k] && colorDot(groupColor(k), label), label)));
+      groupById(k) && colorDot(groupColor(k), label), label)));
   // Within a group: its subcategories (Gear / Tools, Light / Medium / Heavy…), each in its shade.
-  const all = GROUP_BY_ID[ui.catType] ? catalogFiltered(ui.catType, ui.catSearch, null) : [];
-  const subs = GROUP_BY_ID[ui.catType] && subChips(ui.catType, ui.catSub, s => all.filter(s.match).length,
+  const all = groupById(ui.catType) ? catalogFiltered(ui.catType, ui.catSearch, null) : [];
+  const subs = groupById(ui.catType) && subChips(ui.catType, ui.catSub, s => all.filter(s.match).length,
     key => { ui.catSub = key; ui.catLimit = 150; render(); });
   return h("div", { class: "view-catalog" },
     h("div", { class: "toolbar" },
       h("label", { class: "search" }, icon("search"),
         h("input", { type: "search", placeholder: "Search items, properties, descriptions…", value: ui.catSearch,
           oninput: e => { ui.catSearch = e.target.value; ui.catLimit = 150; draw(); } })),
-      TRINKET_TABLES.length > 0 && h("button", { class: "btn", onclick: openTrinketRoller }, icon("dice"), h("span", null, "Roll trinket")),
+      (activeSystem().tables || []).length > 0 && h("button", { class: "btn", onclick: openTrinketRoller }, icon("dice"), h("span", null, "Roll trinket")),
       h("button", { class: "btn primary", onclick: () => openItemForm(null) }, icon("plus"), h("span", { class: "hide-sm" }, "New custom item")),
       layoutToggle(), tileLabelToggles()),
     chips, subs, count, list);
@@ -1617,7 +1624,7 @@ function openCatalogItem(item) {
     }, "Icon changed");
     openCatalogItem(store.findCustom(item.id));
   } : null;
-  const readBtn = item.type === "document" && h("button", { class: "btn primary read-btn", onclick: () => {
+  const readBtn = isDocument(item) && h("button", { class: "btn primary read-btn", onclick: () => {
     close();
     openReader(item, isCustom ? { onEdit: () => openItemForm(store.findCustom(item.id) || item) } : {});
   } }, icon(item.imageOnly ? "image" : "book"), item.imageOnly ? "View" : "Read");
@@ -1863,12 +1870,14 @@ function deleteCustom(item) {
 function openTrinketRoller() {
   let close, current = null;
   const result = h("div", { class: "trinket-result" }, h("p", { class: "muted" }, "Pick a table and roll."));
+  const tables = activeSystem().tables || [];
+  if (!tables.some(t => t.id === ui.trinketTable)) ui.trinketTable = tables[0]?.id;
   const sel = h("select", { onchange: e => { ui.trinketTable = e.target.value; } },
-    TRINKET_TABLES.map(t => h("option", { value: t.id, selected: t.id === ui.trinketTable }, `${t.name} (${t.die})`)));
+    tables.map(t => h("option", { value: t.id, selected: t.id === ui.trinketTable }, `${t.name} (${t.die})`)));
   const roll = () => {
-    const t = TRINKET_TABLES.find(t => t.id === ui.trinketTable);
+    const t = tables.find(t => t.id === ui.trinketTable);
     const entry = t.entries[Math.floor(Math.random() * t.entries.length)];
-    current = SRD_BY_ID.get(entry.id);
+    current = catalogItem(entry.id);
     result.replaceChildren(
       h("div", { class: "die" }, entry.roll),
       h("p", { class: "trinket-text" }, current.name),
@@ -1891,11 +1900,11 @@ function openTrinketRoller() {
 function openItemForm(item, opts = {}) {
   if (!item) return chooseTemplate(tpl => openItemForm(newItemFrom(tpl), opts));
   const draft = clone(item);
-  const tpl = (draft.template && store.template(draft.template)) || store.template(draft.type) || store.template("gear");
+  const tpl = itemTemplate(draft);
   const fields = templateFields(tpl);
   // The catalog item this is (or is a copy of): older copies take missing feature fields from it.
   const srcId = opts.entryUid ? store.char()?.items.find(x => x.uid === opts.entryUid)?.srcId : item.id;
-  const cat = srcId && SRD_BY_ID.get(srcId);
+  const cat = catalogItem(srcId);
   // The saved item this form edits (not saved with it): lets a drawing tell "this item" from others.
   Object.defineProperty(draft, "_self", { enumerable: false, value: opts.entryUid
     ? store.char()?.items.find(x => x.uid === opts.entryUid)?.item
@@ -1905,10 +1914,10 @@ function openItemForm(item, opts = {}) {
     const c = store.char(), e = c?.items.find(x => x.uid === opts.entryUid);
     return e ? entryIconVars(c, e) : {};
   } : null });
-  for (const k of FEATURE_FIELD_KEYS) if (draft[k] === undefined && cat?.[k] !== undefined) draft[k] = clone(cat[k]);
+  for (const k of featureFieldKeys()) if (draft[k] === undefined && cat?.[k] !== undefined) draft[k] = clone(cat[k]);
   const chosen = {}; // features ticked or unticked here
   const isOn = key => key in chosen ? chosen[key] : hasFeature(draft, key, srcId);
-  const features = featuresPanel(draft, isOn, chosen);
+  const features = featuresPanel(draft, isOn, chosen, tpl);
   // The features go above the description (a document has none: then above the source).
   const els = fields.map(f => [f.key, fieldInput(f, draft)]);
   let at = els.findIndex(([k]) => k === "description");
@@ -1922,17 +1931,20 @@ function openItemForm(item, opts = {}) {
     draft.name = draft.name.trim();
     // Unticked features lose their settings; the item keeps which features it has only where
     // that differs from the default for its kind.
-    const on = Object.fromEntries(FEATURES.map(ft => [ft.key, isOn(ft.key)]));
-    const kept = new Set(FEATURES.filter(ft => on[ft.key]).flatMap(ft => ft.fields.map(f => f.key))); // shared fields (the body)
-    for (const ft of FEATURES) if (!on[ft.key]) for (const f of ft.fields) if (!kept.has(f.key)) delete draft[f.key];
-    for (const ft of FEATURES) if (ft.flag) { if (on[ft.key]) draft[ft.flag] = true; else delete draft[ft.flag]; }
+    const all = allFeatures();
+    const on = Object.fromEntries(all.map(ft => [ft.key, isOn(ft.key)]));
+    const kept = new Set(all.filter(ft => on[ft.key]).flatMap(ft => ft.fields.map(f => f.key))); // shared fields (the body, bonus)
+    for (const ft of all) if (!on[ft.key]) for (const f of ft.fields) if (!kept.has(f.key)) delete draft[f.key];
+    for (const ft of all) if (ft.flag) { if (on[ft.key]) draft[ft.flag] = true; else delete draft[ft.flag]; }
     delete draft.features;
-    const flags = Object.fromEntries(FEATURES.filter(ft => !ft.flag && on[ft.key] !== featureDefault(draft, ft.key, srcId)).map(ft => [ft.key, on[ft.key]]));
+    const flags = Object.fromEntries(all.filter(ft => !ft.flag && on[ft.key] !== featureDefault(draft, ft.key, srcId)).map(ft => [ft.key, on[ft.key]]));
     if (Object.keys(flags).length) draft.features = flags;
     if (on.pack) draft.contents = (draft.contents || []).filter(c => c.name);
     for (const k of Object.keys(draft)) if (draft[k] === "" || draft[k] == null) delete draft[k];
+    delete draft.noStack;
     if (opts.entryUid) {
       const { id, ...snap } = draft;
+      if (!stacks(snap, srcId)) snap.noStack = true; // see addToInventory
       commit((s, c) => { c.items.find(x => x.uid === opts.entryUid).item = snap; }, `Updated ${draft.name}`, true);
     } else {
       // Saved back into the rule package it's in; a new one goes into the chosen package, else
@@ -1951,7 +1963,7 @@ function openItemForm(item, opts = {}) {
   const title = opts.entryUid ? `Edit ${item.name}` : opts.copyOf ? `Customize ${item.name}` :
     draft.id ? `Edit ${item.name}` : `New ${tpl.name.toLowerCase()}`;
   close = openModal(title, [
-    h("p", { class: "muted small" }, typeBadge(tpl.type), ` Template: ${tpl.name}`,
+    h("p", { class: "muted small" }, templateBadge(tpl), ` Template: ${tpl.name}`,
       opts.entryUid ? " — changes apply only to this copy in the inventory." : ""),
     form,
   ], { wide: true, footer: [
@@ -2481,22 +2493,26 @@ function piecesField(f, draft) {
 }
 
 // The item form's features: a collapsible panel across the form. Closed, it lists what's ticked.
-function featuresPanel(draft, isOn, chosen) {
+// The template's main features aren't listed: they're always on, their fields in the form itself.
+function featuresPanel(draft, isOn, chosen, tpl) {
   let open = readPref("packrat-features-open", "") === "1";
+  const main = mainFeatures(tpl);
+  const features = allFeatures().filter(ft => !main.includes(ft.key));
   const summary = h("span", { class: "muted small features-summary" });
-  const drawSummary = () => { summary.textContent = FEATURES.filter(ft => isOn(ft.key)).map(ft => ft.label).join(" · ") || "None"; };
+  const drawSummary = () => { summary.textContent = features.filter(ft => isOn(ft.key)).map(ft => ft.label).join(" · ") || "None"; };
   const rows = {};
   const set = (key, v) => {
     chosen[key] = v;
     rows[key].input.checked = v;
-    rows[key].box.hidden = !v;
+    rows[key].box.hidden = !v || !rows[key].box.childElementCount;
   };
-  const list = FEATURES.map(ft => {
-    const box = h("div", { class: "form grid feature-fields" }, ft.fields.map(f => fieldInput(f, draft)));
-    box.hidden = !isOn(ft.key) || !ft.fields.length;
+  const shown = new Set(templateFields(tpl).map(f => f.key)); // fields the form has already (a magic bonus…)
+  const list = features.map(ft => {
+    const box = h("div", { class: "form grid feature-fields" }, ft.fields.filter(f => !shown.has(f.key)).map(f => fieldInput(f, draft)));
+    box.hidden = !isOn(ft.key) || !box.childElementCount;
     const input = h("input", { type: "checkbox", checked: isOn(ft.key), onchange: ev => {
       set(ft.key, ev.target.checked);
-      if (!ft.fields.length) box.hidden = true;
+      if (!box.childElementCount) box.hidden = true;
       if (ev.target.checked && ft.excludes && isOn(ft.excludes)) set(ft.excludes, false); // writing or a picture, not both
       drawSummary();
     } });
@@ -2616,7 +2632,7 @@ function fieldInput(f, draft) {
 function packContentsField(f, draft) {
   draft[f.key] = (draft[f.key] || []).map(c => ({ ...c }));
   const rows = draft[f.key];
-  const names = [...new Set(store.catalog().filter(i => i.type !== "pack").map(i => i.name))].sort();
+  const names = [...new Set(store.catalog().filter(i => !hasFeature(i, "pack", i.id)).map(i => i.name))].sort();
   const listId = "pack-items-" + uid();
   const box = h("div", { class: "pack-edit" });
   const draw = () => setChildren(box,
@@ -2637,26 +2653,46 @@ function packContentsField(f, draft) {
     h("p", { class: "muted small" }, "“Auto” puts everything in the pack's backpack or chest, with bedrolls, rope and the like strapped to a backpack's side."));
 }
 
-// A new item made with a template (built-in or custom), with its defaults filled in.
-const newItemFrom = tpl => ({ type: tpl.type, template: tpl.builtin ? undefined : tpl.id, ...(tpl.defaults || {}) });
+// A new item made with a template (the system's or a package's), with its defaults filled in. Its
+// `type` is the system template it descends from (what older versions and the party servers know).
+const newItemFrom = tpl => ({ type: rootTemplate(tpl).id, template: isSystemTemplate(tpl) ? undefined : tpl.id, ...clone(tpl.defaults || {}) });
 
-// A custom template that starts as a copy of a built-in one.
-const extendTemplate = tpl => openTemplateEditor({ ...clone(tpl), id: null, builtin: false, name: tpl.name + " (custom)", fields: [] });
+// A new template that starts as a copy of another (the system's or yours).
+function copyTemplate(tpl) {
+  const { id, builtin, hidden, plural, ...rest } = clone(tpl);
+  openTemplateEditor({ ...rest, name: tpl.name + " (copy)", from: tpl.id, hue: tpl.hue ?? templateHue(tpl) }, true);
+}
 
-function chooseTemplate(onPick) {
+// What a template is, under its name: its group, or the template it was copied from.
+function templateNote(t) {
+  if (isSystemTemplate(t)) return groupOfTemplate(t)?.name || "";
+  const from = templateById(t.from);
+  return from ? `From ${from.name}` : groupOfTemplate(t)?.name || "";
+}
+
+// The system's templates in group order (so Gear sits next to Tools), then the packages'.
+function orderedTemplates() {
+  const sys = systemGroups().flatMap(g => groupTemplates(g));
+  return [...sys, ...store.templates().filter(t => !isSystemTemplate(t))];
+}
+
+function chooseTemplate(onPick, title = "Choose a template", extra = null) {
   let close;
   const tile = t => h("button", { class: "tpl-tile", onclick: () => { close(); onPick(t); } },
     h("span", { class: "tpl-swatch", style: { background: templateColor(t) } }),
     h("b", null, t.name),
-    h("small", { class: "muted" }, t.builtin ? groupOf(t.type).name : `Based on ${TYPE_LABELS[t.type]}`));
-  // Built-ins in group order, so Gear sits next to Tools, Ammunition next to Consumables…
-  const order = t => TYPE_GROUPS.findIndex(g => g.types.includes(t.type));
-  const builtins = store.templates().filter(t => t.builtin).sort((a, b) => order(a) - order(b));
-  close = openModal("Choose a template", [
-    h("div", { class: "tpl-grid" }, [...builtins, ...store.templates().filter(t => !t.builtin)].map(tile)),
-    h("p", { class: "muted small" }, "Need different fields? ",
-      h("button", { class: "link", onclick: () => { close(); openTemplateEditor(null); } }, "Create a template"), "."),
+    h("small", { class: "muted" }, templateNote(t)));
+  close = openModal(title, [
+    h("div", { class: "tpl-grid" }, orderedTemplates().map(tile)),
+    extra ? extra(() => close()) : h("p", { class: "muted small" }, "Need different fields? ",
+      h("button", { class: "link", onclick: () => { close(); newTemplate(); } }, "Create a template"), "."),
   ], { wide: true });
+}
+
+// A new template: a copy of one there is, or a blank one.
+function newTemplate() {
+  chooseTemplate(copyTemplate, "New template: start from a copy of…", close => h("p", { class: "muted small" }, "Or ",
+    h("button", { class: "link", onclick: () => { close(); openTemplateEditor(null); } }, "start from a blank template"), "."));
 }
 
 // ------------------------------------------------------------------ custom view
@@ -2679,18 +2715,19 @@ function myItemsSection() {
         : h("p", { class: "muted pad" }, "No items yet. Make a homebrew weapon, a family heirloom, or a +1 version of an existing item (open any catalog item → Customize)."))));
 }
 
-// Templates: the built-in types by group, and the templates of the packages in use.
+// Templates: the system's by group, and the templates of the packages in use.
 function templatesSection() {
   const usage = id => store.customItems().filter(i => i.template === id).length;
   const several = store.enabledPackages().length > 1;
+  const sys = activeSystem();
   return h("section", null,
       h("div", { class: "section-head" }, h("h2", null, "Templates"),
-        h("button", { class: "btn", onclick: () => openTemplateEditor(null) }, icon("plus"), "New template")),
-      h("p", { class: "muted small" }, "Templates decide which fields an item has. Your templates build on a base type (which controls how the app treats the item — e.g. Armor counts toward AC, Containers can hold things) and add your own fields."),
+        h("button", { class: "btn", onclick: newTemplate }, icon("plus"), "New template")),
+      h("p", { class: "muted small" }, `Templates decide which fields an item has and what it can do (its features: a container holds things, armor counts toward AC…). The built-in ones come with ${sys.name}; make your own from a copy of any of them.`),
       h("div", { class: "tpl-grid" },
-        // Built-in types, by group: each group has a hue, its subcategories are shades of it.
-        TYPE_GROUPS.map(g => {
-          const tpls = g.types.map(t => BUILTIN_TEMPLATES.find(b => b.id === t)).filter(t => t && !t.hidden);
+        // The system's templates, by group: each group has a hue, its subcategories are shades of it.
+        systemGroups().map(g => {
+          const tpls = groupTemplates(g);
           if (!tpls.length) return null;
           const subs = subcategories(g.id);
           const multi = tpls.length > 1;
@@ -2700,26 +2737,27 @@ function templatesSection() {
               : h("span", { style: { background: groupColor(g.id) } })),
             h("b", null, g.name),
             h("small", { class: "muted" }, multi ? "Built-in" : `Built-in · ${templateFields(tpls[0]).length} fields`),
-            // A combined group lists its types, each in its shade, with its own New / Extend.
+            // A combined group lists its templates, each in its shade, with its own New / Copy.
             multi && h("div", { class: "tpl-types" }, tpls.map(t => h("div", { class: "tpl-type" },
-              colorDot(typeColor(t.type), t.name), h("span", null, t.name),
+              colorDot(templateColor(t), t.name), h("span", null, t.name),
               h("button", { class: "link", onclick: () => openItemForm(newItemFrom(t)) }, "New"),
-              h("button", { class: "link", onclick: () => extendTemplate(t) }, "Extend")))),
+              h("button", { class: "link", onclick: () => copyTemplate(t) }, "Copy")))),
             h("div", { class: "tpl-actions" },
               h("button", { class: "link", onclick: () => openGroupColour(g.id) }, "Colour"),
               !multi && [
                 h("button", { class: "link", onclick: () => openItemForm(newItemFrom(tpls[0])) }, "New item"),
-                h("button", { class: "link", onclick: () => extendTemplate(tpls[0]) }, "Extend"),
+                h("button", { class: "link", onclick: () => copyTemplate(tpls[0]) }, "Copy"),
               ]));
         }),
-        store.templates().filter(t => !t.builtin).map(t => h("div", { class: "tpl-tile static" },
+        store.templates().filter(t => !isSystemTemplate(t)).map(t => h("div", { class: "tpl-tile static" },
           h("span", { class: "tpl-swatch", style: { background: templateColor(t) } }),
           h("b", null, t.name),
-          h("small", { class: "muted" }, `Based on ${TYPE_LABELS[t.type]} · +${plural((t.fields || []).length, "field")} · ${plural(usage(t.id), "item")}`
+          h("small", { class: "muted" }, `${templateNote(t)} · ${plural(templateFields(t).length, "field")} · ${plural(usage(t.id), "item")}`
             + (several ? ` · ${store.templatePackage(t.id)?.name || ""}` : "")),
           h("div", { class: "tpl-actions" },
             h("button", { class: "link", onclick: () => openItemForm(newItemFrom(t)) }, "New item"),
-            h("button", { class: "link", onclick: () => openTemplateEditor(t) }, "Edit"))))));
+            h("button", { class: "link", onclick: () => openTemplateEditor(t) }, "Edit"),
+            h("button", { class: "link", onclick: () => copyTemplate(t) }, "Copy"))))));
 }
 
 // Pick a hue: a rainbow slider and quick swatches, with a live preview of the shades
@@ -2757,12 +2795,12 @@ function huePicker(label, hue, subs, onChange, note) {
 
 // Colour of a built-in group (Armor, Gear & Tools…), kept in this device's settings.
 function openGroupColour(groupId) {
-  const g = GROUP_BY_ID[groupId];
+  const g = groupById(groupId), tpls = groupTemplates(g);
   let hue = groupHue(groupId), close;
   const subs = subcategories(groupId);
   close = openModal(`${g.name} colour`, h("div", { class: "form" },
     huePicker("Hue", hue, subs, v => { hue = v; },
-      g.types.length > 1 ? `${g.name} combines ${g.types.map(t => TYPE_LABELS[t]).join(", ")}; each gets its own shade.`
+      tpls.length > 1 ? `${g.name} combines ${tpls.map(t => t.name).join(", ")}; each gets its own shade.`
         : "Each category gets its own shade so items are easy to tell apart.")),
   { footer: [
     h("button", { class: "btn", onclick: () => {
@@ -2780,27 +2818,30 @@ function openGroupColour(groupId) {
 const FIELD_KINDS = [["text", "Text"], ["textarea", "Long text"], ["number", "Number"], ["checkbox", "Yes / No"],
   ["select", "Choice list"], ["tags", "Tags"], ["dice", "Dice (e.g. 2d6)"]];
 
-function openTemplateEditor(tpl) {
-  const isNew = !tpl || !tpl.id;
-  const draft = tpl ? clone(tpl) : { name: "", type: "gear", fields: [] };
-  delete draft.color; delete draft.shade; // replaced by a hue (see templateHue)
+// How a template's items start with a feature: without it, with it (it can be turned off per item),
+// or always ("main": its fields show with the template's own).
+const FEATURE_MODES = [["", "No"], ["on", "Yes"], ["main", "Always"]];
+
+// A template's editor. copy: a new template, from a copy of another (copyTemplate).
+function openTemplateEditor(tpl, copy = false) {
+  const isNew = !tpl || !tpl.id || copy;
+  const draft = tpl ? clone(tpl) : { name: "", group: systemGroups()[0]?.id, fields: [], features: {} };
+  delete draft.color; delete draft.shade; delete draft.type; // older templates: replaced by a hue and group
   draft.fields = draft.fields || [];
+  draft.features = { ...(draft.features || {}) };
+  if (draft.hue == null) draft.hue = templateHue(draft);
   let close;
   const fieldsBox = h("div", { class: "tpl-fields" });
-  const baseInfo = h("p", { class: "muted small" });
-
+  const coreInfo = h("p", { class: "muted small" });
   const shadeBox = h("div", { class: "field full shade-field" });
-  const drawBase = () => {
-    const base = BUILTIN_TEMPLATES.find(t => t.id === draft.type);
-    baseInfo.textContent = "Inherited fields: " + [...COMMON_FIELDS, ...base.fields].map(f => f.label).join(", ");
-    drawShade();
+
+  const drawCore = () => {
+    coreInfo.textContent = "Every item also has: " + [...CORE_HEAD, WEIGHT_FIELD, ...(activeSystem().commonFields || []), ...CORE_TAIL]
+      .filter(f => !(draft.hide || []).includes(f.key)).map(f => f.label).join(", ") + ".";
   };
   // Colour: the template's own hue; its categories show as shades of it.
-  const drawShade = () => {
-    if (draft.hue == null) draft.hue = groupHue(groupOf(draft.type).id);
-    setChildren(shadeBox, huePicker("Colour", draft.hue, templateSubcategories(draft), hue => { draft.hue = hue; },
-      "Items made with this template use this hue. Their categories get different shades of it so they're easy to tell apart."));
-  };
+  const drawShade = () => setChildren(shadeBox, huePicker("Colour", draft.hue, templateSubcategories(draft), hue => { draft.hue = hue; },
+    "Items made with this template use this hue. Their categories get different shades of it so they're easy to tell apart."));
   const drawFields = () => setChildren(fieldsBox, draft.fields.map((f, i) => h("div", { class: "tpl-field" },
     h("input", { type: "text", placeholder: "Field label", value: f.label, "aria-label": "Field label",
       oninput: e => { f.label = e.target.value; } }),
@@ -2810,11 +2851,26 @@ function openTemplateEditor(tpl) {
       "aria-label": "Options", oninput: e => { f.options = e.target.value.split(",").map(s => s.trim()).filter(Boolean); } }),
     iconBtn("trash", "Remove field", () => { draft.fields.splice(i, 1); drawFields(); }))),
     h("button", { class: "btn", type: "button", onclick: () => { draft.fields.push({ label: "", kind: "text" }); drawFields(); } }, icon("plus"), "Add field"));
-  drawBase(); drawFields();
+
+  // Features: which its items start with. Stacks is on unless turned off.
+  const modeOf = key => {
+    const v = draft.features[key];
+    return v === "main" ? "main" : v === true || (key === "stacks" && v !== false) ? "on" : "";
+  };
+  const setMode = (key, m) => {
+    if (key === "stacks") { if (m) delete draft.features.stacks; else draft.features.stacks = false; return; }
+    if (m === "main") draft.features[key] = "main"; else if (m === "on") draft.features[key] = true; else delete draft.features[key];
+  };
+  const featureRows = h("div", { class: "tpl-features" }, allFeatures().map(ft => h("label", { class: "tpl-feature" },
+    h("span", null, h("b", null, ft.label), ft.hint && h("span", { class: "muted small" }, " " + ft.hint)),
+    h("select", { "aria-label": ft.label, onchange: e => setMode(ft.key, e.target.value) },
+      FEATURE_MODES.filter(([m]) => m !== "main" || ft.fields.length).map(([m, l]) => h("option", { value: m, selected: modeOf(ft.key) === m }, l))))));
+
+  drawCore(); drawShade(); drawFields();
 
   const save = () => {
     if (!draft.name.trim()) return toast("Name the template");
-    const used = new Set([...COMMON_FIELDS, ...BUILTIN_TEMPLATES.find(t => t.id === draft.type).fields].map(f => f.key));
+    const used = new Set([...CORE_FIELD_KEYS, "category", ...(activeSystem().commonFields || []).map(f => f.key), ...featureFieldKeys()]);
     draft.fields = draft.fields.filter(f => f.label.trim()).map(f => {
       let key = f.key || f.label.trim().toLowerCase().replace(/[^a-z0-9]+(.)?/g, (_, c) => c ? c.toUpperCase() : "");
       while (used.has(key)) key += "_";
@@ -2822,6 +2878,7 @@ function openTemplateEditor(tpl) {
       return { ...f, key, label: f.label.trim(), options: f.kind === "select" ? (f.options?.length ? f.options : ["Option"]) : undefined };
     });
     draft.name = draft.name.trim();
+    if (!draft.categories?.length) { delete draft.categories; delete draft.categoryLabel; }
     delete draft.builtin;
     if (isNew) draft.id = "tpl-" + uid();
     close();
@@ -2832,21 +2889,27 @@ function openTemplateEditor(tpl) {
     }, `Saved template ${draft.name}`, true);
   };
 
+  const from = templateById(draft.from);
   close = openModal(isNew ? "New template" : `Edit ${tpl.name}`, h("div", { class: "form" },
+    from && h("p", { class: "muted small" }, `A copy of ${from.name}: change anything you like.`),
     h("div", { class: "grid" },
       h("label", { class: "field" }, h("span", null, "Template name *"),
         h("input", { type: "text", value: draft.name, placeholder: "e.g. Spell Scroll, Firearm, Vehicle", oninput: e => { draft.name = e.target.value; } })),
-      h("label", { class: "field" }, h("span", null, "Base type"),
-        h("select", { onchange: e => { draft.type = e.target.value; drawBase(); } },
-          TYPE_GROUPS.map(g => {
-            const opts = g.types.map(t => BUILTIN_TEMPLATES.find(b => b.id === t)).filter(t => t && !t.hidden)
-              .map(t => h("option", { value: t.id, selected: draft.type === t.id }, t.name));
-            return opts.length > 1 ? h("optgroup", { label: g.name }, opts) : opts;
-          })))),
+      h("label", { class: "field" }, h("span", null, "Group"),
+        h("select", { onchange: e => { draft.group = e.target.value; } },
+          systemGroups().map(g => h("option", { value: g.id, selected: draft.group === g.id }, g.name)))),
+      h("label", { class: "field" }, h("span", null, "Categories"),
+        h("input", { type: "text", value: (draft.categories || []).join(", "), placeholder: "Comma separated, e.g. Pistol, Rifle",
+          oninput: e => { draft.categories = e.target.value.split(",").map(s => s.trim()).filter(Boolean); drawShade(); } })),
+      h("label", { class: "field" }, h("span", null, "Categories are called"),
+        h("input", { type: "text", value: draft.categoryLabel || "", placeholder: "Category", oninput: e => { draft.categoryLabel = e.target.value.trim() || undefined; } }))),
     shadeBox,
-    baseInfo,
-    h("h4", null, "Extra fields"),
-    fieldsBox), { wide: true, footer: [
+    h("h4", null, "Fields"),
+    coreInfo,
+    fieldsBox,
+    h("h4", null, "Features"),
+    h("p", { class: "muted small" }, "What its items can do to begin with. “Yes” can be changed for each item; “Always” can't, and puts the feature's fields with the template's own."),
+    featureRows), { wide: true, footer: [
     !isNew && h("button", { class: "btn danger", onclick: () => {
       confirmDialog(`Delete template “${tpl.name}”? Items using it keep their data but lose the extra fields in the editor.`, "Delete", () => {
         close();
@@ -2892,9 +2955,14 @@ async function importData(data, fileName = "Imported") {
   await storeBundledImages(data.images);
   delete data.images;
   const label = (fileName || "Imported").replace(/\.json$/i, "");
-  const takeTemplates = tpls => { for (const t of tpls || []) if (!store.template(t.id)) store.homePackage().templates.push(t); };
+  const takeTemplates = tpls => { for (const t of tpls || []) if (!store.template(t.id)) store.homePackage().templates.push(standardiseTemplate(t)); };
   const takeDrawings = list => { for (const d of list || []) if (!findDrawing(d.id)) store.data.iconLibrary.push(d); };
-  if (data.kind === "character" && data.character) {
+  if (data.packrat === "system") {
+    const sys = cleanSystem(data);
+    const had = store.data.systems.find(x => x.id === sys.id);
+    commit(() => { store.data.systems = [...store.data.systems.filter(x => x.id !== sys.id), sys]; },
+      `${had ? "Updated" : "Imported"} the system ${sys.name}`, true);
+  } else if (data.kind === "character" && data.character) {
     commit(s => {
       const c = { ...cleanChar(data.character), id: uid() }; // no party-server fields (owner, rev…)
       reclassifyAll({ characters: [c] });
@@ -2905,6 +2973,7 @@ async function importData(data, fileName = "Imported") {
     commit(() => {
       const camp = { ...data.campaign, id: "cmp" + uid() };
       for (const p of data.packages || []) if (!store.data.packages.some(x => x.id === p.id)) store.data.packages.push(p);
+      if (data.system && !systemById(data.system.id)) store.data.systems.push(cleanSystem(data.system));
       takeDrawings(data.drawings);
       reclassifyAll({ characters: camp.characters || [], shops: camp.shops || [] });
       store.data.campaigns.push(camp);

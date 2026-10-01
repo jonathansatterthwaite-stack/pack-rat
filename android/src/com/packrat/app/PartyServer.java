@@ -1060,8 +1060,9 @@ public class PartyServer {
         JSONArray items = dst.getJSONArray("items");
         JSONObject features = item.optJSONObject("features");
         boolean separate = features != null && (features.optBoolean("holds") || features.optBoolean("pack"));
-        // Decks keep their own cards; anything made a container or pack stays separate too.
-        if (!NON_STACKING.contains(item.optString("type")) && item.optJSONArray("deckCards") == null && !separate) {
+        // Decks keep their own cards; anything made a container or pack stays separate too. The app
+        // marks what doesn't stack (noStack); older copies go by their type.
+        if (!NON_STACKING.contains(item.optString("type")) && !item.optBoolean("noStack") && item.optJSONArray("deckCards") == null && !separate) {
             for (int i = 0; i < items.length(); i++) {
                 JSONObject x = items.getJSONObject(i);
                 if (x.isNull("parent") && !x.optBoolean("strapped") && x.optString("srcId").equals(entry.optString("srcId"))
