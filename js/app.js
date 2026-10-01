@@ -68,6 +68,7 @@ const ICONS = {
   link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
   users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
   cog: '<path d="M12 20a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z"/><path d="M12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z"/><path d="M12 2v2M12 22v-2M17 20.66l-1-1.73M11 10.27 7 3.34M20.66 17l-1.73-1M3.34 7l1.73 1M14 12h8M2 12h2M20.66 7l-1.73 1M3.34 17l1.73-1M17 3.34l-1 1.73M11 13.73l-4 6.93"/>',
+  eye: '<path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0"/><circle cx="12" cy="12" r="3"/>',
   more: '<circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="19" cy="12" r="1.3" fill="currentColor"/><circle cx="5" cy="12" r="1.3" fill="currentColor"/>',
 };
 
@@ -163,20 +164,15 @@ const PREF_VIEWS = ["inventory", "catalog"]; // tabs with their own display opti
 
 const ui = {
   view: "inventory",
-  invSearch: "",
-  invType: "all",
-  invSub: null,
   collapsed: new Set(),
-  catSearch: "",
-  catType: "all",
-  catSub: null,
-  catLimit: 150,
   trinketTable: null,
   views: loadViewPrefs(),
-  sort: readPref("packrat-sort", "smart"),
-  sortReverse: readPref("packrat-sort-rev", "") === "1",
-  gmTab: "players", // the GM tab's sub-tab: "players", "values" or "clockwork"
+  gmTab: "controls", // the GM tab's sub-tab: "controls", "players" or "treasure"
+  gmControlsTab: "panels", // Controls' own tabs: "panels", "values" or "connections"
   cwFocus: null, // the item the Clockwork tab shows first ("charId/uid", from its cog)
+  panelEdit: null, // the control panel being arranged (its id)
+  panelPage: {}, // the page each control panel shows (panel id -> page id)
+  panelSection: {}, // the section each panel's page shows ("panelId/pageId" -> section id)
   settingsTab: "settings", // Settings · Campaigns · Files
   catTab: "items", // Catalog: Items · My items · Drawings · Templates
   role: readPref("packrat-role", "player"), // "gm" to prepare GM things outside a party (see isGmDevice)
@@ -205,8 +201,11 @@ function readPref(key, fallback) {
 
 function applyPrefs() {
   ui.views = loadViewPrefs();
-  ui.sort = readPref("packrat-sort", "smart");
-  ui.sortReverse = readPref("packrat-sort-rev", "") === "1";
+  // Lists' sort orders (each list's own: see listState).
+  for (const [k, st] of Object.entries(listStates)) {
+    st.sort = readPref(`packrat-sort-${k}`, st.sort);
+    st.reverse = readPref(`packrat-sort-rev-${k}`, st.reverse ? "1" : "") === "1";
+  }
   ui.playerMode = readPref("packrat-player-mode", "") === "1";
   ui.role = readPref("packrat-role", "player");
 }
@@ -224,12 +223,12 @@ function reloadSharedData() {
   }, 150);
 }
 
-function layoutToggle() {
-  const prefs = viewPrefs();
+// prefs, key: the list's display options and where they're saved (see listPrefs); onChange: redraw.
+function layoutToggle(prefs = viewPrefs(), key = ui.view, onChange = render) {
   const set = v => {
     prefs.layout = v;
-    writePref(`packrat-layout-${ui.view}`, v);
-    render();
+    writePref(`packrat-layout-${key}`, v);
+    onChange();
   };
   return h("div", { class: "seg", role: "group", "aria-label": "Layout" },
     [["list", "list", "List view"], ["tiles", "grid", "Tile view"]].map(([v, ic, label]) =>
@@ -238,22 +237,21 @@ function layoutToggle() {
 }
 
 // Tile view: show or hide the worth and weight labels in the tiles' top corners.
-function tileLabelToggles() {
-  const prefs = viewPrefs();
-  if (prefs.layout !== "tiles") return null;
-  const toggle = (key, pref, label, ic) => h("button", {
-    type: "button", class: prefs[key] ? "active" : "", title: `${prefs[key] ? "Hide" : "Show"} ${label.toLowerCase()} on tiles`,
-    "aria-label": `${label} on tiles`, "aria-pressed": String(prefs[key]),
-    onclick: () => { prefs[key] = !prefs[key]; writePref(`${pref}-${ui.view}`, prefs[key] ? "1" : "0"); render(); },
+// In list view they keep their place, hidden, so nothing else in the toolbar moves when switching.
+function tileLabelToggles(prefs = viewPrefs(), key = ui.view, onChange = render) {
+  const off = prefs.layout !== "tiles";
+  const toggle = (prop, pref, label, ic) => h("button", {
+    type: "button", class: prefs[prop] ? "active" : "", disabled: off, tabindex: off ? "-1" : null, title: `${prefs[prop] ? "Hide" : "Show"} ${label.toLowerCase()} on tiles`,
+    "aria-label": `${label} on tiles`, "aria-pressed": String(prefs[prop]),
+    onclick: () => { prefs[prop] = !prefs[prop]; writePref(`${pref}-${key}`, prefs[prop] ? "1" : "0"); onChange(); },
   }, icon(ic));
-  return h("div", { class: "seg tile-toggles", role: "group", "aria-label": "Tile labels" },
+  return h("div", { class: "seg tile-toggles" + (off ? " off" : ""), role: "group", "aria-label": "Tile labels", "aria-hidden": off ? "true" : null },
     toggle("tileWorth", "packrat-tile-worth", "Worth", "coins"),
     toggle("tileWeight", "packrat-tile-weight", "Weight", "weight"));
 }
 
 // A grid of tiles; names shrink to fit (the worth / weight labels can be hidden).
-function tilesBox(extraClass = "") {
-  const prefs = viewPrefs();
+function tilesBox(extraClass = "", prefs = viewPrefs()) {
   const cls = ["tiles", "detail-minimal", !prefs.tileWorth && "hide-worth", !prefs.tileWeight && "hide-weight", extraClass];
   const box = h("div", { class: cls.filter(Boolean).join(" ") });
   tileResizer()?.observe(box);
@@ -380,7 +378,7 @@ function render() {
   const scroll = window.scrollY;
   tileObserver?.disconnect(); // the grids being replaced; new ones observe themselves
   // Above the view: its notices, then the system's panels (they stay loaded: see js/panels.js).
-  setChildren(document.getElementById("view-top"), !joining && VIEWS[ui.view].top?.());
+  setChildren(document.getElementById("view-top"), !joining && treasureBanner(), !joining && VIEWS[ui.view].top?.());
   syncPanels(char, !joining && ui.view === "inventory");
   main.replaceChildren(joining ? renderJoin() : VIEWS[ui.view].render());
   // Tiles are laid out now: size them and shrink names to fit (resizes are handled by each grid's observer).
@@ -388,6 +386,7 @@ function render() {
   window.scrollTo(0, scroll);
   refreshLiveIcons(); // live icons outside the view (an open item's details) show the new values
   refreshEntryDetails();
+  syncTreasure(); // treasure being shown: pops up, redraws, comes back (js/treasure.js)
 }
 
 function go(view) {
@@ -415,22 +414,8 @@ function missingSystemBanner() {
 
 function renderInventory() {
   const char = store.char();
-  const list = h("div", { class: "inv-list" });
-  const drawList = () => {
-    setChildren(list, inventoryTree(char));
-    syncTileSize(); // no-op until the view is on screen
-  };
-  drawList();
-
-  const toolbar = h("div", { class: "toolbar" },
-    h("label", { class: "search" }, icon("search"),
-      h("input", { type: "search", placeholder: "Search inventory", value: ui.invSearch,
-        oninput: e => { ui.invSearch = e.target.value; drawList(); } })),
-    sortControl(),
-    layoutToggle(),
-    tileLabelToggles());
-
-  return h("div", { class: "view-inventory" }, toolbar, inventoryTypeChips(char), list);
+  return h("div", { class: "view-inventory" },
+    itemManager({ key: "inventory", sorts: INVENTORY_SORTS, sort: "smart", placeholder: "Search inventory", storage: () => charStorage(char) }));
 }
 
 // "12 pp 40 gp 0 ep …", each coin in its colour.
@@ -440,22 +425,13 @@ function coinChips(coins) {
 }
 
 // Inventory filter: "all", "equipped", or a group (Gear & Tools…), optionally narrowed to one
-// of its subcategories (ui.invSub: a type in a combined group, or a category).
+// of its subcategories (a type in a combined group, or a category); or "custom" (catalogs).
 function invTypeMatches(e, group, sub = null) {
   if (group === "all") return true;
   if (group === "equipped") return e.equipped;
+  if (group === "custom") return (e.srcId || "").startsWith("custom-");
   if (groupOfItem(e.item)?.id !== group) return false;
   return !sub || !!subcategories(group).find(s => s.key === sub)?.match(e.item);
-}
-
-// The active filter, falling back to "all" once nothing of that group is left.
-function activeInvType(char) {
-  const t = ui.invType;
-  return t !== "all" && !listed(char).some(e => invTypeMatches(e, t)) ? "all" : t;
-}
-
-function activeInvSub(char, group) {
-  return ui.invSub && listed(char).some(e => invTypeMatches(e, group, ui.invSub)) ? ui.invSub : null;
 }
 
 // A row of chips, keeping the selected one scrolled into view on narrow screens.
@@ -489,28 +465,6 @@ function subChips(groupId, active, count, onPick) {
 // What the inventory lists: everything except the cards inside decks (those show in the deck's details).
 const listed = char => char.items.filter(e => !inDeck(char, e));
 
-function inventoryTypeChips(char) {
-  const items = listed(char);
-  if (!items.length) return null;
-  const counts = {};
-  for (const e of items) { const g = groupOfItem(e.item)?.id; counts[g] = (counts[g] || 0) + 1; }
-  const equipped = items.filter(e => e.equipped).length;
-  const active = activeInvType(char);
-  const chip = (key, label, n, dot) => h("button", {
-    class: "chip-btn" + (active === key ? " active" : ""), role: "tab", "aria-selected": String(active === key),
-    onclick: () => { ui.invType = key; ui.invSub = null; render(); },
-  }, dot, label, h("span", { class: "chip-count" }, n));
-  const row = chipRow("Filter by type", [
-    chip("all", "All", items.length),
-    equipped > 0 && chip("equipped", "Equipped", equipped),
-    systemGroups().filter(g => counts[g.id]).map(g => chip(g.id, g.name, counts[g.id], colorDot(groupColor(g.id), g.name))),
-  ]);
-  const sub = groupById(active) && subChips(active, activeInvSub(char, active),
-    s => items.filter(e => invTypeMatches(e, active, s.key)).length,
-    key => { ui.invSub = key; render(); });
-  return [row, sub];
-}
-
 function matchesSearch(item, q) {
   if (!q) return true;
   q = q.toLowerCase();
@@ -528,127 +482,302 @@ const INV_SORTS = {
   value: { label: "Most valuable", cmp: (a, b) => entryValue(b) - entryValue(a) },
   qty: { label: "Quantity", cmp: (a, b) => b.qty - a.qty },
   recent: { label: "Recently added", cmp: (a, b, char) => char.items.indexOf(b) - char.items.indexOf(a) },
+  catalog: { label: "Catalog order", cmp: (a, b, char) => char.items.indexOf(a) - char.items.indexOf(b) },
 };
+const INVENTORY_SORTS = ["smart", "name", "type", "weight", "value", "qty", "recent"];
+const CATALOG_SORTS = ["catalog", "name", "type", "weight", "value"];
 
-function sortEntries(char, entries) {
-  const cmp = (INV_SORTS[ui.sort] || INV_SORTS.smart).cmp;
-  const dir = ui.sortReverse ? -1 : 1;
-  return [...entries].sort((a, b) => dir * (cmp(a, b, char) || entryName(a).localeCompare(entryName(b))));
+// A storage's entries in its list's order (st.sort, st.reverse; see itemManager).
+function sortEntries(st, entries) {
+  const cmp = (INV_SORTS[st.sort] || INV_SORTS.smart).cmp;
+  const dir = st.reverse ? -1 : 1;
+  return [...entries].sort((a, b) => dir * (cmp(a, b, st.char) || entryName(a).localeCompare(entryName(b))));
 }
 
-function sortControl() {
-  const set = (key, rev) => {
-    ui.sort = key;
-    ui.sortReverse = rev;
-    writePref("packrat-sort", key);
-    writePref("packrat-sort-rev", rev ? "1" : "");
-    render();
+function sortControl(state, key, sorts, onChange) {
+  const set = (sort, rev) => {
+    state.sort = sort;
+    state.reverse = rev;
+    writePref(`packrat-sort-${key}`, sort);
+    writePref(`packrat-sort-rev-${key}`, rev ? "1" : "");
+    onChange();
   };
   return h("div", { class: "sort" },
     h("label", { class: "sort-select", title: "Sort by" }, icon("sort"),
-      h("select", { "aria-label": "Sort inventory by", onchange: e => set(e.target.value, ui.sortReverse) },
-        Object.entries(INV_SORTS).map(([k, v]) => h("option", { value: k, selected: ui.sort === k }, v.label)))),
-    h("button", { type: "button", class: "sort-dir" + (ui.sortReverse ? " active" : ""), title: "Reverse order",
-      "aria-label": "Reverse order", "aria-pressed": String(ui.sortReverse), onclick: () => set(ui.sort, !ui.sortReverse) },
-      ui.sortReverse ? "↑" : "↓"));
+      h("select", { "aria-label": "Sort by", onchange: e => set(e.target.value, state.reverse) },
+        sorts.map(k => h("option", { value: k, selected: state.sort === k }, INV_SORTS[k].label)))),
+    h("button", { type: "button", class: "sort-dir" + (state.reverse ? " active" : ""), title: "Reverse order",
+      "aria-label": "Reverse order", "aria-pressed": String(state.reverse), onclick: () => set(state.sort, !state.reverse) },
+      state.reverse ? "↑" : "↓"));
 }
 
-function inventoryTree(char) {
-  const q = ui.invSearch.trim();
-  if (!char.items.length) {
-    return [h("div", { class: "empty" },
+// ------------------------------------------------------------------ storage views
+// Everything that holds items like an inventory is shown the same way, with the same rows, tiles,
+// container sections and strapped-on items: a character's inventory, a hoard, treasure being
+// shown, the GM's view of a player. Changes to these views reach all of them. A storage says what
+// it holds and what can be done there:
+//   { char         what holds the items: { items, coins?, containerOrder? } (a character, a hoard…)
+//     id           for remembered folds ("" for this device's inventory, as before)
+//     rootLabel    the top section: "On person", "Loose"…
+//     open(e)      the row's main button (its details)
+//     setQty(e, n) − / + and the number (absent: no quantity controls; "×3" shows instead)
+//     move(uid, parent, strapped)   drag and drop between sections (absent: no dragging)
+//     reorder(ids) moving container sections up and down (absent: no arrows)
+//     extras(e)    more controls at the row's end (equip, a pick, states…)
+//     sub(e)       more for the row's second line
+//     rowClass(e)  more for the row's (or tile's) class, e.g. "contested"
+//     tags(e)      tags after the name ("custom")
+//     showWorth    a worth column (catalogs);  noCog: no Clockwork cog (catalogs: not an inventory's)
+//     tileExtras   false: extras only on rows, not under tiles
+// itemManager (below) gives a storage its list's search, filters, sort and display options.
+//     search, type, typeSub   filters (the inventory's search box and type chips)
+//     keep(e)      shown whatever the search (a trade's picked items)
+//     empty()      what shows when it holds nothing }
+
+const foldKey = (st, uid) => st.id ? `${st.id}:${uid}` : uid;
+// Does a search find this entry (the item as it is now, its notes, its own name)?
+const entryMatches = (char, e, q) => matchesSearch(currentItem(e, char), q) || [e.notes, e.customName].some(t => (t || "").toLowerCase().includes(q.toLowerCase()));
+
+// An item's details from a storage other than this device's inventory (which has its own, with
+// much more: openEntry): the item as it is now, with the storage's controls above it.
+function openStoredItem(st, e, controls = null, footer = []) {
+  const it = currentItem(e, st.char);
+  let close;
+  close = openModal(entryName(e), [e.customName && h("p", { class: "muted small" }, it.name), controls,
+    itemDetails(it, null, e.srcId, () => entryIconVars(st.char, e))],
+  { footer: [...footer, h("button", { class: "btn primary", onclick: () => close() }, "Done")] });
+  return close;
+}
+
+// ------------------------------------------------------------------ the inventory management template
+// Every list of items is one template: a toolbar (search, sort, list or tiles, the tiles' labels,
+// and the list's own buttons), the type chips (with subcategories), and the items, shown by
+// storageTree (or, for catalogs, as one flat list). The inventory, the catalog, My items, the
+// stock picker, hoards, trades, treasure being shown and the GM's view of players all use it, so a
+// change here reaches them all. Each list keeps its own search, filters and sort (by key); lists
+// can share display options (prefsKey).
+//   itemManager({ key, prefsKey?, storage: () => st, flat?, sorts, sort?, buttons?, placeholder?,
+//                 parts?: { search, sort, layout, chips }, customChip?, limit? })
+// Returns the element; el.redraw() draws it again (e.g. after picking something in it).
+
+const listStates = {};
+function listState(key, o = {}) {
+  const old = key === "inventory"; // the inventory's sort was saved before lists had their own
+  return listStates[key] ||= {
+    search: "", type: "all", sub: null, limit: o.limit || Infinity,
+    sort: readPref(`packrat-sort-${key}`, old ? readPref("packrat-sort", o.sort) : o.sort || "name"),
+    reverse: readPref(`packrat-sort-rev-${key}`, old ? readPref("packrat-sort-rev", "") : "") === "1",
+  };
+}
+const resetList = key => { delete listStates[key]; };
+
+// A list's display options (list or tiles, the tiles' labels), saved on this device.
+function listPrefs(key) {
+  return ui.views[key] ||= {
+    layout: readPref(`packrat-layout-${key}`, "list"),
+    tileWorth: readPref(`packrat-tile-worth-${key}`, "1") === "1",
+    tileWeight: readPref(`packrat-tile-weight-${key}`, "1") === "1",
+  };
+}
+
+// The type chips: All, Equipped (if anything is), each group there is, Custom (catalogs); then
+// the chosen group's subcategories.
+function typeChips(st, state, o, onPick) {
+  const items = listed(st.char);
+  if (!items.length) return null;
+  const counts = {};
+  for (const e of items) { const g = groupOfItem(e.item)?.id; counts[g] = (counts[g] || 0) + 1; }
+  const equipped = items.filter(e => e.equipped).length, custom = o.customChip ? items.filter(e => invTypeMatches(e, "custom")).length : 0;
+  const chip = (key, label, n, dot) => h("button", {
+    class: "chip-btn" + (state.type === key ? " active" : ""), role: "tab", "aria-selected": String(state.type === key),
+    onclick: () => { state.type = key; state.sub = null; onPick(); },
+  }, dot, label, h("span", { class: "chip-count" }, n));
+  const row = chipRow("Filter by type", [
+    chip("all", "All", items.length),
+    equipped > 0 && chip("equipped", "Equipped", equipped),
+    systemGroups().filter(g => counts[g.id]).map(g => chip(g.id, g.name, counts[g.id], colorDot(groupColor(g.id), g.name))),
+    custom > 0 && chip("custom", "Custom", custom),
+  ]);
+  const inSearch = e => !state.search.trim() || entryMatches(st.char, e, state.search.trim());
+  const sub = groupById(state.type) && subChips(state.type, st.typeSub,
+    sc => items.filter(e => invTypeMatches(e, state.type, sc.key) && inSearch(e)).length,
+    key => { state.sub = key; onPick(); });
+  return [row, sub];
+}
+
+// A flat list (a catalog): filtered, sorted, a page at a time.
+function flatList(st, state, o, redraw) {
+  const q = (st.search || "").trim();
+  const hits = sortEntries(st, listed(st.char).filter(e => invTypeMatches(e, st.type || "all", st.typeSub) && (!q || entryMatches(st.char, e, q) || st.keep?.(e))));
+  return [
+    h("p", { class: "muted small list-count" }, plural(hits.length, "item")),
+    hits.length ? entryList(st, hits.slice(0, state.limit)) : (st.empty ? st.empty() : h("p", { class: "muted pad" }, "Nothing matches.")),
+    hits.length > state.limit && h("button", { class: "btn wide", onclick: () => { state.limit += 300; redraw(); } }, `Show more (${hits.length - state.limit} left)`),
+  ];
+}
+
+function itemManager(o) {
+  const state = listState(o.key, o), prefsKey = o.prefsKey || o.key, prefs = listPrefs(prefsKey);
+  const parts = { search: true, sort: true, layout: true, chips: true, ...(o.parts || {}) };
+  const sorts = o.sorts || INVENTORY_SORTS;
+  if (!sorts.includes(state.sort)) state.sort = sorts[0];
+  const root = h("div", { class: "item-manager" }), chipsBox = h("div", { class: "item-chips" }), body = h("div", { class: "inv-list" });
+  // The storage, with this list's search, filters, sort and display options.
+  const storage = () => {
+    const st = o.storage();
+    if (parts.search) st.search = state.search;
+    const items = listed(st.char);
+    if (state.type !== "all" && !items.some(e => invTypeMatches(e, state.type))) { state.type = "all"; state.sub = null; }
+    st.type = state.type;
+    st.typeSub = state.sub && items.some(e => invTypeMatches(e, state.type, state.sub)) ? state.sub : null;
+    return Object.assign(st, { sort: state.sort, reverse: state.reverse, prefs, flat: st.flat ?? o.flat });
+  };
+  // The chips and the items (typing in the search redraws only these, keeping the cursor).
+  const drawList = () => {
+    const st = storage();
+    if (parts.chips) setChildren(chipsBox, typeChips(st, state, o, () => { state.limit = o.limit || Infinity; drawList(); }));
+    setChildren(body, st.flat ? flatList(st, state, o, drawList) : storageTree(st));
+    setTimeout(() => { if (body.isConnected) syncTileSize(root.closest("#view, .modal") || undefined); });
+  };
+  const draw = () => {
+    setChildren(root,
+      h("div", { class: "toolbar" },
+        parts.search && h("label", { class: "search" }, icon("search"),
+          h("input", { type: "search", placeholder: o.placeholder || "Search items", value: state.search, "aria-label": "Search",
+            oninput: e => { state.search = e.target.value; state.limit = o.limit || Infinity; drawList(); } })),
+        parts.sort && sortControl(state, prefsKey === o.key ? o.key : prefsKey, sorts, draw),
+        o.buttons,
+        // List / Tiles last, so it stays put when the tiles' label toggles come and go.
+        parts.layout && h("span", { class: "layout-end" }, tileLabelToggles(prefs, prefsKey, draw), layoutToggle(prefs, prefsKey, draw))),
+      chipsBox, body);
+    drawList();
+  };
+  draw();
+  root.redraw = drawList;
+  return root;
+}
+
+// Catalog items as a storage, for flat lists of them (the catalog, My items, the stock picker):
+// each item shown as an inventory entry would be. o: { open(item), extras(e), sub(e), empty() }.
+function catalogStorage(items, o = {}) {
+  const char = { id: null, items: items.map(i => ({ uid: i.id, srcId: i.id, item: i, qty: i.bundle || 1, parent: null })) };
+  return {
+    char, id: o.id || "catalog", flat: true, noCog: true, showWorth: true, tileExtras: false,
+    open: e => (o.open || openCatalogItem)(e.item),
+    tags: e => e.srcId?.startsWith("custom-") && h("span", { class: "tag custom" }, "custom"),
+    extras: o.extras || (e => iconBtn("plus", "Add to inventory", () => quickAdd(e.item), "add")),
+    sub: o.sub, empty: o.empty,
+  };
+}
+
+// This device's inventory (store.char()), as a storage.
+function charStorage(char) {
+  return {
+    char, id: "", rootLabel: "On person",
+    open: e => openEntry(e.uid), setQty: setEntryQty, move: moveEntry,
+    reorder: ids => commit((s, c) => { c.containerOrder = [...ids, ...(c.containerOrder || []).filter(id => !ids.includes(id) && c.items.some(e => e.uid === id))]; }),
+    extras: e => [writingButton(e),
+      isEquipable(e) && iconBtn(equipKind(e) === "wielded" ? "sword" : "shield", e.equipped ? "Unequip" : "Equip",
+        () => toggleEquip(e.uid), "equip" + (e.equipped ? " on" : ""))],
+    empty: () => h("div", { class: "empty" },
       icon("bag", "big"),
       h("p", null, "Your pack is empty."),
       !playerOnly() && h("button", { class: "btn primary", onclick: () => go("catalog") }, "Browse the catalog"),
       !party.active && isFreshData() && h("p", { class: "muted small" }, "Moving from another device? ",
-        h("button", { class: "link", onclick: pickBackup }, "Import a backup"), " exported from Pack Rat's Settings."))];
-  }
-  const type = activeInvType(char);
+        h("button", { class: "link", onclick: pickBackup }, "Import a backup"), " exported from Pack Rat's Settings.")),
+  };
+}
+
+function storageTree(st) {
+  const char = st.char, q = (st.search || "").trim(), type = st.type || "all";
+  if (!listed(char).length) return [st.empty ? st.empty() : h("p", { class: "muted pad" }, "Nothing here.")];
   if (q || type !== "all") {
     // Filtered: one flat list, with each item tagged by the container it's in.
-    const sub = activeInvSub(char, type);
-    const hits = listed(char).filter(e => invTypeMatches(e, type, sub) &&
-      (matchesSearch(currentItem(e, char), q) || [e.notes, e.customName].some(t => (t || "").toLowerCase().includes(q.toLowerCase()))));
+    const hits = listed(char).filter(e => invTypeMatches(e, type, st.typeSub) && (entryMatches(char, e, q) || st.keep?.(e)));
     if (!hits.length) return [h("p", { class: "muted pad" }, "Nothing matches.")];
     const weight = hits.reduce((sum, e) => sum + entryOwnWeight(e), 0);
     return [h("div", { class: "group" },
       h("div", { class: "group-head" },
         h("h3", null, `${hits.length} ${hits.length === 1 ? "entry" : "entries"}`),
         h("span", { class: "muted" }, fmtWeight(weight))),
-      entryList(char, sortEntries(char, hits), true))];
+      entryList(st, sortEntries(st, hits), true))];
   }
-  const top = childrenOf(char, null);
-  const containers = orderContainers(char, top.filter(e => holdsItems(char, e)));
-  const collapsed = ui.collapsed.has("person");
-  const toggle = () => { collapsed ? ui.collapsed.delete("person") : ui.collapsed.add("person"); render(); };
+  const top = childrenOf(char, null).filter(e => !inDeck(char, e));
+  const containers = orderContainers(st, top.filter(e => holdsItems(char, e)));
+  const key = foldKey(st, "person"), collapsed = ui.collapsed.has(key);
+  const toggle = () => { collapsed ? ui.collapsed.delete(key) : ui.collapsed.add(key); render(); };
   return [
-    // Everything carried, containers included (their contents are in their own sections below).
-    dropZone(null, h("div", { class: "group" },
+    // Everything at the top, containers included (their contents are in their own sections below).
+    dropZone(st, null, h("div", { class: "group" },
       h("div", { class: "group-head" },
         h("button", { class: "collapse" + (collapsed ? " closed" : ""), onclick: toggle, "aria-expanded": String(!collapsed) }, icon("chevron"),
-          h("h3", null, "On person")),
-        h("span", { class: "muted", title: "Everything carried, including what's in containers" },
+          h("h3", null, st.rootLabel || "On person")),
+        h("span", { class: "muted", title: "Everything here, including what's in containers" },
           fmtWeight(top.reduce((s, e) => s + entryTotalWeight(char, e), 0)))),
-      !collapsed && (top.length ? entryList(char, sortEntries(char, top)) : h("p", { class: "muted pad" }, "Nothing carried.")))),
-    ...containers.map((c, i) => containerGroup(char, c, 0, containers, i)),
+      !collapsed && (top.length ? entryList(st, sortEntries(st, top)) : h("p", { class: "muted pad" }, "Nothing here.")))),
+    ...containers.map((c, i) => containerGroup(st, c, 0, containers, i)),
   ];
 }
 
 // Container sections in the order the player chose (char.containerOrder); ones not placed yet
 // follow in the current sort.
-function orderContainers(char, list) {
-  const order = char.containerOrder || [];
+function orderContainers(st, list) {
+  const order = st.char.containerOrder || [];
   const pos = e => { const i = order.indexOf(e.uid); return i < 0 ? Infinity : i; };
-  return sortEntries(char, list).sort((a, b) => pos(a) - pos(b));
+  return sortEntries(st, list).sort((a, b) => pos(a) - pos(b));
 }
 
 // Move a container section up or down among its neighbours (siblings: the list as shown).
-function moveContainer(siblings, index, dir) {
+function moveContainer(st, siblings, index, dir) {
   const j = index + dir;
   if (j < 0 || j >= siblings.length) return;
   const ids = siblings.map(e => e.uid);
   [ids[index], ids[j]] = [ids[j], ids[index]];
-  commit((s, c) => { c.containerOrder = [...ids, ...(c.containerOrder || []).filter(id => !ids.includes(id) && c.items.some(e => e.uid === id))]; });
+  st.reorder(ids);
 }
 
-function containerGroup(char, c, depth, siblings = [c], index = 0) {
-  const all = sortEntries(char, childrenOf(char, c.uid));
+function containerGroup(st, c, depth, siblings = [c], index = 0) {
+  const char = st.char;
+  const all = sortEntries(st, childrenOf(char, c.uid).filter(e => !inDeck(char, e)));
   const kids = all.filter(k => !k.strapped);
   const outside = all.filter(k => k.strapped);
   const spec = holderSpec(c);
   const fill = fillLevel(char, c);
-  const collapsed = ui.collapsed.has(c.uid);
-  const toggle = () => { collapsed ? ui.collapsed.delete(c.uid) : ui.collapsed.add(c.uid); render(); };
-  return dropZone(c.uid, h("div", { class: "group container-group", style: { marginLeft: depth ? "12px" : null } },
+  const key = foldKey(st, c.uid), collapsed = ui.collapsed.has(key);
+  const toggle = () => { collapsed ? ui.collapsed.delete(key) : ui.collapsed.add(key); render(); };
+  const how = st.move ? " Drag them here or use Location." : "";
+  return dropZone(st, c.uid, h("div", { class: "group container-group", style: { marginLeft: depth ? "12px" : null } },
     withFill(h("div", { class: "group-head" },
       h("button", { class: "collapse" + (collapsed ? " closed" : ""), onclick: toggle, "aria-expanded": String(!collapsed) }, icon("chevron"),
         h("h3", null, entryName(c), c.qty > 1 ? ` ×${c.qty}` : "")),
       h("span", { class: "muted" + (fill?.over ? " warn-text" : ""), title: spec ? `Holds ${spec.label.toLowerCase()}` : null },
         contentsLoad(char, c), c.item.weightless ? " (weightless)" : ""),
-      siblings.length > 1 && h("span", { class: "reorder" },
+      st.reorder && siblings.length > 1 && h("span", { class: "reorder" },
         h("button", { class: "icon-btn", type: "button", title: `Move ${entryName(c)} up`, "aria-label": `Move ${entryName(c)} up`,
-          disabled: index === 0, onclick: () => moveContainer(siblings, index, -1) }, icon("up")),
+          disabled: index === 0, onclick: () => moveContainer(st, siblings, index, -1) }, icon("up")),
         h("button", { class: "icon-btn", type: "button", title: `Move ${entryName(c)} down`, "aria-label": `Move ${entryName(c)} down`,
-          disabled: index === siblings.length - 1, onclick: () => moveContainer(siblings, index, 1) }, icon("down"))),
-      iconBtn("more", "Container details", () => openEntry(c.uid))), fill),
+          disabled: index === siblings.length - 1, onclick: () => moveContainer(st, siblings, index, 1) }, icon("down"))),
+      iconBtn("more", "Container details", () => st.open(c))), fill),
     !collapsed && [
-      entryList(char, kids),
-      orderContainers(char, kids.filter(k => holdsItems(char, k))).map((k, i, list) => containerGroup(char, k, depth + 1, list, i)),
+      entryList(st, kids),
+      orderContainers(st, kids.filter(k => holdsItems(char, k))).map((k, i, list) => containerGroup(st, k, depth + 1, list, i)),
       !kids.length && h("p", { class: "muted pad" }, spec
-        ? `Empty — holds ${spec.key === "scrolls" ? `${spec.limit} rolled-up sheets of paper (${spec.limit / 2} of parchment), maps or scrolls` : `${spec.limit} ${spec.unit}s`}. Drag them here or use Location.`
-        : "Empty — drag items here or use Location."),
-      (canStrap(c) || outside.length > 0) && dropZone(c.uid, h("div", { class: "strapped" },
+        ? `Empty — holds ${spec.key === "scrolls" ? `${spec.limit} rolled-up sheets of paper (${spec.limit / 2} of parchment), maps or scrolls` : `${spec.limit} ${spec.unit}s`}.${how}`
+        : `Empty.${how}`),
+      ((st.move && canStrap(c)) || outside.length > 0) && dropZone(st, c.uid, h("div", { class: "strapped" },
         h("div", { class: "strapped-head" }, icon("link"), h("h4", null, "Strapped outside"),
           h("span", { class: "muted" }, outside.length ? fmtWeight(strappedWeight(char, c)) : "")),
         outside.length
-          ? [entryList(char, outside),
-             orderContainers(char, outside.filter(k => holdsItems(char, k))).map((k, i, list) => containerGroup(char, k, depth + 1, list, i))]
+          ? [entryList(st, outside),
+             orderContainers(st, outside.filter(k => holdsItems(char, k))).map((k, i, list) => containerGroup(st, k, depth + 1, list, i))]
           : h("p", { class: "muted pad small" }, "Bedrolls, rope, a shield… Drag items here or set Location to “strapped to”.")), true),
     ]));
 }
 
-// Desktop drag-and-drop between containers; touch uses the Move menu.
-function dropZone(parentUid, el, strapped = false) {
+// Desktop drag-and-drop between a storage's sections; touch uses the Move menu. Drags only land
+// in the storage they came from.
+function dropZone(st, parentUid, el, strapped = false) {
+  if (!st.move) return el;
   el.addEventListener("dragover", e => {
     if (!e.dataTransfer.types.includes("text/entry")) return;
     e.preventDefault(); e.stopPropagation();
@@ -658,11 +787,13 @@ function dropZone(parentUid, el, strapped = false) {
   el.addEventListener("drop", e => {
     e.preventDefault(); e.stopPropagation();
     el.classList.remove("drop-target");
-    const id = e.dataTransfer.getData("text/entry");
-    moveEntry(id, parentUid, strapped);
+    const [from, id] = e.dataTransfer.getData("text/entry").split("|");
+    if (from === (st.id || "inv") && id) st.move(id, parentUid, strapped);
   });
   return el;
 }
+const dragFrom = (st, e) => st.move ? { draggable: "true",
+  ondragstart: ev => { ev.dataTransfer.setData("text/entry", `${st.id || "inv"}|${e.uid}`); ev.dataTransfer.effectAllowed = "move"; } } : {};
 
 function moveEntry(id, parentUid, strapped = false) {
   const char = store.char();
@@ -767,49 +898,52 @@ function withFill(el, fill) {
 }
 
 // Rows or a tile grid, depending on the layout preference.
-function entryList(char, entries, showPath = false) {
+function entryList(st, entries, showPath = false) {
   if (!entries.length) return null;
-  if (viewPrefs().layout !== "tiles") return entries.map(e => entryRow(char, e, showPath));
-  const box = tilesBox();
-  box.append(...entries.map(e => entryTile(char, e, showPath)));
+  const prefs = st.prefs || viewPrefs();
+  if (prefs.layout !== "tiles") return entries.map(e => entryRow(st, e, showPath));
+  const box = tilesBox("", prefs);
+  box.append(...entries.map(e => entryTile(st, e, showPath)));
   return box;
 }
 
-function entryTile(char, e, showPath) {
-  const it = currentItem(e, char); // as it is now (its active layers)
+function entryTile(st, e, showPath) {
+  const char = st.char, it = currentItem(e, char); // as it is now (its active layers)
   const path = showPath ? locationLabel(char, e) : null;
-  const el = h("button", { class: "tile" + (e.equipped ? " equipped" : ""), draggable: "true",
+  const el = h("button", { class: "tile" + (e.equipped ? " equipped" : "") + (st.rowClass?.(e) ? " " + st.rowClass(e) : ""), ...dragFrom(st, e),
     title: [entryName(e), liquidLabel(e) || containerLoad(char, e) || itemSummary(it), e.equipped && equipWord(e),
-      ...statesOnFor(char, e).map(st => st.label.toLowerCase()), e.charges != null && `${e.charges}/${it.maxCharges} charges`, path].filter(Boolean).join(" · "),
-    onclick: () => openEntry(e.uid),
-    ondragstart: ev => { ev.dataTransfer.setData("text/entry", e.uid); ev.dataTransfer.effectAllowed = "move"; } },
+      ...statesOnFor(char, e).map(st => st.label.toLowerCase()), e.charges != null && `${e.charges}/${it.maxCharges} charges`, path, st.sub?.(e),
+      st.tags?.(e)?.textContent].filter(Boolean).join(" · "),
+    onclick: () => st.open(e) },
     itemIcon(it, "tile-icon", () => entryIconVars(char, e)),
     h("span", { class: "tile-name" }, entryName(e)),
     minimalCorners(entryTotalValue(char, e), entryTotalWeight(char, e), containerCapacity(char, e) || (e.qty !== 1 ? "×" + e.qty.toLocaleString() : null)));
   el.style.setProperty("--type", itemColor(it));
-  return withFill(el, fillLevel(char, e));
+  const tile = withFill(el, fillLevel(char, e));
+  // A storage's own controls (a pick…) sit under the tile.
+  const more = st.tileExtras === false ? [] : [st.extras?.(e)].flat().filter(Boolean);
+  return more.length ? h("div", { class: "tile-wrap" }, tile, h("div", { class: "tile-extras" }, more)) : tile;
 }
 
-function entryRow(char, e, showPath = false) {
-  const it = currentItem(e, char); // as it is now (its active layers)
+function entryRow(st, e, showPath = false) {
+  const char = st.char, it = currentItem(e, char); // as it is now (its active layers)
   const path = showPath ? locationLabel(char, e) : null;
-  const setQty = n => setEntryQty(e, n);
-  return withFill(h("div", { class: "row" + (e.equipped ? " equipped" : ""), draggable: "true",
-    ondragstart: ev => { ev.dataTransfer.setData("text/entry", e.uid); ev.dataTransfer.effectAllowed = "move"; } },
+  const setQty = n => st.setQty(e, n);
+  return withFill(h("div", { class: "row" + (e.equipped ? " equipped" : "") + (st.rowClass?.(e) ? " " + st.rowClass(e) : ""), ...dragFrom(st, e) },
     itemIcon(it, "row-icon", () => entryIconVars(char, e)),
-    h("button", { class: "row-main", onclick: () => openEntry(e.uid) },
+    h("button", { class: "row-main", onclick: () => st.open(e) },
       h("div", { class: "row-title" }, entryName(e),
+        !st.setQty && e.qty > 1 && h("span", { class: "muted" }, ` ×${e.qty.toLocaleString()}`),
         e.equipped && h("span", { class: "tag on" }, equipWord(e)),
         statesOnFor(char, e).map(st => h("span", { class: "tag attuned" }, st.label.toLowerCase())),
         e.charges != null && h("span", { class: "tag" }, `${e.charges}/${it.maxCharges} charges`),
-        path && h("span", { class: "tag" }, path)),
-      h("div", { class: "row-sub" }, [liquidLabel(e) || containerLoad(char, e) || itemSummary(it), e.notes].filter(Boolean).join(" — "))),
-    clockworkCog(char, e),
+        path && h("span", { class: "tag" }, path), st.tags?.(e)),
+      h("div", { class: "row-sub" }, [liquidLabel(e) || containerLoad(char, e) || itemSummary(it), e.notes, st.sub?.(e)].filter(Boolean).join(" — "))),
+    !st.noCog && clockworkCog(char, e),
+    st.showWorth && h("div", { class: "row-cost muted" }, fmtCost(entryTotalValue(char, e))),
     h("div", { class: "row-weight muted" }, fmtWeight(entryOwnWeight(e))),
-    writingButton(e),
-    isEquipable(e) && iconBtn(equipKind(e) === "wielded" ? "sword" : "shield", e.equipped ? "Unequip" : "Equip",
-      () => toggleEquip(e.uid), "equip" + (e.equipped ? " on" : "")),
-    h("div", { class: "qty" },
+    st.extras?.(e),
+    st.setQty && h("div", { class: "qty" },
       iconBtn("minus", "Decrease", () => setQty(e.qty - 1)),
       h("input", { type: "number", inputmode: "numeric", value: e.qty, min: 0, "aria-label": "Quantity",
         onchange: ev => setQty(Math.floor(+ev.target.value || 0)) }),
@@ -1500,24 +1634,6 @@ function openCoins() {
 
 // ------------------------------------------------------------------ catalog view
 
-// Catalog tabs: everything, each group that has items, and the player's own custom items.
-function catTypes() {
-  const has = new Set(store.catalog().map(i => groupOfItem(i)?.id));
-  return [["all", "All"], ...systemGroups().filter(g => has.has(g.id)).map(g => [g.id, g.name]), ["custom", "Custom"]];
-}
-
-// Catalog items in a tab (catTypes), matching a search, optionally in one subcategory.
-function catalogFiltered(t = ui.catType, q = ui.catSearch, sub = ui.catSub) {
-  q = q.trim();
-  const subMatch = sub && groupById(t) ? subcategories(t).find(s => s.key === sub)?.match : null;
-  return store.catalog().filter(i => {
-    if (t === "custom") { if (!i.id.startsWith("custom-")) return false; }
-    else if (t !== "all" && groupOfItem(i)?.id !== t) return false;
-    if (subMatch && !subMatch(i)) return false;
-    return matchesSearch(i, q);
-  });
-}
-
 const CATALOG_TABS = [["items", "Items"], ["mine", "My items"], ["drawings", "Drawings"], ["templates", "Templates"]];
 
 function renderCatalog() {
@@ -1536,64 +1652,19 @@ function subTabs(label, tabs, active, onPick) {
 }
 
 function catalogItemsView() {
-  const tiles = viewPrefs().layout === "tiles";
-  const list = tiles ? tilesBox("cat-tiles") : h("div", { class: "cat-list" });
-  const count = h("span", { class: "muted small" });
-  const draw = () => {
-    const items = catalogFiltered();
-    count.textContent = `${items.length} item${items.length === 1 ? "" : "s"}`;
-    setChildren(list, items.slice(0, ui.catLimit).map(tiles ? catalogTile : catalogRow),
-      items.length > ui.catLimit ? h("button", { class: "btn wide", onclick: () => { ui.catLimit += 300; draw(); } }, `Show more (${items.length - ui.catLimit} left)`) : null,
-      !items.length ? h("p", { class: "muted pad" }, "No items found. ", h("button", { class: "link", onclick: () => openItemForm(null) }, "Create a custom item?")) : null);
-    // New tiles after searching don't resize the grid, so fit their names now.
-    if (tiles) fitTileNames(list);
-  };
-  draw();
-  const chips = chipRow("Item types", catTypes().map(([k, label]) =>
-    h("button", { class: "chip-btn" + (ui.catType === k ? " active" : ""), role: "tab", "aria-selected": String(ui.catType === k),
-      onclick: () => { ui.catType = k; ui.catSub = null; ui.catLimit = 150; render(); } },
-      groupById(k) && colorDot(groupColor(k), label), label)));
-  // Within a group: its subcategories (Gear / Tools, Light / Medium / Heavy…), each in its shade.
-  const all = groupById(ui.catType) ? catalogFiltered(ui.catType, ui.catSearch, null) : [];
-  const subs = groupById(ui.catType) && subChips(ui.catType, ui.catSub, s => all.filter(s.match).length,
-    key => { ui.catSub = key; ui.catLimit = 150; render(); });
   return h("div", { class: "view-catalog" },
-    h("div", { class: "toolbar" },
-      h("label", { class: "search" }, icon("search"),
-        h("input", { type: "search", placeholder: "Search items, properties, descriptions…", value: ui.catSearch,
-          oninput: e => { ui.catSearch = e.target.value; ui.catLimit = 150; draw(); } })),
-      (activeSystem().tables || []).length > 0 && h("button", { class: "btn", onclick: openTrinketRoller }, icon("dice"), h("span", null, term("rollTable"))),
-      h("button", { class: "btn primary", onclick: () => openItemForm(null) }, icon("plus"), h("span", { class: "hide-sm" }, "New custom item")),
-      layoutToggle(), tileLabelToggles()),
-    chips, subs, count, list);
+    itemManager({ key: "catalog", flat: true, sorts: CATALOG_SORTS, sort: "catalog", limit: 150, customChip: true,
+      placeholder: "Search items, properties, descriptions…",
+      buttons: [
+        (activeSystem().tables || []).length > 0 && h("button", { class: "btn", onclick: openTrinketRoller }, icon("dice"), h("span", null, term("rollTable"))),
+        h("button", { class: "btn primary", onclick: () => openItemForm(null) }, icon("plus"), h("span", { class: "hide-sm" }, "New custom item"))],
+      storage: () => catalogStorage(store.catalog(), {
+        empty: () => h("p", { class: "muted pad" }, "No items found. ", h("button", { class: "link", onclick: () => openItemForm(null) }, "Create a custom item?")) }) }));
 }
 
 function quickAdd(item) {
   if (hasFeature(item, "pack", item.id)) return openCatalogItem(item);
   commit((s, c) => addToInventory(c, item), `Added ${item.name}${item.bundle > 1 ? ` ×${item.bundle}` : ""}`, true);
-}
-
-function catalogTile(item) {
-  const el = h("div", { class: "tile" },
-    h("button", { class: "tile-hit", onclick: () => openCatalogItem(item), "aria-label": item.name }),
-    itemIcon(item, "tile-icon"),
-    h("span", { class: "tile-name" }, item.name),
-    minimalCorners(item.cost || 0, item.weight || 0, (item.bundle || 1) > 1 ? "×" + item.bundle : null));
-  el.title = [item.name, itemSummary(item), item.id.startsWith("custom-") && "custom"].filter(Boolean).join(" · ");
-  el.style.setProperty("--type", itemColor(item));
-  return el;
-}
-
-function catalogRow(item) {
-  const isCustom = item.id.startsWith("custom-");
-  return h("div", { class: "row cat-row" },
-    itemIcon(item, "row-icon"),
-    h("button", { class: "row-main", onclick: () => openCatalogItem(item) },
-      h("div", { class: "row-title" }, item.name, isCustom && h("span", { class: "tag custom" }, "custom")),
-      h("div", { class: "row-sub" }, itemSummary(item))),
-    h("div", { class: "row-cost muted" }, fmtCost(item.cost)),
-    h("div", { class: "row-weight muted" }, fmtWeight(item.weight)),
-    iconBtn("plus", "Add to inventory", () => quickAdd(item), "add"));
 }
 
 function openCatalogItem(item) {
@@ -2759,18 +2830,18 @@ function newTemplate() {
 function myItemsSection() {
   const camp = store.campaign(), pkgs = store.enabledPackages();
   const home = store.homePackage();
+  const items = pkgs.flatMap(p => p.customItems), pkgOf = id => pkgs.find(p => p.customItems.some(i => i.id === id));
   return h("section", null,
     h("div", { class: "section-head" }, h("h2", null, "My items"),
-      h("button", { class: "btn primary", onclick: () => openItemForm(null, { package: home.id }) }, icon("plus"), "New item")),
+      h("div", { class: "inline wrap" }, pkgs.length > 1
+        ? pkgs.map(pkg => h("button", { class: "btn" + (pkg.id === home.id ? " primary" : ""), onclick: () => openItemForm(null, { package: pkg.id }) }, icon("plus"), `New in ${pkg.name}`))
+        : h("button", { class: "btn primary", onclick: () => openItemForm(null, { package: home.id }) }, icon("plus"), "New item"))),
     h("p", { class: "muted small" }, `Custom items come in rule packages: ${camp.name} uses ${plural(pkgs.length, "package")}. `,
       h("button", { class: "link", onclick: () => { ui.settingsTab = "campaigns"; go("settings"); } }, "Choose packages"), "."),
-    pkgs.map(pkg => h("div", { class: "group package-group" },
-      h("div", { class: "group-head" }, h("h3", null, pkg.name),
-        pkg.id === home.id && h("span", { class: "tag" }, "new items go here"),
-        h("span", { class: "muted small" }, plural(pkg.customItems.length, "item")),
-        pkgs.length > 1 && h("button", { class: "btn", onclick: () => openItemForm(null, { package: pkg.id }) }, icon("plus"), "New")),
-      pkg.customItems.length ? pkg.customItems.map(catalogRow)
-        : h("p", { class: "muted pad" }, "No items yet. Make a homebrew weapon, a family heirloom, or a +1 version of an existing item (open any catalog item → Customize)."))));
+    itemManager({ key: "mine", flat: true, sorts: CATALOG_SORTS, sort: "name", placeholder: "Search your items",
+      storage: () => catalogStorage(items, { id: "mine",
+        sub: e => pkgs.length > 1 ? pkgOf(e.srcId)?.name : null,
+        empty: () => h("p", { class: "muted pad" }, items.length ? "Nothing matches." : "No items yet. Make a homebrew weapon, a family heirloom, or a +1 version of an existing item (open any catalog item → Customize).") }) }));
 }
 
 // Templates: the system's by group, and the templates of the packages in use.
@@ -3021,7 +3092,7 @@ function download(filename, data) {
 
 const today = () => new Date().toISOString().slice(0, 10);
 const safeName = name => (name || "pack-rat").replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "_") || "pack-rat";
-const campaignImageRefs = camps => allImageRefs(camps.flatMap(c => c.characters), [], camps.flatMap(c => c.gmControls.map(g => g.image)));
+const campaignImageRefs = camps => allImageRefs(camps.flatMap(c => [...c.characters, ...(c.hoards || [])]), [], camps.flatMap(c => c.gmControls.flatMap(panelImages)));
 
 async function exportAll() {
   const d = store.data;
@@ -3128,7 +3199,7 @@ function renderSettings() {
     ui.role = role;
     writePref("packrat-role", role);
     render();
-    toast(role === "gm" ? "GM role: the GM tab has your values, controls and Clockwork" : "Player role");
+    toast(role === "gm" ? "GM role: the GM tab has your controls, values, treasure and connections" : "Player role");
   };
   const roleBox = h("section", { class: "role-box" },
     h("div", { class: "switch-row" },

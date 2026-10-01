@@ -340,29 +340,22 @@ function renderParty() {
 function gmPlayersView() {
   const q = (ui.gmSearch || "").trim().toLowerCase();
   const chars = [...party.chars].sort((a, b) => (b.online - a.online) || a.name.localeCompare(b.name));
-  const matches = (c, e) => !q || [entryName(e), e.item.name, currentItem(e, c).category, e.notes].some(t => t && t.toLowerCase().includes(q));
 
-  // Their inventory as a tree: on person, then what's in (and strapped to) each container.
-  const tree = (c, parent, depth) => byName(c.items.filter(e => (e.parent || null) === parent && !inDeck(c, e))).flatMap(e => {
-    const kids = tree(c, e.uid, depth + 1);
-    if (!matches(c, e) && !kids.length) return [];
-    return [h("li", { class: "gm-inv-row" + (matches(c, e) && q ? " hit" : ""), style: { paddingLeft: 10 + depth * 18 + "px" } },
-      itemIcon(currentItem(e, c), "row-icon small", () => entryIconVars(c, e)),
-      h("span", null, entryName(e), e.qty > 1 && h("span", { class: "muted" }, ` ×${e.qty.toLocaleString()}`)),
-      e.strapped && h("span", { class: "tag" }, "strapped"),
-      e.equipped && h("span", { class: "tag on" }, equipWord(e)),
-      statesOnFor(c, e).map(st => h("span", { class: "tag attuned" }, st.label.toLowerCase())),
-      e.liquid?.pints > 0 && h("span", { class: "muted small" }, liquidLabel(e)),
-      clockworkCog(c, e),
-      statesFor(e).length > 0 && iconBtn("wand", `States of ${entryName(e)}`, () => openGmStates(c, e), "gm-states-btn")), ...kids];
-  });
+  // Their inventory, shown like any inventory (storageTree in js/app.js): read-only, with the GM's
+  // state controls; the search finds items across everyone.
+  const playerStorage = c => {
+    const st = { char: c, id: "gmp:" + c.id, rootLabel: "On person", search: q,
+      open: e => openStoredItem(st, e, statesFor(e).length > 0 && gmStateControls(c, e)),
+      extras: e => statesFor(e).length > 0 && iconBtn("wand", `States of ${entryName(e)}`, () => openGmStates(c, e), "gm-states-btn"),
+      empty: () => h("p", { class: "muted pad" }, "Carrying nothing.") };
+    return st;
+  };
 
   const card = c => {
     const key = "gmp:" + c.id, open = q ? true : ui.collapsed.has(key);
     const toggle = () => { ui.collapsed.has(key) ? ui.collapsed.delete(key) : ui.collapsed.add(key); render(); };
     const sums = panelSummaries(c).map(x => x.result);
-    const rows = tree(c, null, 0);
-    if (q && !rows.length) return null;
+    if (q && !c.items.some(e => !inDeck(c, e) && entryMatches(c, e, q))) return null;
     return h("div", { class: "group gm-player-card" },
       h("div", { class: "gm-player-head" },
         onlineDot(c.online),
@@ -376,7 +369,7 @@ function gmPlayersView() {
       sums.some(r => r.chips.length) && h("div", { class: "gm-attacks" }, sums.flatMap(r => r.chips).map(t => h("span", { class: "chip" }, t))),
       sums.flatMap(r => r.notes).map(n => h("p", { class: "warn-text small pad" }, n)),
       gmLimits(c),
-      open && (rows.length ? h("ul", { class: "gm-inv" }, rows) : h("p", { class: "muted pad" }, "Carrying nothing.")));
+      open && h("div", { class: "gm-inv" }, itemManager({ key: "gmp:" + c.id, prefsKey: "gm-players", parts: { search: false }, storage: () => playerStorage(c) })));
   };
   const cards = chars.map(card).filter(Boolean);
   return h("section", { class: "gm-players" },
@@ -681,36 +674,34 @@ function openTradeBuilder(targetId = null, preselectUid = null) {
     }
     return false;
   };
-  // Each side has a search box; picked items stay listed whatever the search.
-  const queries = new Map();
-  const holderName = (char, e) => { const p = e.parent && char.items.find(x => x.uid === e.parent); return p ? entryName(p) : null; };
-  const matches = (char, e, q) => !q ||
-    [entryName(e), e.item.name, e.item.category, itemTemplate(e.item).name, holderName(char, e)].some(t => t && t.toLowerCase().includes(q));
-  const drawPicker = (box, char, map) => {
-    const q = (queries.get(box) || "").trim().toLowerCase();
-    // Cards in a deck go with the deck, like a container's contents.
-    const all = char.items.filter(e => !inDeck(char, e));
-    const items = byName(all.filter(e => map.has(e.uid) || matches(char, e, q)));
-    setChildren(box, (items.length ? items.map(e => {
-      const included = insideSelected(char, e, map);
-      const checked = map.has(e.uid);
-      const loc = holderName(char, e);
-      return h("div", { class: "pick" + (checked ? " on" : "") + (included ? " included" : "") },
-        h("label", { class: "check" },
-          itemIcon(e.item, "row-icon small"),
-          h("input", { type: "checkbox", checked: checked || included, disabled: included,
-            onchange: ev => { ev.target.checked ? map.set(e.uid, e.qty > 1 ? 1 : e.qty) : map.delete(e.uid); drawPicker(box, char, map); } }),
-          h("span", null, entryName(e),
-            h("small", { class: "muted" }, e.qty > 1 ? ` ×${e.qty}` : "", included ? " — included with its container" : loc ? ` — ${e.strapped ? "on" : "in"} ${loc}` : ""))),
-        checked && e.qty > 1 && h("input", { type: "number", min: 1, max: e.qty, value: map.get(e.uid), inputmode: "numeric",
-          "aria-label": `How many ${entryName(e)}`,
-          onchange: ev => map.set(e.uid, Math.max(1, Math.min(e.qty, Math.floor(+ev.target.value || 1)))) }));
-    }) : [h("p", { class: "muted small pad" }, all.length ? `Nothing matches “${q}”.` : "No items.")]));
+  // Each side lists its character's items with the inventory management template (itemManager in
+  // js/app.js), a pick on each; picked items stay listed whatever the search.
+  const picker = (side, getChar, map) => {
+    resetList("trade-" + side); // a fresh search for each trade
+    let mgr;
+    mgr = itemManager({ key: "trade-" + side, prefsKey: "trade", sorts: INVENTORY_SORTS, sort: "name", placeholder: "Search items…",
+      storage: () => {
+        const char = getChar();
+        const st = {
+          char, id: "trade:" + char.id, rootLabel: "On person", keep: e => map.has(e.uid),
+          open: e => openStoredItem(st, e),
+          rowClass: e => map.has(e.uid) ? "picked" : insideSelected(char, e, map) ? "included" : "",
+          sub: e => insideSelected(char, e, map) ? "goes with its container" : null,
+          extras: e => {
+            const included = insideSelected(char, e, map), checked = map.has(e.uid);
+            return [
+              checked && e.qty > 1 && h("input", { type: "number", class: "trade-n", min: 1, max: e.qty, value: map.get(e.uid), inputmode: "numeric",
+                "aria-label": `How many ${entryName(e)}`,
+                onchange: ev => map.set(e.uid, Math.max(1, Math.min(e.qty, Math.floor(+ev.target.value || 1)))) }),
+              h("label", { class: "check trade-pick" }, h("input", { type: "checkbox", checked: checked || included, disabled: included, "aria-label": `Trade ${entryName(e)}`,
+                onchange: ev => { ev.target.checked ? map.set(e.uid, e.qty > 1 ? 1 : e.qty) : map.delete(e.uid); mgr.redraw(); } }))];
+          },
+          empty: () => h("p", { class: "muted small pad" }, "No items."),
+        };
+        return st;
+      } });
+    return mgr;
   };
-  const searchBox = (box, getChar, map) => h("label", { class: "search trade-search" }, icon("search"),
-    h("input", { type: "search", placeholder: "Search items…", "aria-label": "Search items",
-      oninput: ev => { queries.set(box, ev.target.value); drawPicker(box, getChar(), map); } }));
-  const askSearch = searchBox(askBox, () => target, ask);
   const coinInputs = (obj, have) => h("div", { class: "coin-grid small" }, coinOrder().map(k =>
     h("label", { class: "field coin-field " + k },
       h("span", null, k.toUpperCase() + (have ? ` (${(have[k] || 0).toLocaleString()})` : "")),
@@ -720,12 +711,10 @@ function openTradeBuilder(targetId = null, preselectUid = null) {
   const drawAsk = () => {
     for (const k of coinOrder()) delete askCoins[k];
     ask.clear();
-    queries.delete(askBox);
-    askSearch.querySelector("input").value = "";
-    drawPicker(askBox, target, ask);
+    askBox.replaceChildren(picker("ask", () => target, ask));
     askCoinBox.replaceChildren(coinInputs(askCoins, target.coins || {}));
   };
-  drawPicker(giveBox, me, give);
+  giveBox.replaceChildren(picker("give", () => me, give));
   drawAsk();
 
   const side = (map, char) => ({
@@ -758,8 +747,8 @@ function openTradeBuilder(targetId = null, preselectUid = null) {
       h("select", { onchange: ev => { target = others.find(c => c.id === ev.target.value); drawAsk(); } },
         others.map(c => h("option", { value: c.id, selected: c === target }, c.name + (c.online ? "" : " (offline)"))))),
     h("div", { class: "trade-grid" },
-      h("div", { class: "trade-col" }, h("h4", null, `${me.name} gives`), searchBox(giveBox, () => me, give), giveBox, h("h4", null, "Coins"), coinInputs(giveCoins, me.coins)),
-      h("div", { class: "trade-col" }, h("h4", null, "In return, ask for"), askSearch, askBox, h("h4", null, "Coins"), askCoinBox)),
+      h("div", { class: "trade-col" }, h("h4", null, `${me.name} gives`), giveBox, h("h4", null, "Coins"), coinInputs(giveCoins, me.coins)),
+      h("div", { class: "trade-col" }, h("h4", null, "In return, ask for"), askBox, h("h4", null, "Coins"), askCoinBox)),
     h("label", { class: "field" }, h("span", null, "Note (optional)"),
       h("input", { type: "text", maxlength: 500, placeholder: "e.g. For the rope you lent me", oninput: ev => { note = ev.target.value; } })),
     h("p", { class: "muted small" }, "Nothing moves until they accept. Giving a container also gives what's in it."));

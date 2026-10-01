@@ -1,11 +1,13 @@
-// GM controls: boards the GM makes for setting values by hand (Clockwork controls: see
-// js/clockwork.js). A board is a picture (a map, a dial, anything) or a blank square, with pins to
-// drag: each pin's x and y set a pair of values (e.g. shipX and shipY): Globals, or one player's or
-// one item's Locals. Players' drawn icons follow.
+// GM controls: the GM tab, its Controls tab, and boards for setting values by hand (Clockwork
+// controls: see js/clockwork.js; panels, which hold every control, are in js/control-panels.js).
+// A board is a picture (a map, a dial, anything) or a blank square, with pins to drag: each pin's
+// x and y set a pair of values (e.g. shipX and shipY): Globals, or one player's or one item's
+// Locals. Players' drawn icons follow.
 //
-// Kept on the GM's device (store.state.gmControls): { id, name, image?, pins: [pin] }, where a pin
-// is { id, label, color, xVar, yVar, scope, target, xRange: [from, to], yRange: [from, to] }; xVar
-// and yVar are value names, scope "party" (Globals), "character" or "item" (Locals).
+// A board is a panel's control: { type: "board", board: { image?, pins: [pin] } }, where a pin is
+// { id, label, color, xVar, yVar, scope, target, xRange: [from, to], yRange: [from, to] }; xVar
+// and yVar are value names, scope "party" (Globals), "character" or "item" (Locals). (Boards were
+// controls of their own; normalizeData puts each in a panel.)
 // A pin has no position of its own: it shows where its values are, so setting them any other way
 // (the Values tab) moves it too.
 
@@ -44,56 +46,143 @@ function pinValues(pin) {
   }).join(" · ");
 }
 
-// ------------------------------------------------------------------ the GM tab: Players · Values · Clockwork
-// In a party: the players (gmPlayersView). Always: the Global and Local values with the boards
-// (valuesView), and Clockwork's connections (clockworkView). Preparing outside a party, values are
-// the campaign's starting ones.
+// ------------------------------------------------------------------ the GM tab: Players · Values · Controls · Clockwork
+// Controls (panels, then the Global and Local values they set, then Clockwork's connections: what
+// drives what), Players (in a party: gmPlayersView), Treasure. Preparing outside a party, values
+// are the campaign's starting ones.
 
-const GM_TABS = [["players", "Players"], ["values", "Values"], ["clockwork", "Clockwork"]];
+const GM_TABS = [["controls", "Controls"], ["players", "Players"], ["treasure", "Treasure"]];
 
 function renderGm() {
   const tabs = party.active ? GM_TABS : GM_TABS.filter(([k]) => k !== "players");
   const tab = tabs.some(([k]) => k === ui.gmTab) ? ui.gmTab : tabs[0][0];
   return h("div", { class: "view-gm view-party" },
     subTabs("GM", tabs, tab, k => { ui.gmTab = k; render(); }),
-    tab === "players" ? gmPlayersView() : tab === "values" ? valuesView() : clockworkView());
+    tab === "players" ? gmPlayersView() : tab === "treasure" ? treasureView() : gmControlsPage());
 }
 
-// ------------------------------------------------------------------ the Controls section (Values tab)
+// ------------------------------------------------------------------ the Controls tab
+// A second row of tabs: Panels, Values (the Global and Local values) and Connections (what drives
+// what: Clockwork's connections).
+
+const GM_CONTROLS_TABS = [["panels", "Panels"], ["values", "Values"], ["connections", "Connections"]];
+
+function gmControlsPage() {
+  const tab = GM_CONTROLS_TABS.some(([k]) => k === ui.gmControlsTab) ? ui.gmControlsTab : "panels";
+  return [
+    subTabs("Controls", GM_CONTROLS_TABS, tab, k => { ui.gmControlsTab = k; render(); }),
+    tab === "values" ? valuesView() : tab === "connections" ? clockworkView() : gmControlsSection(),
+  ];
+}
 
 function gmControlsSection() {
   const list = gmControls();
   return h("section", { class: "gm-controls" },
-    h("div", { class: "section-head" }, h("h2", null, "Controls"),
-      h("button", { class: "btn", onclick: () => editGmControl(null) }, icon("plus"), "New control")),
-    h("p", { class: "muted small" }, "Boards for setting values by dragging pins: a map, any picture, or a blank square. Each pin's position sets a pair of values, like shipX and shipY (Globals, or a player's or an item's Locals), and players' icons follow as you drag. Kept on this device."),
-    list.map(gmControlCard));
+    h("div", { class: "section-head" }, h("h2", null, "Panels"),
+      h("button", { class: "btn primary", onclick: () => editControlPanel(null) }, icon("plus"), "New panel")),
+    h("p", { class: "muted small" }, "What you use to set values in play: panels, grids of sliders, switches, buttons, dropdowns, boards, icons and text, arranged as you like. Each sets a Global value, or a player's or an item's Locals, and players' icons follow. Kept on this device."),
+    list.length ? list.map(controlPanelCard)
+      : h("div", { class: "empty" }, h("p", null, "No controls yet. Make a panel, then arrange controls on it.")));
 }
 
-function gmControlCard(ctl) {
-  const key = "gmc:" + ctl.id, closed = ui.collapsed.has(key);
-  const toggle = () => { closed ? ui.collapsed.delete(key) : ui.collapsed.add(key); render(); };
-  return h("div", { class: "group gm-control-card" },
-    h("div", { class: "group-head" },
-      h("button", { class: "collapse" + (closed ? " closed" : ""), "aria-expanded": String(!closed), onclick: toggle }, icon("chevron"), h("h3", null, ctl.name)),
-      h("span", { class: "muted small" }, plural(ctl.pins.length, "pin")),
-      iconBtn("edit", `Edit ${ctl.name}`, () => editGmControl(ctl)),
-      iconBtn("trash", `Delete ${ctl.name}`, () => confirmDialog(`Delete the control “${ctl.name}”? The values it set keep their values.`, "Delete",
-        () => commit(s => { s.gmControls = s.gmControls.filter(c => c.id !== ctl.id); }, `Deleted ${ctl.name}`, true)), "danger-hover")),
-    !closed && [
-      ctl.pins.length ? gmBoard(ctl) : h("p", { class: "muted pad" }, "No pins yet: Edit to add some."),
-      ctl.pins.length > 0 && h("ul", { class: "gm-pin-legend" }, ctl.pins.map(p => h("li", null,
-        h("span", { class: "gm-pin-swatch", style: { background: p.color } }), h("b", null, p.label || "Pin"),
-        h("span", { class: "muted" }, ` for ${scopeLabel(p)}: ${pinValues(p)}`)))),
-    ]);
+// ------------------------------------------------------------------ boards
+// A board is a control in a panel (js/control-panels.js), ctl.board = { image?, pins: [pin] }: a
+// picture (or a blank square) with pins on top, as large as fits the space it has. Expanded, it
+// fills the screen to zoom (buttons, Ctrl+wheel, pinch) and scroll.
+
+// zoom: () => the zoom (expanded only: then it scrolls).
+function gmBoard(board, { zoom = null } = {}) {
+  const el = h("div", { class: "gm-board" + (board.image ? "" : " blank") });
+  const inner = h("div", { class: "gm-board-inner" }, el);
+  const box = h("div", { class: "gm-board-fit" + (zoom ? " zoomable" : "") }, inner);
+  let ratio = 1;
+  const fit = () => {
+    const w = box.clientWidth, ht = box.clientHeight;
+    if (!w || !ht) return;
+    const bw = Math.min(w, ht * ratio) * (zoom ? zoom() : 1);
+    el.style.width = bw + "px";
+    el.style.height = bw / ratio + "px";
+  };
+  if (board.image) {
+    const img = storedImage(board.image, "gm-board-img", img => img.replaceWith(h("div", { class: "gm-board-missing muted small" }, "Picture not on this device")));
+    const sized = () => { if (img.naturalWidth) { ratio = img.naturalWidth / img.naturalHeight; fit(); } };
+    img.addEventListener("load", sized);
+    if (img.complete) sized();
+    el.append(img);
+  }
+  el.append(...(board.pins || []).map(p => gmPin(el, p)));
+  new ResizeObserver(fit).observe(box);
+  setTimeout(fit); // once it's on the page (the observer waits for a frame, which a hidden window doesn't draw)
+  box.refit = fit;
+  return box;
 }
 
-// The board: the picture (or a blank square) with its pins on top.
-function gmBoard(ctl) {
-  const board = h("div", { class: "gm-board" + (ctl.image ? "" : " blank") });
-  if (ctl.image) board.append(storedImage(ctl.image, "gm-board-img", img => img.replaceWith(h("div", { class: "gm-board-missing muted small" }, "Picture not on this device"))));
-  board.append(...ctl.pins.map(p => gmPin(board, p)));
-  return h("div", { class: "gm-board-wrap" }, board);
+// The pins' key: each pin's colour, label, what it sets and the values now.
+const pinLegend = board => (board.pins || []).length > 0 && h("ul", { class: "gm-pin-legend" }, board.pins.map(p => h("li", null,
+  h("span", { class: "gm-pin-swatch", style: { background: p.color } }), h("b", null, p.label || "Pin"),
+  h("span", { class: "muted" }, ` for ${scopeLabel(p)}: ${pinValues(p)}`))));
+
+// A board full screen, to zoom and scroll.
+function openBoardZoom(board, title) {
+  let zoom = 1;
+  const view = gmBoard(board, { zoom: () => zoom });
+  const pct = h("span", { class: "board-zoom-pct" }, "100%");
+  const setZoom = (z, cx = 0.5, cy = 0.5) => {
+    // Keep the point under (cx, cy) of the view where it is.
+    const ax = view.scrollLeft + view.clientWidth * cx, ay = view.scrollTop + view.clientHeight * cy;
+    const fx = ax / Math.max(1, view.scrollWidth), fy = ay / Math.max(1, view.scrollHeight);
+    zoom = Math.max(1, Math.min(8, z));
+    view.refit();
+    view.scrollLeft = fx * view.scrollWidth - view.clientWidth * cx;
+    view.scrollTop = fy * view.scrollHeight - view.clientHeight * cy;
+    pct.textContent = Math.round(zoom * 100) + "%";
+  };
+  const at = ev => { const r = view.getBoundingClientRect(); return [(ev.clientX - r.left) / r.width, (ev.clientY - r.top) / r.height]; };
+  view.addEventListener("wheel", ev => {
+    if (!ev.ctrlKey) return; // plain wheel scrolls
+    ev.preventDefault();
+    setZoom(zoom * (ev.deltaY < 0 ? 1.15 : 1 / 1.15), ...at(ev));
+  }, { passive: false });
+  // Pinch (two fingers on the board, not on a pin).
+  const touches = new Map();
+  let pinch = null;
+  view.addEventListener("pointerdown", ev => {
+    if (ev.pointerType !== "touch" || ev.target.closest(".gm-pin")) return;
+    touches.set(ev.pointerId, ev);
+    if (touches.size === 2) {
+      const [a, b] = [...touches.values()];
+      pinch = { d: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY), z: zoom };
+    }
+  });
+  view.addEventListener("pointermove", ev => {
+    if (!touches.has(ev.pointerId)) return;
+    touches.set(ev.pointerId, ev);
+    if (!pinch || touches.size !== 2) return;
+    const [a, b] = [...touches.values()];
+    const mid = { clientX: (a.clientX + b.clientX) / 2, clientY: (a.clientY + b.clientY) / 2 };
+    setZoom(pinch.z * Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) / pinch.d, ...at(mid));
+  });
+  const lift = ev => { touches.delete(ev.pointerId); if (touches.size < 2) pinch = null; };
+  view.addEventListener("pointerup", lift);
+  view.addEventListener("pointercancel", lift);
+
+  // The key shows the values as they are: refreshed when a pin is let go (or moved by keys).
+  const legend = h("div", { class: "board-zoom-legend" }, pinLegend(board));
+  const refresh = () => setTimeout(() => setChildren(legend, pinLegend(board)), 300);
+  view.addEventListener("pointerup", refresh);
+  view.addEventListener("keyup", refresh);
+
+  const root = document.getElementById("modal-root");
+  const close = () => { overlay.remove(); document.body.classList.toggle("modal-open", root.children.length > 0); };
+  const overlay = h("div", { class: "reader board-zoom", role: "dialog", "aria-modal": "true", "aria-label": title },
+    h("div", { class: "reader-bar" },
+      h("div", { class: "reader-title" }, title),
+      iconBtn("zoomOut", "Zoom out", () => setZoom(zoom / 1.25)), pct, iconBtn("zoomIn", "Zoom in", () => setZoom(zoom * 1.25)),
+      h("button", { class: "btn", onclick: () => setZoom(1) }, "Fit"),
+      h("button", { class: "btn primary", onclick: close }, "Done")),
+    view, legend);
+  root.append(overlay);
+  document.body.classList.add("modal-open");
 }
 
 // A pin: drag it (or select it and use the arrow keys) to set its values.
@@ -190,9 +279,11 @@ const valueSlug = text => {
   return isValueName(s) ? s : "pin" + (s ? "_" + s : "");
 };
 
-function editGmControl(ctl) {
-  const isNew = !ctl;
-  const draft = ctl ? clone(ctl) : { id: "gc" + uid(), name: "", pins: [] };
+// Edit a board's picture and pins: onSave(board) with the changed copy. name: its control's label
+// (new pins' value names start from it).
+function editBoard(board, onSave, name = "") {
+  const draft = clone(board || { pins: [] });
+  draft.name = name;
   let close;
   const known = [...new Set([...knownValues().values()].map(v => v.name))].sort();
   const listId = "gm-names-" + uid();
@@ -240,21 +331,15 @@ function editGmControl(ctl) {
   drawPins();
 
   const save = () => {
-    draft.name = (draft.name || "").trim() || "Control";
     const bad = draft.pins.flatMap(p => [p.xVar, p.yVar]).filter(n => n && !isValueName(n));
     if (bad.length) return toast(`Not a value name: ${bad.join(", ")} (a letter, then letters, digits or _; not starting gm_, global_, local_ or state_)`);
     if (draft.pins.some(p => !p.xVar && !p.yVar)) return toast("Each pin needs a value to set, across or down");
     close();
-    commit(s => {
-      s.gmControls = s.gmControls || [];
-      const i = s.gmControls.findIndex(c => c.id === draft.id);
-      if (i >= 0) s.gmControls[i] = draft; else s.gmControls.push(draft);
-    }, isNew ? `Made ${draft.name}` : `Saved ${draft.name}`);
+    const { name: _, ...out } = draft;
+    onSave(out);
   };
 
-  close = openModal(isNew ? "New control" : `Edit ${ctl.name}`, h("div", { class: "form" },
-    h("label", { class: "field" }, h("span", null, "Name"),
-      h("input", { type: "text", value: draft.name, maxlength: 60, placeholder: "e.g. Sea chart, Doom clock, Weather", oninput: e => { draft.name = e.target.value; } })),
+  close = openModal(name ? `Board: ${name}` : "Board", h("div", { class: "form" },
     h("div", { class: "field" }, h("span", null, "Background"), bgBox),
     h("div", { class: "section-head" }, h("h4", null, "Pins"), h("button", { type: "button", class: "btn", onclick: addPin }, icon("plus"), "Add pin")),
     h("p", { class: "muted small" }, "Each pin sets up to two values: one from its position across the board, one from its position down it. Choose what each edge is worth (a range can run backwards). Leave one empty to use only the other. Drawings read them as global_name or local_name."),

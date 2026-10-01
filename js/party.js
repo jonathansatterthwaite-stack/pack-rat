@@ -282,6 +282,7 @@ const party = {
 
   takeRoles(snap) {
     this.shops = snap.shops || [];
+    this.treasure = snap.treasure || []; // treasure being shown (js/treasure.js)
     this.gm = snap.gm || {};
     // A host from before roles doesn't say: then, as it did, the host device is the GM.
     const oldHost = snap.role === undefined && !!this.info?.canManageShops;

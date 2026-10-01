@@ -59,7 +59,7 @@ function valuesView() {
 
   const globals = vals.filter(v => v.scope === "global");
   const globalSection = h("section", { class: "gm-values" },
-    h("h2", null, "Global values"),
+    h("h3", null, "Global values"),
     h("p", { class: "muted small" }, "One value for the whole campaign: every item sees the same, like the weather or a doom clock. Drawn icons read them as ",
       h("code", null, "global_name"), "."),
     globals.length ? h("div", { class: "group" }, globals.map(v => h("div", { class: "row gm-level" },
@@ -71,7 +71,7 @@ function valuesView() {
 
   const locals = vals.filter(v => v.scope === "local");
   const localSection = h("section", { class: "gm-values" },
-    h("h2", null, "Local values"),
+    h("h3", null, "Local values"),
     h("p", { class: "muted small" }, "Each character's own, and each item's own: an item uses its own, else its character's. Drawn icons read them as ",
       h("code", null, "local_name"), "."),
     !locals.length ? h("p", { class: "muted pad" }, "No Local values yet. In the icon editor's Variables tab, add one with + Local value (a name starting ",
@@ -102,7 +102,8 @@ function valuesView() {
 
   return [
     !party.active && h("p", { class: "muted small pad" }, `Starting values for ${store.campaign().name}, ready for the next session: they go to the party when you load this campaign into it. Your own icons show them meanwhile.`),
-    globalSection, localSection, gmControlsSection(),
+    globalSection, localSection,
+    h("p", { class: "muted small pad" }, "Panels and boards for setting these in play are on the Panels tab."),
   ];
 }
 
@@ -126,7 +127,7 @@ function clockworkItemCard(c, e) {
       .map(st => `the player (${st.label})`),
     k.reads.some(r => r.address.startsWith("item.state.")) && `the ${term("gm")}'s state menu`,
     k.triggers.length > 0 && "its own triggers",
-    ...k.pins.map(p => `the pin “${p.pin.label || "Pin"}” on ${p.control.name}`),
+    ...k.setters.map(s => s.label),
     k.refs.size > 0 && `the ${term("gm")}'s values (Values tab)`,
   ].filter(Boolean);
   return h("div", { class: "group cw-item" + (ui.cwFocus === key ? " focus" : ""), id: "cw-" + key.replace("/", "-") },
@@ -157,24 +158,24 @@ function clockworkView() {
   }
   const users = valueUsers();
   const globals = [...knownValues().values()].filter(v => v.scope === "global");
-  const pinsFor = name => (store.state.gmControls || []).flatMap(ctl => ctl.pins.filter(p => p.scope === "party" && (p.xVar === name || p.yVar === name))
-    .map(p => `the pin “${p.label || "Pin"}” on ${ctl.name}`));
+  const pinsFor = name => valueSetters().filter(s => s.scope === "party" && s.names.includes(name)).map(s => s.label);
   return [
     h("section", { class: "cw" },
-      h("h2", null, "Clockwork"),
       h("p", { class: "muted small" }, "What makes items react: their triggers and layers, the values their icons read, and what changes them. Items with a cog beside their name (only you see it) are here."),
       groups.length ? groups.map(([c, list]) => h("div", { class: "cw-char" },
         h("h3", { class: "cw-char-name" }, c.name, c.mine && h("span", { class: "tag" }, "yours")),
         list.map(e => clockworkItemCard(c, e))))
         : h("div", { class: "empty" }, h("p", null, "Nothing is connected yet. Items with triggers, layers, or a drawn icon that reads values show up here."))),
     globals.length > 0 && h("section", { class: "cw" },
-      h("h2", null, "Global values"),
-      h("p", { class: "muted small" }, "What each one reaches: moving it changes all of these."),
+      h("h3", null, "What each Global value reaches"),
+      h("p", { class: "muted small" }, "Moving one changes all of these."),
       h("div", { class: "group" }, globals.map(v => {
-        const using = users.get(`global:${v.name}`) || [], pins = pinsFor(v.name);
+        const using = users.get(`global:${v.name}`) || [], pins = pinsFor(v.name), shops = shopValueReaders().filter(r => r.name === v.name);
         return h("div", { class: "row gm-level" }, h("div", { class: "row-main static" },
           h("div", { class: "row-title" }, h("code", null, v.name), h("span", { class: "muted" }, ` = ${showValue(v, globalValue(v.name) ?? v.value)}`)),
-          h("div", { class: "row-sub" }, [using.length ? "Read by " + using.map(u => `${u.char.name}'s ${entryName(u.e)}`).join(", ") : "No item reads it",
+          h("div", { class: "row-sub" }, [using.length ? "Read by " + using.map(u => `${u.char.name}'s ${entryName(u.e)}`).join(", ") : !shops.length && "Nothing reads it",
+            ...shops.map(r => r.what === "opens" ? `opens ${r.shop.name}` : r.what === "prices" ? `sets ${r.shop.name}'s prices`
+              : `puts ${r.item.name} on sale at ${r.shop.name}`),
             pins.length && "set by " + pins.join(", ")].filter(Boolean).join(" · "))));
       }))),
   ];
@@ -182,15 +183,16 @@ function clockworkView() {
 
 // ------------------------------------------------------------------ the cog
 
-// Beside a connected item's name, for GMs: opens the Clockwork tab at it. before: e.g. close a dialog.
+// Beside a connected item's name, for GMs: opens Controls → Connections at it. before: e.g. close a dialog.
 function clockworkCog(char, e, before) {
   if (!char || !isGmDevice() || !usesClockwork(char, e)) return null;
-  return iconBtn("cog", `Clockwork: what drives ${entryName(e)}`, () => {
+  return iconBtn("cog", `Connections: what drives ${entryName(e)}`, () => {
     before?.();
     const root = document.getElementById("modal-root");
     root.replaceChildren();
     document.body.classList.remove("modal-open");
-    ui.gmTab = "clockwork";
+    ui.gmTab = "controls";
+    ui.gmControlsTab = "connections";
     ui.cwFocus = `${char.id}/${e.uid}`;
     go("gm");
   }, "cw-cog");

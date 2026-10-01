@@ -175,10 +175,19 @@ function knownValues() {
   const docs = [...drawingLibrary().map(d => d.doc), ...store.allCustomItems().map(i => i.iconDoc),
     ...store.state.characters.flatMap(c => c.items.map(e => e.item.iconDoc)), ...(party.active ? party.chars.flatMap(c => c.items.map(e => e.item.iconDoc)) : [])];
   for (const doc of docs) if (doc) for (const r of drawingValueRefs(doc).values()) add(r.scope, r.name, r.spec, r.scope === "any");
-  for (const c of store.state.gmControls || []) for (const p of c.pins) {
+  for (const c of store.state.gmControls || []) for (const k of c.controls || []) for (const p of k.board?.pins || []) {
     [[p.xVar, p.xRange], [p.yVar, p.yRange]].forEach(([n, r]) => n && add(p.scope === "party" ? "global" : "local", n,
       { value: Math.min(...r), min: Math.min(...r), max: Math.max(...r), step: "any" }));
   }
+  for (const c of store.state.gmControls || []) for (const k of c.controls || []) {
+    const scope = k.scope === "party" ? "global" : "local";
+    const ranged = (k.type === "slider" || k.type === "range") && k.max !== undefined ? { min: k.min ?? 0, max: k.max, step: k.step ?? "any", value: k.min ?? 0 } : {};
+    if (k.name) add(scope, k.name, ranged);
+    if (k.name2) add(scope, k.name2, k.max !== undefined ? { ...ranged, value: k.max } : ranged); // a range's upper end starts at the top
+    for (const v of k.vertices || []) if (v.name) add(scope, v.name, { min: 0, max: v.amount ?? 1, step: "any", value: 0 });
+  }
+  // Shops that follow values (js/shops.js): when they open, their prices, what's for sale.
+  for (const r of shopValueReaders()) add("global", r.name, r.what === "prices" ? { value: 1, min: 0, max: 3, step: 0.05 } : { value: 0, min: 0, max: 1, step: 1 });
   const g = valueSet();
   for (const k of Object.keys(g.party || {})) add("global", keyName(k));
   for (const b of [...Object.values(g.characters || {}), ...Object.values(g.items || {})]) {
@@ -187,9 +196,29 @@ function knownValues() {
   return new Map([...out].sort(([a], [b]) => a.localeCompare(b)));
 }
 
+// The Global values shops read: [{ name, shop, what: "opens" | "prices" | "sells", item? }].
+function shopValueReaders() {
+  const shops = typeof shopStore !== "undefined" && isGmDevice() ? shopStore.list() : store.state.shops || [];
+  return shops.flatMap(s => [
+    s.openIf?.name && { name: s.openIf.name, shop: s, what: "opens" },
+    s.priceValue && { name: s.priceValue, shop: s, what: "prices" },
+    ...(s.items || []).filter(li => li.onlyIf?.name).map(li => ({ name: li.onlyIf.name, shop: s, what: "sells", item: li.item })),
+  ].filter(Boolean));
+}
+
 // The name of the Local value holding a state's limit (5e: attuneSlots). Older systems said
 // gmValue: "gm_attuneSlots".
 const limitValueName = st => st?.limit ? st.limit.value || (st.limit.gmValue || "").replace(/^gm_/, "") || null : null;
+
+// What sets values by hand: panels' controls, boards' pins among them (the GM's Controls tab).
+// [{ label, scope, target, names }]
+function valueSetters() {
+  return (store.state.gmControls || []).flatMap(panel => (panel.controls || []).flatMap(c => c.type === "board"
+    ? (c.board?.pins || []).map(p => ({ label: `the pin “${p.label || "Pin"}” on ${panel.name}`, scope: p.scope, target: p.target, names: [p.xVar, p.yVar].filter(Boolean) }))
+    : c.type === "text" ? []
+    : [{ label: `the ${{ toggle: "switch", range: "range slider" }[c.type] || c.type} “${c.label || c.name || c.type}” on ${panel.name}`, scope: c.scope, target: c.target,
+      names: (c.type === "polygon" ? (c.vertices || []).map(v => v.name) : [c.name, c.name2]).filter(Boolean) }].filter(s => s.names.length)));
+}
 
 // ------------------------------------------------------------------ connections
 // What joins an item to Clockwork, for the GM's Clockwork tab and the cog beside its name.
@@ -221,12 +250,12 @@ function itemConnections(char, e) {
   const setHere = Object.entries(own).filter(([k]) => !k.startsWith("gm_state_")).map(([k, v]) => ({ name: keyName(k), value: v }));
   const overrides = Object.entries(own).filter(([k]) => k.startsWith("gm_state_"))
     .map(([k, v]) => ({ state: stateByKey(k.slice(9)), on: !!v })).filter(o => o.state);
-  const pins = (store.state.gmControls || []).flatMap(ctl => ctl.pins.filter(p =>
-    (p.scope === "item" && p.target === `${char.id}/${e.uid}`) ||
-    (p.scope !== "item" && [p.xVar, p.yVar].some(n => n && [...refs.values()].some(r => r.name === n &&
-      (p.scope === "party" ? r.scope !== "local" : p.target === char.id && r.scope !== "global")))))
-    .map(p => ({ control: ctl, pin: p })));
-  return { triggers, layers, refs, live, reads, setHere, overrides, pins,
+  // The controls that reach it: set on this item, or set a value its icon reads.
+  const setters = valueSetters().filter(s =>
+    (s.scope === "item" && s.target === `${char.id}/${e.uid}`) ||
+    (s.scope !== "item" && s.names.some(n => [...refs.values()].some(r => r.name === n &&
+      (s.scope === "party" ? r.scope !== "local" : s.target === char.id && r.scope !== "global")))));
+  return { triggers, layers, refs, live, reads, setHere, overrides, setters,
     uses: triggers.length > 0 || layers.length > 0 || live || refs.size > 0 || setHere.length > 0 || overrides.length > 0 };
 }
 

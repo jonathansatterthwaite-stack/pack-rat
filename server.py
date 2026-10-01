@@ -265,15 +265,129 @@ def device_list(me):
              "gm": t in gms, "self": t == me} for t in tokens if t]
 
 
+# ------------------------------------------------------------------ treasure
+# The GM shows a hoard to some players (the app's js/treasure.js): they pick items, how many of a
+# stack, or coins; press Ready; once everyone taking part is ready the uncontested picks are given
+# out, and the GM settles what's contested (more picked than there is). What's left goes back to
+# the GM's hoard (their device takes it, then deletes the showing).
+#   state["treasure"]: [{id, name, hoard, items: [entry], coins: {coin: n}, players: [charId],
+#     picks: {key: {charId: qty}}, ready: [charId], status: "picking" | "settling" | "done", given: [...]}]
+# A key is "e:<entry uid>" or "c:<coin>". Given items arrive as new (their triggers fire).
+
+def treasure_available(t, key):
+    if key.startswith("c:"):
+        return int((t.get("coins") or {}).get(key[2:]) or 0)
+    e = next((x for x in t["items"] if x["uid"] == key[2:]), None)
+    return e["qty"] if e else 0
+
+
+def treasure_contested(t):
+    return [k for k, p in t["picks"].items() if sum(p.values()) > treasure_available(t, k)]
+
+
+def treasure_depth(t, e):
+    d, seen = 0, set()
+    while e and e.get("parent") and e["uid"] not in seen:
+        seen.add(e["uid"])
+        e = next((x for x in t["items"] if x["uid"] == e["parent"]), None)
+        d += 1
+    return d
+
+
+def treasure_give(t, alloc):
+    """Give out {charId: {key: qty}}: into the characters, out of the showing. A container's
+    contents go in it when the same character gets both; a set's pieces go with the set."""
+    taken = {}
+    for cid, keys in alloc.items():
+        c = state["characters"].get(cid)
+        if not c:
+            continue
+        new_uid, got = {}, []
+        picked = sorted((e for e in t["items"] if keys.get("e:" + e["uid"])), key=lambda e: treasure_depth(t, e))
+        for e in picked:
+            q = min(keys["e:" + e["uid"]], e["qty"])
+            parent = new_uid.get(e.get("parent"))
+            entry = copy.deepcopy(e)
+            entry.update(uid=new_id(), qty=q, parent=parent, strapped=bool(parent and e.get("strapped")), equipped=False, seen=None)
+            new_uid[e["uid"]] = entry["uid"]
+            pieces = [x for x in t["items"] if x.get("parent") == e["uid"] and (x.get("item") or {}).get("card")]
+            if parent is None and not pieces and not any(x.get("parent") == e["uid"] for x in picked):
+                merge_into(c, entry)
+            else:
+                c["items"].append(entry)
+            for p in pieces:
+                c["items"].append(dict(copy.deepcopy(p), uid=new_id(), parent=entry["uid"], fromDeck=entry["uid"], seen=None))
+            got.append(f"{q} × {e['item'].get('name', 'item')}" if q > 1 else e["item"].get("name", "item"))
+            taken[e["uid"]] = taken.get(e["uid"], 0) + q
+        coins = dict(c.get("coins") or {})
+        for key, q in keys.items():
+            if key.startswith("c:") and q > 0:
+                k = key[2:]
+                coins[k] = int(coins.get(k) or 0) + q
+                t["coins"][k] = max(0, int(t["coins"].get(k) or 0) - q)
+                got.append(f"{q} {k}")
+        c["coins"] = coins
+        c["rev"] += 1
+        if got:
+            t.setdefault("given", []).append({"character": cid, "name": c["name"], "items": got})
+    # What's left: fewer of what was taken; a taken container's contents fall out of it.
+    gone = set()
+    for e in t["items"]:
+        if e["uid"] in taken:
+            e["qty"] -= taken[e["uid"]]
+            if e["qty"] <= 0:
+                gone.add(e["uid"])
+    gone |= {x["uid"] for x in t["items"] if x.get("parent") in gone and (x.get("item") or {}).get("card")}
+    t["items"] = [x for x in t["items"] if x["uid"] not in gone]
+    for x in t["items"]:
+        if x.get("parent") in gone:
+            x["parent"], x["strapped"] = None, False
+    t["coins"] = {k: n for k, n in t["coins"].items() if n > 0}
+
+
+def treasure_settle(t):
+    """Everyone's ready (or the GM says so): give out what isn't contested; the GM settles the rest."""
+    contested = set(treasure_contested(t))
+    alloc = {}
+    for key, p in t["picks"].items():
+        if key not in contested:
+            for cid, q in p.items():
+                if q > 0:
+                    alloc.setdefault(cid, {})[key] = q
+    treasure_give(t, alloc)
+    t["picks"] = {k: p for k, p in t["picks"].items() if k in contested}
+    t["status"] = "settling" if t["picks"] else "done"
+
+
+def clean_treasure_items(raw):
+    items = []
+    for e in (raw if isinstance(raw, list) else [])[:3000]:
+        if not isinstance(e, dict) or not isinstance(e.get("item"), dict) or not e["item"].get("name"):
+            continue
+        try:
+            qty = max(1, int(e.get("qty") or 1))
+        except (TypeError, ValueError):
+            continue
+        items.append(dict(e, uid=str(e.get("uid") or new_id())[:40], qty=qty, parent=(str(e["parent"])[:40] if e.get("parent") else None)))
+    uids = {e["uid"] for e in items}
+    for e in items:
+        if e["parent"] not in uids:
+            e["parent"], e["strapped"] = None, False
+    return items
+
+
 def snapshot(token, host=False):
     chars = state["characters"]
     mine = {cid for cid, c in chars.items() if c["owner"] == token}
     trades = [dict(t, fromMine=t["from"] in mine, toMine=t["to"] in mine)
               for t in state["trades"] if t["from"] in mine or t["to"] in mine]
     snap = {"characters": [public_char(c, token) for c in chars.values()], "trades": trades,
-            "shops": [public_shop(sh) for sh in state.get("shops", []) if sh.get("open")],
+            "shops": [public_shop(sh) for sh in state.get("shops", []) if shop_open(sh)],
             "gm": state.get("gm") or {}, "role": role_of(token, host), "isHost": host,
             "campaign": state.get("campaign")}
+    # Treasure being shown: a GM sees every showing, a player the ones their characters are in.
+    gm_view = role_of(token, host) == "gm"
+    snap["treasure"] = [t for t in state.get("treasure", []) if gm_view or mine & set(t["players"])]
     if host:
         snap["devices"] = device_list(token)
     return snap
@@ -434,11 +548,55 @@ def pay_coins(coins, cost, margin=0, cur=None):
     return c
 
 
+# Shops can follow Global values (Clockwork, see js/clockwork.js and shops.js): open while a
+# condition holds (openIf), prices times a value (priceValue), an item for sale only while a
+# condition holds (a listing's onlyIf). A condition is {name, op, to}; an unset value counts as 0.
+COND_OPS = ("=", "!=", "<", "<=", ">", ">=")
+VALUE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,39}$")
+
+
+def clean_cond(raw):
+    """A condition on a Global value, checked, or None."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("name"), str) or not VALUE_NAME.match(raw["name"]) \
+            or raw.get("op") not in COND_OPS:
+        return None
+    to = raw.get("to")
+    if isinstance(to, bool) or not isinstance(to, (int, float)) or not math.isfinite(to):
+        return None
+    return {"name": raw["name"], "op": raw["op"], "to": to}
+
+
+def global_value(name, default=0):
+    """A Global value (kept as the GM value gm_<name>), else default."""
+    v = ((state.get("gm") or {}).get("party") or {}).get("gm_" + name)
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else default
+
+
+def cond_holds(c):
+    if not c:
+        return True
+    v, to = global_value(c["name"]), c["to"]
+    return {"=": v == to, "!=": v != to, "<": v < to, "<=": v <= to, ">": v > to, ">=": v >= to}[c["op"]]
+
+
+def shop_open(shop):
+    """Open by its condition if it has one, else as the GM set it."""
+    return cond_holds(shop["openIf"]) if shop.get("openIf") else bool(shop.get("open"))
+
+
+def price_factor(shop):
+    """What the shop's prices are multiplied by: its price value (1 while unset), from 0 to 100."""
+    name = shop.get("priceValue")
+    v = global_value(name, None) if name else None
+    return 1 if v is None else max(0, min(100, v))
+
+
 def listing_price(shop, listing):
-    """Price of one lot (a bundle, for ammunition) after the shop's markup, in copper."""
+    """Price of one lot (a bundle, for ammunition) after the shop's markup and price value, in copper."""
     base = listing["price"] if listing.get("price") is not None else int(listing["item"].get("cost") or 0)
-    # Round halves up like Math.round() in the app, so the price shown is the price charged.
-    return max(0, math.floor(base * (100 + int(shop.get("markup") or 0)) / 100 + 0.5))
+    # Worked out in the same order as listingPrice() in the app, and halves rounded up like its
+    # Math.round(), so the price shown is the price charged.
+    return max(0, math.floor(base * (100 + int(shop.get("markup") or 0)) * price_factor(shop) / 100 + 0.5))
 
 
 def clean_shop(raw):
@@ -451,11 +609,14 @@ def clean_shop(raw):
             if not isinstance(it, dict) or not it.get("name") or not it.get("type"):
                 continue
             price, stock = li.get("price"), li.get("stock")
-            items.append({
+            listing = {
                 "lid": str(li.get("lid") or new_id("l"))[:40], "srcId": (str(li.get("srcId") or "")[:80] or None),
                 "item": it, "price": None if price in (None, "") else max(0, int(price)),
                 "stock": None if stock in (None, "") else max(0, int(stock)),
-            })
+            }
+            if clean_cond(li.get("onlyIf")):
+                listing["onlyIf"] = clean_cond(li.get("onlyIf"))
+            items.append(listing)
         type_rates = {}
         for k, v in list((raw.get("typeRates") or {}).items())[:40]:
             if v not in (None, ""):
@@ -472,6 +633,9 @@ def clean_shop(raw):
             "name": str(raw.get("name") or "Shop")[:80], "keeper": str(raw.get("keeper") or "")[:80],
             "description": str(raw.get("description") or "")[:2000], "icon": (str(raw.get("icon") or "")[:40] or None),
             "open": bool(raw.get("open")), "markup": max(-90, min(500, int(raw.get("markup") or 0))), "items": items,
+            # Following Global values (see shop_open, price_factor)
+            "openIf": clean_cond(raw.get("openIf")),
+            "priceValue": raw["priceValue"] if isinstance(raw.get("priceValue"), str) and VALUE_NAME.match(raw["priceValue"]) else None,
             # Buying from players
             "buys": bool(raw.get("buys")), "sellRate": max(0, min(1000, int(raw.get("sellRate") if raw.get("sellRate") not in (None, "") else 50))),
             "typeRates": type_rates, "sellItems": sell_items,
@@ -534,8 +698,11 @@ def receive_coins(coins, amount, margin=0, cur=None):
 
 
 def public_shop(shop):
-    """A shop as players see it: the stockroom is the host's business."""
-    return {k: v for k, v in shop.items() if k != "backroom"}
+    """A shop as players see it: the stockroom is the host's business, and items only for sale
+    while a value says so are left out while it doesn't."""
+    out = {k: v for k, v in shop.items() if k != "backroom"}
+    out["items"] = [li for li in shop.get("items") or [] if cond_holds(li.get("onlyIf"))]
+    return out
 
 
 def add_to_backroom(shop, entry, qty):
@@ -834,6 +1001,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self.campaign_api(method, token)
         if parts[:1] == ["gm"]:
             return self.gm_api(method, parts[1:], token)
+        if parts[:1] == ["treasure"]:
+            return self.treasure_api(method, parts[1:], token)
         if parts[:1] == ["local"]:
             if not (self.is_app() and LOCAL_DIR):
                 raise ApiError(403, "Only Pack Rat on this PC can do that")
@@ -1052,7 +1221,7 @@ class Handler(SimpleHTTPRequestHandler):
         with cond:
             shops = state.setdefault("shops", [])
             if method == "GET" and not parts:
-                return {"shops": shops if host else [public_shop(sh) for sh in shops if sh.get("open")]}
+                return {"shops": shops if host else [public_shop(sh) for sh in shops if shop_open(sh)]}
             if method == "POST" and not parts:
                 if not host:
                     raise ApiError(403, "Only the host can set up shops")
@@ -1085,7 +1254,7 @@ class Handler(SimpleHTTPRequestHandler):
             if method == "POST" and action == "sell":
                 if not party_enabled():
                     raise ApiError(404, "No party is being hosted")
-                if not shop.get("open"):
+                if not shop_open(shop):
                     raise ApiError(409, f"{shop['name']} is closed")
                 if not shop.get("buys"):
                     raise ApiError(409, f"{shop['name']} doesn't buy items")
@@ -1129,6 +1298,8 @@ class Handler(SimpleHTTPRequestHandler):
                     lots = 0
                 if not listing or not 1 <= lots <= 999:
                     raise ApiError(400, "That item isn't sold here")
+                if not cond_holds(listing.get("onlyIf")):
+                    raise ApiError(409, f"{listing['item']['name']} isn't for sale right now")
                 if listing.get("stock") is not None and listing["stock"] < lots:
                     raise ApiError(409, "Sold out" if listing["stock"] == 0 else f"Only {listing['stock']} left")
                 if action == "take":  # the host's own solo character pays on their side
@@ -1137,7 +1308,7 @@ class Handler(SimpleHTTPRequestHandler):
                 else:
                     if not party_enabled():
                         raise ApiError(404, "No party is being hosted")
-                    if not shop.get("open"):
+                    if not shop_open(shop):
                         raise ApiError(409, f"{shop['name']} is closed")
                     c = state["characters"].get(body.get("character"))
                     if not c or c["owner"] != token:
@@ -1296,6 +1467,114 @@ class Handler(SimpleHTTPRequestHandler):
                 gms.remove(target)
             changed()
         return {"ok": True}
+
+    def treasure_api(self, method, parts, token):
+        """Showing a hoard to players (see treasure_settle).
+
+        POST   /api/treasure {name, hoard, items, coins, players}  GM: show it
+        POST   /api/treasure/<id>/pick {character, key, qty}       a player's pick (qty 0: none)
+        POST   /api/treasure/<id>/ready {character, ready}         ready, or not (picks can change)
+        POST   /api/treasure/<id>/settle {key, give: {charId: qty}} GM: settle a contested pick
+        POST   /api/treasure/<id>/end {settle}                     GM: settle as it stands, or close (nothing moves)
+        DELETE /api/treasure/<id>                                  GM: gone (the GM's device has taken back what's left)
+        """
+        gm = self.is_gm(token)
+        body = self.body() if method == "POST" else {}
+        with cond:
+            shows = state.setdefault("treasure", [])
+            if method == "POST" and not parts:
+                if not gm:
+                    raise ApiError(403, "Only a GM can show treasure")
+                if not party_enabled():
+                    raise ApiError(404, "No party is being hosted")
+                players = [str(p) for p in (body.get("players") or []) if str(p) in state["characters"]][:30]
+                if not players:
+                    raise ApiError(400, "Choose who to show it to")
+                coins = {}
+                for k, n in (body.get("coins") or {}).items() if isinstance(body.get("coins"), dict) else []:
+                    if isinstance(n, int) and not isinstance(n, bool) and n > 0:
+                        coins[str(k)[:10]] = min(n, 10 ** 9)
+                t = {"id": new_id("t"), "name": str(body.get("name") or "Treasure")[:80], "hoard": str(body.get("hoard") or "")[:40],
+                     "items": clean_treasure_items(body.get("items")), "coins": coins, "players": players,
+                     "picks": {}, "ready": [], "status": "picking", "given": []}
+                shows.append(t)
+                changed()
+                return {"id": t["id"]}
+            t = next((x for x in shows if parts and x["id"] == parts[0]), None)
+            if not t:
+                raise ApiError(404, "That treasure isn't being shown")
+            action = parts[1] if len(parts) > 1 else None
+            if method == "DELETE" and action is None:
+                if not gm:
+                    raise ApiError(403, "Only a GM can do that")
+                shows.remove(t)
+                changed()
+                return {"ok": True}
+            if method != "POST":
+                raise ApiError(404, "Unknown endpoint")
+            if action in ("pick", "ready"):
+                cid = str(body.get("character") or "")
+                c = state["characters"].get(cid)
+                if not c or c["owner"] != token:
+                    raise ApiError(403, "You can only pick for your own character")
+                if cid not in t["players"]:
+                    raise ApiError(403, f"{c['name']} isn't sharing this treasure")
+                if t["status"] != "picking":
+                    raise ApiError(409, "The picking is over")
+                if action == "pick":
+                    key = str(body.get("key") or "")
+                    try:
+                        qty = int(body.get("qty") or 0)
+                    except (TypeError, ValueError):
+                        qty = -1
+                    if not (key.startswith(("e:", "c:"))) or not 0 <= qty <= treasure_available(t, key) or not treasure_available(t, key):
+                        raise ApiError(400, "There isn't that much")
+                    p = t["picks"].setdefault(key, {})
+                    if qty:
+                        p[cid] = qty
+                    else:
+                        p.pop(cid, None)
+                        if not p:
+                            del t["picks"][key]
+                    if cid in t["ready"]:
+                        t["ready"].remove(cid)  # changed their mind: not ready any more
+                else:
+                    if body.get("ready"):
+                        if cid not in t["ready"]:
+                            t["ready"].append(cid)
+                    elif cid in t["ready"]:
+                        t["ready"].remove(cid)
+                    if set(t["players"]) <= set(t["ready"]):
+                        treasure_settle(t)
+                changed()
+                return {"ok": True, "status": t["status"]}
+            if not gm:
+                raise ApiError(403, "Only a GM can do that")
+            if action == "settle":
+                key, give = str(body.get("key") or ""), body.get("give")
+                if key not in t["picks"] or t["status"] != "settling" or not isinstance(give, dict):
+                    raise ApiError(400, "That isn't waiting to be settled")
+                alloc = {}
+                for cid, q in give.items():
+                    if cid in t["players"] and isinstance(q, int) and not isinstance(q, bool) and q > 0:
+                        alloc[cid] = {key: q}
+                if sum(a[key] for a in alloc.values()) > treasure_available(t, key):
+                    raise ApiError(400, "There isn't that much")
+                treasure_give(t, alloc)
+                del t["picks"][key]
+                if not t["picks"]:
+                    t["status"] = "done"
+                changed()
+                return {"ok": True, "status": t["status"]}
+            if action == "end":
+                if body.get("settle"):
+                    if t["status"] == "picking":
+                        treasure_settle(t)
+                else:
+                    t["picks"], t["status"] = {}, "done"
+                changed()
+                return {"ok": True, "status": t["status"]}
+            raise ApiError(404, "Unknown endpoint")
 
     def gm_api(self, method, parts, token):
         """GM values: numbers the host (the GM) sets for drawn icons' `gm_…` variables, for the whole

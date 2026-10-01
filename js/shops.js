@@ -81,10 +81,46 @@ const shopStore = {
   },
 };
 
-// Price of one lot (a whole bundle, for ammunition) after the shop's markup, in copper.
+// ------------------------------------------------------------------ following values (Clockwork)
+// A shop can follow Global values (js/clockwork.js): open while a condition holds (openIf),
+// prices times a value (priceValue), an item for sale only while a condition holds (a listing's
+// onlyIf). A condition is { name, op, to }; a value that isn't set counts as 0. In a party the
+// host checks the same (shop_open, price_factor and cond_holds in server.py; PartyServer.java).
+
+const COND_OPS = [["=", "is"], ["!=", "isn't"], ["<", "is under"], ["<=", "is at most"], [">", "is over"], [">=", "is at least"]];
+function condHolds(c) {
+  if (!c) return true;
+  const v = globalValue(c.name) ?? 0, to = c.to;
+  return { "=": v === to, "!=": v !== to, "<": v < to, "<=": v <= to, ">": v > to, ">=": v >= to }[c.op] ?? true;
+}
+const condWords = c => `${c.name} ${COND_OPS.find(o => o[0] === c.op)?.[1] || c.op} ${c.to}`;
+const shopOpen = shop => shop.openIf ? condHolds(shop.openIf) : !!shop.open;
+// What prices are multiplied by: the shop's price value (1 while it isn't set), from 0 to 100.
+function shopPriceFactor(shop) {
+  const v = shop.priceValue ? globalValue(shop.priceValue) : undefined;
+  return typeof v === "number" ? Math.max(0, Math.min(100, v)) : 1;
+}
+
+// Price of one lot (a whole bundle, for ammunition) after the shop's markup and price value, in
+// copper. (Worked out in the same order as listing_price() in server.py, so it's what's charged.)
 function listingPrice(shop, listing) {
   const base = listing.price != null ? listing.price : listing.item.cost || 0;
-  return Math.max(0, Math.round(base * (100 + (shop.markup || 0)) / 100));
+  return Math.max(0, Math.round(base * (100 + (shop.markup || 0)) * shopPriceFactor(shop) / 100));
+}
+
+// A condition, edited in place as obj[key] (cleared when the value name is empty).
+function condEditor(obj, key, aria) {
+  const c = obj[key] || { name: "", op: ">=", to: 1 };
+  const listId = "cond-" + uid();
+  const put = () => { if (isValueName(c.name)) obj[key] = { name: c.name, op: c.op, to: c.to }; else delete obj[key]; };
+  return h("div", { class: "cond-edit" },
+    h("input", { type: "text", list: listId, value: obj[key]?.name || "", placeholder: "Global value", spellcheck: "false", autocomplete: "off",
+      "aria-label": `${aria}: value`, class: "cond-name", onchange: e => { c.name = e.target.value.trim(); e.target.classList.toggle("invalid", !!c.name && !isValueName(c.name)); put(); } }),
+    h("select", { "aria-label": `${aria}: comparison`, onchange: e => { c.op = e.target.value; put(); } },
+      COND_OPS.map(([op, words]) => h("option", { value: op, selected: c.op === op }, words))),
+    h("input", { type: "number", step: "any", value: c.to, "aria-label": `${aria}: number`, class: "cond-to",
+      onchange: e => { c.to = Number.isFinite(+e.target.value) ? +e.target.value : 0; put(); } }),
+    h("datalist", { id: listId }, [...knownValues().values()].filter(v => v.scope === "global").map(v => h("option", { value: v.name }))));
 }
 
 function stockLabel(listing) {
@@ -111,8 +147,8 @@ function buysLabel(shop) {
 }
 
 function markupLabel(shop) {
-  const m = shop.markup || 0;
-  return m > 0 ? `Prices +${m}%` : m < 0 ? `Prices ${m}% (discount)` : null;
+  const m = shop.markup || 0, f = shopPriceFactor(shop);
+  return [m > 0 ? `Prices +${m}%` : m < 0 ? `Prices ${m}% (discount)` : null, f !== 1 ? `Prices × ${f}` : null].filter(Boolean).join(" · ") || null;
 }
 
 function shopIcon(shop, cls) {
@@ -139,6 +175,7 @@ async function buyFromShop(shop, listing, lots) {
       shopStore.refresh();
       return true;
     }
+    if (!condHolds(listing.onlyIf)) return toast(`${listing.item.name} isn't for sale right now`), false;
     const purse = payCoins(char.coins, total, shopMargin(shop));
     if (!purse) return toast(`${char.name} can't afford ${fmtCost(total)}`), false;
     if (shopStore.server()) {
@@ -224,13 +261,13 @@ function renderShops() {
     h("div", { class: "section-head" }, h("h2", null, "Shops"),
       manage && h("button", { class: "btn primary", onclick: () => editShop(null) }, icon("plus"), "New shop")),
     manage && party.active && h("p", { class: "muted small" }, "Players in the party see the shops you mark as open."),
-    list.length ? h("div", { class: "shop-grid" }, list.map(s => h("button", { class: "shop-card" + (s.open === false && manage ? " closed" : ""), onclick: () => { ui.shopId = s.id; render(); window.scrollTo(0, 0); } },
+    list.length ? h("div", { class: "shop-grid" }, list.map(s => h("button", { class: "shop-card" + (!shopOpen(s) && manage ? " closed" : ""), onclick: () => { ui.shopId = s.id; render(); window.scrollTo(0, 0); } },
       shopIcon(s),
       h("div", { class: "shop-card-text" },
         h("b", null, s.name),
         s.keeper && h("span", { class: "muted small" }, s.keeper),
         h("span", { class: "muted small" }, `${s.items.length} item${s.items.length === 1 ? "" : "s"}`, markupLabel(s) ? ` · ${markupLabel(s)}` : "")),
-      manage && h("span", { class: "tag " + (s.open ? "on" : "") }, s.open ? "open" : "closed"))))
+      manage && h("span", { class: "tag " + (shopOpen(s) ? "on" : ""), title: s.openIf ? `Open while ${condWords(s.openIf)}` : "" }, shopOpen(s) ? "open" : "closed"))))
       : h("div", { class: "empty" },
         icon("cart", "big"),
         h("p", null, manage ? "No shops yet. Create one and stock it with items from the catalog." : party.active ? "No shops are open right now." : "No shops yet."),
@@ -240,7 +277,7 @@ function renderShops() {
 function renderShop(shop) {
   const manage = shopStore.canManage();
   const char = store.char();
-  const closed = !shop.open && (party.active || shopStore.server());
+  const closed = !shopOpen(shop) && (party.active || shopStore.server());
   const back = () => { ui.shopId = null; render(); };
   return h("div", { class: "view-shop" },
     h("button", { class: "link back-link", onclick: back }, "← All shops"),
@@ -254,26 +291,29 @@ function renderShop(shop) {
           markupLabel(shop) && h("span", { class: "tag" }, markupLabel(shop)),
           buysLabel(shop) && h("span", { class: "tag" }, buysLabel(shop)),
           fundsLabel(shop, manage) && h("span", { class: "tag" }, fundsLabel(shop, manage)),
-          manage && h("span", { class: "tag " + (shop.open ? "on" : "") }, shop.open ? "open" : "closed"))),
+          manage && h("span", { class: "tag " + (shopOpen(shop) ? "on" : "") }, shopOpen(shop) ? "open" : "closed"),
+          manage && shop.openIf && h("span", { class: "tag" }, `Open while ${condWords(shop.openIf)}`))),
       manage && h("div", { class: "shop-actions" },
         h("button", { class: "btn", onclick: () => editShop(shop) }, icon("edit"), "Edit"),
-        h("button", { class: "btn", onclick: () => toggleShopOpen(shop) }, shop.open ? "Close shop" : "Open shop"))),
+        !shop.openIf && h("button", { class: "btn", onclick: () => toggleShopOpen(shop) }, shop.open ? "Close shop" : "Open shop"))),
     char && h("div", { class: "purse" }, icon("coins"), h("span", null, h("b", null, char.name), " has ",
       h("b", null, fmtMoney(coinTotalCp(char.coins))))),
     closed && h("p", { class: "warn-text" }, "This shop is closed."),
     shop.buys && char && !closed && h("button", { class: "btn sell-btn", onclick: () => openSellToShop(shop) }, icon("coins"), `Sell items to ${shop.name}`),
     manage && stockroomPanel(shop),
     shop.items.length ? h("div", { class: "group" }, shop.items.map(li => {
-      const out = li.stock === 0;
+      const out = li.stock === 0, away = !condHolds(li.onlyIf); // away: not for sale while its condition doesn't hold
       const price = listingPrice(shop, li);
-      return h("div", { class: "row shop-row" + (out ? " sold-out" : "") },
+      return h("div", { class: "row shop-row" + (out || away ? " sold-out" : "") },
         itemIcon(li.item, "row-icon"),
         h("button", { class: "row-main", onclick: () => openBuy(shop, li) },
-          h("div", { class: "row-title" }, li.item.name, stockLabel(li) && h("span", { class: "tag" + (out ? "" : " on") }, stockLabel(li))),
+          h("div", { class: "row-title" }, li.item.name, stockLabel(li) && h("span", { class: "tag" + (out ? "" : " on") }, stockLabel(li)),
+            li.onlyIf && manage && h("span", { class: "tag" + (away ? "" : " on"), title: away ? "Players don't see it now" : "" },
+              `${away ? "Hidden: for sale only" : "For sale"} while ${condWords(li.onlyIf)}`)),
           h("div", { class: "row-sub" }, itemSummary(li.item))),
         h("div", { class: "shop-price" }, price ? fmtCost(price) : "Free",
           (li.item.bundle || 1) > 1 && h("small", { class: "muted" }, ` / ${li.item.bundle}`)),
-        h("button", { class: "btn primary", disabled: out || closed || !char, onclick: () => openBuy(shop, li) }, out ? "Sold out" : "Buy"));
+        h("button", { class: "btn primary", disabled: out || away || closed || !char, onclick: () => openBuy(shop, li) }, out ? "Sold out" : away ? "Not now" : "Buy"));
     })) : h("p", { class: "muted pad" }, manage ? "Nothing in stock. Edit the shop to add items." : "Nothing for sale."));
 }
 
@@ -314,6 +354,8 @@ function renderShopEditor() {
     if (!d.name.trim()) return toast("Give the shop a name");
     try {
       const { _orig, ...clean } = d;
+      clean.items = clean.items.map(({ _cond, ...li }) => li); // editing state only
+      if (clean.openIf && !isValueName(clean.openIf.name)) { delete clean.openIf; } // chosen, but no value named yet
       const id = await shopStore.save({ ...clean, name: d.name.trim() });
       ui.shopDraft = null;
       ui.shopId = id;
@@ -353,7 +395,11 @@ function renderShopEditor() {
     h("label", { class: "field mini" }, h("span", null, "Stock"),
       h("input", { type: "number", min: 0, inputmode: "numeric", placeholder: "∞", value: li.stock ?? "",
         oninput: e => { li.stock = e.target.value === "" ? null : Math.max(0, Math.floor(+e.target.value)); } })),
-    iconBtn("trash", "Remove from shop", () => { d.items.splice(i, 1); render(); }, "danger-hover")))
+    iconBtn("eye", li.onlyIf ? `For sale while ${condWords(li.onlyIf)}: change` : "Only for sale while a value says so…", () => { li._cond = !li._cond; render(); },
+      "shop-cond-btn" + (li.onlyIf ? " on" : "")),
+    iconBtn("trash", "Remove from shop", () => { d.items.splice(i, 1); render(); }, "danger-hover"),
+    (li._cond || li.onlyIf) && h("div", { class: "shop-cond" }, h("span", { class: "small muted" }, "For sale only while"), condEditor(li, "onlyIf", `${li.item.name}: for sale while`),
+      li.onlyIf && h("button", { type: "button", class: "btn", onclick: () => { delete li.onlyIf; li._cond = false; render(); } }, "Always for sale"))))
     : h("p", { class: "muted pad" }, "No items yet."));
   return h("div", { class: "view-shop-edit" },
     h("div", { class: "section-head" }, h("h2", null, isNew ? "New shop" : `Edit ${d.name}`)),
@@ -369,8 +415,19 @@ function renderShopEditor() {
       h("div", { class: "field" }, h("span", null, "Sign"),
         h("div", { class: "inline" }, shopIcon(d, "sign-icon"),
           h("button", { type: "button", class: "btn", onclick: () => openIconPicker(d.icon, id => { if (id) d.icon = id; else delete d.icon; render(); }, { type: "treasure", name: "" }) }, "Choose icon"))),
-      h("label", { class: "check field" }, h("input", { type: "checkbox", checked: !!d.open, onchange: e => { d.open = e.target.checked; } }),
-        " Open — players can see it and buy")),
+      h("div", { class: "field full" }, h("span", null, "Open"),
+        h("div", { class: "inline wrap" },
+          h("select", { "aria-label": "When it's open", onchange: e => { if (e.target.value === "value") d.openIf = d.openIf || { name: "", op: ">=", to: 1 }; else { delete d.openIf; d.open = e.target.value === "open"; } render(); } },
+            h("option", { value: "open", selected: !d.openIf && !!d.open }, "Open: players can see it and buy"),
+            h("option", { value: "closed", selected: !d.openIf && !d.open }, "Closed"),
+            h("option", { value: "value", selected: !!d.openIf }, "Open while a Global value says so")),
+          d.openIf && condEditor(d, "openIf", "Open while"))),
+      h("div", { class: "field full" }, h("span", null, "Prices follow a Global value (optional)"),
+        h("div", { class: "inline wrap" },
+          h("input", { type: "text", list: "shop-price-values", value: d.priceValue || "", placeholder: "e.g. prices", spellcheck: "false", autocomplete: "off",
+            "aria-label": "Price value", onchange: e => { const v = e.target.value.trim(); if (isValueName(v)) d.priceValue = v; else delete d.priceValue; e.target.classList.toggle("invalid", !!v && !isValueName(v)); } }),
+          h("span", { class: "muted small" }, "Every price is multiplied by it (1 while it isn't set): 1.5 is half as much again, 0.5 half price."),
+          h("datalist", { id: "shop-price-values" }, [...knownValues().values()].filter(v => v.scope === "global").map(v => h("option", { value: v.name })))))),
     h("div", { class: "section-head shop-items-head" }, h("h3", null, `Items (${d.items.length})`),
       h("button", { class: "btn", onclick: () => openStockPicker({
         title: "Add items to the shop",
@@ -390,41 +447,28 @@ function renderShopEditor() {
       h("button", { class: "btn primary", onclick: save }, icon("check"), "Save shop")));
 }
 
-// Catalog picker (SRD and custom items): opts.has(id) marks ones already added,
-// opts.add(id, snapshot) adds one.
+// Catalog picker (SRD and custom items), as the catalog shows them (the inventory management
+// template, itemManager in js/app.js): opts.has(id) marks ones already added, opts.add(id,
+// snapshot) adds one. Shops, hoards and treasure tables add items with it.
 function openStockPicker(opts) {
-  // Same groups and subcategories as the catalog.
-  let query = "", type = "all", sub = null, close;
-  const list = h("div", { class: "group stock-list" });
-  const chips = h("div");
-  const draw = () => {
-    const inGroup = catalogFiltered(type, query, null);
-    const subMatch = sub && groupById(type) ? subcategories(type).find(sc => sc.key === sub)?.match : null;
-    const items = (subMatch ? inGroup.filter(subMatch) : inGroup).slice(0, 200);
-    setChildren(chips,
-      chipRow("Item types", catTypes().map(([k, label]) => h("button", { type: "button", class: "chip-btn" + (type === k ? " active" : ""),
-        onclick: () => { type = k; sub = null; draw(); } }, groupById(k) && colorDot(groupColor(k), label), label))),
-      groupById(type) && subChips(type, sub, sc => inGroup.filter(sc.match).length, key => { sub = key; draw(); }));
-    setChildren(list, items.map(i => {
-      const inShop = opts.has(i.id);
-      return h("div", { class: "row" },
-        itemIcon(i, "row-icon"),
-        h("div", { class: "row-main static" }, h("div", { class: "row-title" }, i.name), h("div", { class: "row-sub" }, itemSummary(i))),
-        h("div", { class: "row-cost muted" }, fmtCost(i.cost)),
-        inShop ? h("span", { class: "tag on" }, "added")
-          : iconBtn("plus", "Add", () => {
-            const { id, ...snapshot } = clone(i);
-            if (!stacks(snapshot, id)) snapshot.noStack = true; // the party server stacks what's bought by this
-            opts.add(id, snapshot);
-            draw();
-          }, "add"));
-    }), !items.length && h("p", { class: "muted pad" }, "No items match."));
+  resetList("stock"); // a fresh search each time (its sort order is remembered)
+  let close, mgr;
+  const add = item => {
+    const { id, ...snapshot } = clone(item);
+    if (!stacks(snapshot, id)) snapshot.noStack = true; // the party server stacks what's bought by this
+    opts.add(id, snapshot);
+    mgr.redraw();
   };
-  draw();
-  close = openModal(opts.title, [
-    h("label", { class: "search" }, icon("search"), h("input", { type: "search", placeholder: "Search the catalog…", oninput: e => { query = e.target.value; draw(); } })),
-    chips, list,
-  ], { wide: true, footer: [h("button", { class: "btn primary", onclick: () => { close(); render(); } }, icon("check"), "Done")] });
+  mgr = itemManager({ key: "stock", flat: true, sorts: CATALOG_SORTS, sort: "catalog", limit: 150, customChip: true,
+    placeholder: "Search the catalog…",
+    storage: () => {
+      const st = catalogStorage(store.catalog(), { id: "stock",
+        open: item => openStoredItem(st, st.char.items.find(e => e.uid === item.id)),
+        extras: e => opts.has(e.srcId) ? h("span", { class: "tag on" }, "added") : iconBtn("plus", `Add ${e.item.name}`, () => add(e.item), "add") });
+      st.tileExtras = true; // the picker's tiles have their add button under them
+      return st;
+    } });
+  close = openModal(opts.title, mgr, { wide: true, footer: [h("button", { class: "btn primary", onclick: () => { close(); render(); } }, icon("check"), "Done")] });
 }
 
 // ------------------------------------------------------------------ selling to shops

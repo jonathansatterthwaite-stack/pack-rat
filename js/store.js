@@ -176,7 +176,7 @@ function newCampaign(name = "My campaign", packages = [], system = defaultSystem
   const c = newCharacter("Adventurer");
   return { id: "cmp" + uid(), name, notes: "", created: Date.now(), system, packages, home: packages[0] || null,
     settings: { encumbrance: "standard", coinWeight: true }, characters: [c], activeId: c.id,
-    shops: [], gmControls: [], gmValues: {} };
+    shops: [], gmControls: [], gmValues: {}, hoards: [], treasureTables: [] };
 }
 
 function newPackage(name = "My homebrew") {
@@ -229,12 +229,19 @@ function normalizeData(d) {
     c.name = c.name || "Campaign";
     if (c.system === undefined) c.system = LEGACY_SYSTEM; // from before game systems; null: none
     c.settings = { encumbrance: "standard", coinWeight: true, ...(c.settings || {}) };
-    for (const k of ["characters", "shops", "gmControls"]) if (!Array.isArray(c[k])) c[k] = [];
+    for (const k of ["characters", "shops", "gmControls", "hoards", "treasureTables"]) if (!Array.isArray(c[k])) c[k] = [];
     if (!c.characters.length) c.characters.push(newCharacter("Adventurer"));
     if (!c.characters.some(x => x.id === c.activeId)) c.activeId = c.characters[0].id;
     if (!c.gmValues || typeof c.gmValues !== "object") c.gmValues = {}; // Global and Local values (js/clockwork.js)
     // Boards' pins named GM values (gm_shipX); now values are named without it (shipX).
-    for (const ctl of c.gmControls) for (const p of ctl.pins || []) for (const k of ["xVar", "yVar"]) if (/^gm_./.test(p[k] || "")) p[k] = p[k].slice(3);
+    // Boards were controls of their own: each becomes a panel holding it (js/control-panels.js).
+    c.gmControls = c.gmControls.map(ctl => ctl.kind === "panel" ? ctl : { id: ctl.id, kind: "panel", name: ctl.name || "Board", cols: 6, rows: 6,
+      controls: [{ id: "c" + ctl.id, type: "board", x: 0, y: 0, w: 6, h: 6, board: { ...(ctl.image ? { image: ctl.image } : {}), pins: ctl.pins || [] } }] });
+    for (const ctl of c.gmControls) if (!Array.isArray(ctl.controls)) ctl.controls = [];
+    // Pins named GM values (gm_shipX); now values are named without it (shipX).
+    for (const ctl of c.gmControls) for (const k of ctl.controls) for (const p of k.board?.pins || []) {
+      for (const v of ["xVar", "yVar"]) if (/^gm_./.test(p[v] || "")) p[v] = p[v].slice(3);
+    }
     c.packages = (Array.isArray(c.packages) ? c.packages : []).filter(id => d.packages.some(p => p.id === id));
     if (!c.packages.includes(c.home)) c.home = c.packages[0] || null;
   }
@@ -260,6 +267,8 @@ function mergeData(base, extra) {
     addById(same.characters, c.characters.filter(x => !isBlankCharacter(x)));
     addById(same.shops, c.shops, false);
     addById(same.gmControls, c.gmControls, false);
+    addById(same.hoards, c.hoards, false);
+    addById(same.treasureTables, c.treasureTables, false);
     // A blank starter character is no longer needed once real ones arrive.
     if (same.characters.length > 1) same.characters = same.characters.filter(x => !isBlankCharacter(x));
     if (!same.characters.some(x => x.id === same.activeId)) same.activeId = same.characters[0]?.id;
@@ -284,7 +293,7 @@ function campaignView() {
   const view = {};
   const pass = (key, owner) => Object.defineProperty(view, key, {
     enumerable: true, get: () => owner()[key], set: v => { owner()[key] = v; } });
-  for (const k of ["characters", "activeId", "shops", "gmControls", "gmValues", "settings"]) pass(k, () => store.campaign());
+  for (const k of ["characters", "activeId", "shops", "gmControls", "gmValues", "hoards", "treasureTables", "settings"]) pass(k, () => store.campaign());
   for (const k of ["customItems", "templates"]) pass(k, () => store.homePackage());
   pass("iconLibrary", () => store.data);
   return view;

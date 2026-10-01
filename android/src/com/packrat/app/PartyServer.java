@@ -129,6 +129,7 @@ public class PartyServer {
     private JSONObject characters = new JSONObject();
     private JSONArray trades = new JSONArray();
     private JSONArray shops = new JSONArray();
+    private JSONArray treasure = new JSONArray(); // treasure being shown to players (see treasureApi)
     /** GM values (see gm_api in server.py): {party: {name: v}, characters: {id: {…}}, items: {"charId/uid": {…}}}. */
     private JSONObject gm = new JSONObject();
     /** Host-level (kept whatever the campaign): tokens of the devices the host has made GMs, and devices' names. */
@@ -342,6 +343,7 @@ public class PartyServer {
         characters = data.optJSONObject("characters") != null ? data.optJSONObject("characters") : new JSONObject();
         trades = data.optJSONArray("trades") != null ? data.optJSONArray("trades") : new JSONArray();
         shops = data.optJSONArray("shops") != null ? data.optJSONArray("shops") : new JSONArray();
+        treasure = data.optJSONArray("treasure") != null ? data.optJSONArray("treasure") : new JSONArray();
         gm = data.optJSONObject("gm") != null ? data.optJSONObject("gm") : new JSONObject();
         campaign = data.optJSONObject("campaign");
         if (hostLevel) {
@@ -357,6 +359,7 @@ public class PartyServer {
             data.put("characters", characters);
             data.put("trades", trades);
             data.put("shops", shops);
+            data.put("treasure", treasure);
             data.put("gm", gm);
             data.put("partyId", partyId);
             data.put("gms", gms);
@@ -486,10 +489,21 @@ public class PartyServer {
         snap.put("characters", chars);
         snap.put("trades", ts);
         JSONArray openShops = new JSONArray();
-        for (int i = 0; i < shops.length(); i++) if (shops.getJSONObject(i).optBoolean("open")) openShops.put(publicShop(shops.getJSONObject(i)));
+        for (int i = 0; i < shops.length(); i++) if (shopOpen(shops.getJSONObject(i))) openShops.put(publicShop(shops.getJSONObject(i)));
         snap.put("shops", openShops);
         snap.put("gm", new JSONObject(gm.toString()));
         snap.put("role", roleOf(token, host));
+        // Treasure being shown: a GM sees every showing, a player the ones their characters are in.
+        boolean gmView = roleOf(token, host).equals("gm");
+        JSONArray shown = new JSONArray();
+        for (int i = 0; i < treasure.length(); i++) {
+            JSONObject t = treasure.getJSONObject(i);
+            JSONArray ps = t.getJSONArray("players");
+            boolean in = gmView;
+            for (int j = 0; !in && j < ps.length(); j++) in = mine.contains(ps.optString(j));
+            if (in) shown.put(t);
+        }
+        snap.put("treasure", shown);
         snap.put("isHost", host);
         snap.put("campaign", campaign == null ? JSONObject.NULL : new JSONObject(campaign.toString()));
         if (host) snap.put("devices", deviceList(token));
@@ -711,10 +725,65 @@ public class PartyServer {
 
     static JSONObject payCoins(JSONObject coins, int cost, int margin) throws JSONException { return payCoins(DEFAULT_CURRENCY, coins, cost, margin); }
 
-    static int listingPrice(JSONObject shop, JSONObject listing) {
+    // Shops can follow Global values (see shop_open etc. in server.py): open while a condition holds
+    // (openIf), prices times a value (priceValue), an item for sale only while a condition holds (a
+    // listing's onlyIf). A condition is {name, op, to}; an unset value counts as 0.
+    static final java.util.regex.Pattern VALUE_NAME = java.util.regex.Pattern.compile("[A-Za-z][A-Za-z0-9_]{0,39}");
+    static final List<String> COND_OPS = java.util.Arrays.asList("=", "!=", "<", "<=", ">", ">=");
+
+    /** A condition on a Global value, checked, or null. */
+    static JSONObject cleanCond(JSONObject raw) throws JSONException {
+        if (raw == null || !(raw.opt("name") instanceof String) || !VALUE_NAME.matcher(raw.getString("name")).matches()) return null;
+        if (!COND_OPS.contains(raw.optString("op"))) return null;
+        Object to = raw.opt("to");
+        if (!(to instanceof Number) || Double.isNaN(((Number) to).doubleValue()) || Double.isInfinite(((Number) to).doubleValue())) return null;
+        JSONObject c = new JSONObject();
+        c.put("name", raw.getString("name"));
+        c.put("op", raw.getString("op"));
+        c.put("to", to);
+        return c;
+    }
+
+    /** A Global value (kept as the GM value gm_<name>), else dflt. */
+    private Double globalValue(String name, Double dflt) {
+        JSONObject p = gm.optJSONObject("party");
+        Object v = p == null ? null : p.opt("gm_" + name);
+        return v instanceof Number ? Double.valueOf(((Number) v).doubleValue()) : dflt; // (boxed: dflt may be null)
+    }
+
+    private boolean condHolds(JSONObject c) {
+        if (c == null) return true;
+        double v = globalValue(c.optString("name"), 0.0), to = c.optDouble("to");
+        switch (c.optString("op")) {
+            case "=": return v == to;
+            case "!=": return v != to;
+            case "<": return v < to;
+            case "<=": return v <= to;
+            case ">": return v > to;
+            default: return v >= to;
+        }
+    }
+
+    /** Open by its condition if it has one, else as the GM set it. */
+    private boolean shopOpen(JSONObject shop) {
+        JSONObject c = shop.optJSONObject("openIf");
+        return c != null ? condHolds(c) : shop.optBoolean("open");
+    }
+
+    /** What the shop's prices are multiplied by: its price value (1 while unset), from 0 to 100. */
+    private double priceFactor(JSONObject shop) {
+        String name = shop.isNull("priceValue") ? "" : shop.optString("priceValue");
+        Double v = name.isEmpty() ? null : globalValue(name, null);
+        return v == null ? 1 : Math.max(0, Math.min(100, v));
+    }
+
+    private int listingPrice(JSONObject shop, JSONObject listing) { return listingPrice(shop, listing, priceFactor(shop)); }
+
+    static int listingPrice(JSONObject shop, JSONObject listing, double factor) {
         double base = listing.isNull("price") ? listing.optJSONObject("item").optDouble("cost", 0) : listing.optDouble("price", 0);
         if (Double.isNaN(base)) base = 0;
-        return (int) Math.max(0, Math.round(base * (100 + shop.optInt("markup")) / 100.0));
+        // In the same order as listingPrice() in the app and server.py, so the price shown is the price charged.
+        return (int) Math.max(0, Math.round(base * (100 + shop.optInt("markup")) * factor / 100.0));
     }
 
     private JSONObject cleanShop(JSONObject raw) throws ApiError {
@@ -736,6 +805,8 @@ public class PartyServer {
                 out.put("item", it);
                 out.put("price", li.isNull("price") || "".equals(li.opt("price")) ? JSONObject.NULL : Math.max(0, li.getInt("price")));
                 out.put("stock", li.isNull("stock") || "".equals(li.opt("stock")) ? JSONObject.NULL : Math.max(0, li.getInt("stock")));
+                JSONObject onlyIf = cleanCond(li.optJSONObject("onlyIf"));
+                if (onlyIf != null) out.put("onlyIf", onlyIf);
                 items.put(out);
             }
             JSONObject shop = new JSONObject();
@@ -747,6 +818,11 @@ public class PartyServer {
             shop.put("open", raw.optBoolean("open"));
             shop.put("markup", Math.max(-90, Math.min(500, raw.optInt("markup"))));
             shop.put("items", items);
+            // Following Global values (see shopOpen, priceFactor)
+            JSONObject openIf = cleanCond(raw.optJSONObject("openIf"));
+            shop.put("openIf", openIf == null ? JSONObject.NULL : openIf);
+            String pv = raw.isNull("priceValue") ? "" : raw.optString("priceValue");
+            shop.put("priceValue", VALUE_NAME.matcher(pv).matches() ? pv : JSONObject.NULL);
             // Buying from players
             shop.put("buys", raw.optBoolean("buys"));
             shop.put("sellRate", raw.isNull("sellRate") || "".equals(raw.opt("sellRate")) ? 50 : Math.max(0, Math.min(1000, raw.getInt("sellRate"))));
@@ -861,10 +937,14 @@ public class PartyServer {
 
     static JSONObject receiveCoins(JSONObject coins, long amount, int margin) throws JSONException { return receiveCoins(DEFAULT_CURRENCY, coins, amount, margin); }
 
-    /** A shop as players see it: the stockroom is the host's business. */
-    static JSONObject publicShop(JSONObject shop) throws JSONException {
+    /** A shop as players see it: the stockroom is the host's business, and items only for sale
+     *  while a value says so are left out while it doesn't. */
+    private JSONObject publicShop(JSONObject shop) throws JSONException {
         JSONObject out = new JSONObject(shop.toString());
         out.remove("backroom");
+        JSONArray items = new JSONArray(), all = out.optJSONArray("items");
+        for (int i = 0; all != null && i < all.length(); i++) if (condHolds(all.getJSONObject(i).optJSONObject("onlyIf"))) items.put(all.get(i));
+        out.put("items", items);
         return out;
     }
 
@@ -955,7 +1035,7 @@ public class PartyServer {
                 JSONArray list = new JSONArray();
                 for (int i = 0; i < shops.length(); i++) {
                     if (host) list.put(shops.get(i));
-                    else if (shops.getJSONObject(i).optBoolean("open")) list.put(publicShop(shops.getJSONObject(i)));
+                    else if (shopOpen(shops.getJSONObject(i))) list.put(publicShop(shops.getJSONObject(i)));
                 }
                 JSONObject r = new JSONObject();
                 r.put("shops", list);
@@ -1007,7 +1087,7 @@ public class PartyServer {
             }
             if (req.method.equals("POST") && "sell".equals(action)) {
                 if (!partyEnabled()) throw new ApiError(404, "No party is being hosted");
-                if (!shop.optBoolean("open")) throw new ApiError(409, shop.optString("name") + " is closed");
+                if (!shopOpen(shop)) throw new ApiError(409, shop.optString("name") + " is closed");
                 if (!shop.optBoolean("buys")) throw new ApiError(409, shop.optString("name") + " doesn't buy items");
                 JSONObject c = characters.optJSONObject(body.optString("character"));
                 if (c == null || !c.optString("owner").equals(token)) throw new ApiError(403, "You can only sell your own character's items");
@@ -1052,6 +1132,7 @@ public class PartyServer {
                 for (int i = 0; i < items.length(); i++) if (items.getJSONObject(i).optString("lid").equals(body.optString("lid"))) listing = items.getJSONObject(i);
                 int lots = body.optInt("qty", 1);
                 if (listing == null || lots < 1 || lots > 999) throw new ApiError(400, "That item isn't sold here");
+                if (!condHolds(listing.optJSONObject("onlyIf"))) throw new ApiError(409, listing.getJSONObject("item").optString("name") + " isn't for sale right now");
                 boolean limited = !listing.isNull("stock");
                 if (limited && listing.getInt("stock") < lots) {
                     throw new ApiError(409, listing.getInt("stock") == 0 ? "Sold out" : "Only " + listing.getInt("stock") + " left");
@@ -1060,7 +1141,7 @@ public class PartyServer {
                     if (!host) throw new ApiError(403, "Only the host can do that");
                 } else {
                     if (!partyEnabled()) throw new ApiError(404, "No party is being hosted");
-                    if (!shop.optBoolean("open")) throw new ApiError(409, shop.optString("name") + " is closed");
+                    if (!shopOpen(shop)) throw new ApiError(409, shop.optString("name") + " is closed");
                     JSONObject c = characters.optJSONObject(body.optString("character"));
                     if (c == null || !c.optString("owner").equals(token)) throw new ApiError(403, "You can only buy for your own character");
                     int total = listingPrice(shop, listing) * lots;
@@ -1153,6 +1234,308 @@ public class PartyServer {
             }
         }
         throw new ApiError(404, "Unknown endpoint");
+    }
+
+    // ------------------------------------------------------------ treasure (see treasure_api in server.py)
+    // The GM shows a hoard to some players; they pick, press Ready; then the uncontested picks are
+    // given out and the GM settles the contested ones. A pick's key is "e:<uid>" or "c:<coin>".
+
+    private static int treasureAvailable(JSONObject t, String key) throws JSONException {
+        if (key.startsWith("c:")) return t.getJSONObject("coins").optInt(key.substring(2));
+        JSONObject e = treasureEntry(t, key.substring(2));
+        return e == null ? 0 : e.optInt("qty");
+    }
+
+    private static JSONObject treasureEntry(JSONObject t, String uid) throws JSONException {
+        JSONArray items = t.getJSONArray("items");
+        for (int i = 0; i < items.length(); i++) if (items.getJSONObject(i).optString("uid").equals(uid)) return items.getJSONObject(i);
+        return null;
+    }
+
+    private static List<String> treasureContested(JSONObject t) throws JSONException {
+        List<String> out = new ArrayList<>();
+        JSONObject picks = t.getJSONObject("picks");
+        for (Iterator<String> it = picks.keys(); it.hasNext(); ) {
+            String k = it.next();
+            JSONObject p = picks.getJSONObject(k);
+            int sum = 0;
+            for (Iterator<String> c = p.keys(); c.hasNext(); ) sum += p.optInt(c.next());
+            if (sum > treasureAvailable(t, k)) out.add(k);
+        }
+        return out;
+    }
+
+    private static int treasureDepth(JSONObject t, JSONObject e) throws JSONException {
+        int d = 0;
+        Set<String> seen = new HashSet<>();
+        while (e != null && !e.isNull("parent") && !e.optString("parent").isEmpty() && seen.add(e.optString("uid"))) {
+            e = treasureEntry(t, e.optString("parent"));
+            d++;
+        }
+        return d;
+    }
+
+    private static boolean isPiece(JSONObject x) {
+        JSONObject it = x.optJSONObject("item");
+        return it != null && it.optBoolean("card");
+    }
+    private static String parentOf(JSONObject x) { return x.isNull("parent") ? "" : x.optString("parent"); }
+
+    /** Give out {charId: {key: qty}}: into the characters, out of the showing (see treasure_give). */
+    private void treasureGive(JSONObject t, Map<String, Map<String, Integer>> alloc) throws JSONException {
+        Map<String, Integer> taken = new HashMap<>();
+        JSONArray items = t.getJSONArray("items");
+        JSONObject coinsLeft = t.getJSONObject("coins");
+        for (Map.Entry<String, Map<String, Integer>> a : alloc.entrySet()) {
+            JSONObject c = characters.optJSONObject(a.getKey());
+            if (c == null) continue;
+            Map<String, Integer> keys = a.getValue();
+            Map<String, String> newUid = new HashMap<>();
+            List<String> got = new ArrayList<>();
+            List<JSONObject> picked = new ArrayList<>();
+            for (int i = 0; i < items.length(); i++) if (keys.containsKey("e:" + items.getJSONObject(i).optString("uid"))) picked.add(items.getJSONObject(i));
+            final JSONObject tt = t;
+            picked.sort((x, y) -> { try { return treasureDepth(tt, x) - treasureDepth(tt, y); } catch (JSONException ex) { return 0; } });
+            Set<String> pickedUids = new HashSet<>();
+            for (JSONObject e : picked) pickedUids.add(e.optString("uid"));
+            for (JSONObject e : picked) {
+                String uid = e.optString("uid");
+                int q = Math.min(keys.get("e:" + uid), e.optInt("qty"));
+                String parent = newUid.get(parentOf(e));
+                JSONObject entry = new JSONObject(e.toString());
+                entry.put("uid", newId(""));
+                entry.put("qty", q);
+                entry.put("parent", parent == null ? JSONObject.NULL : parent);
+                entry.put("strapped", parent != null && e.optBoolean("strapped"));
+                entry.put("equipped", false);
+                entry.put("seen", JSONObject.NULL);
+                newUid.put(uid, entry.getString("uid"));
+                List<JSONObject> pieces = new ArrayList<>();
+                boolean kids = false;
+                for (int i = 0; i < items.length(); i++) {
+                    JSONObject x = items.getJSONObject(i);
+                    if (!parentOf(x).equals(uid)) continue;
+                    if (isPiece(x)) pieces.add(x);
+                    if (pickedUids.contains(x.optString("uid"))) kids = true;
+                }
+                if (parent == null && pieces.isEmpty() && !kids) mergeInto(c, entry);
+                else c.getJSONArray("items").put(entry);
+                for (JSONObject p : pieces) {
+                    JSONObject piece = new JSONObject(p.toString());
+                    piece.put("uid", newId(""));
+                    piece.put("parent", entry.getString("uid"));
+                    piece.put("fromDeck", entry.getString("uid"));
+                    piece.put("seen", JSONObject.NULL);
+                    c.getJSONArray("items").put(piece);
+                }
+                String name = e.getJSONObject("item").optString("name", "item");
+                got.add(q > 1 ? q + " × " + name : name);
+                taken.put(uid, taken.getOrDefault(uid, 0) + q);
+            }
+            JSONObject coins = c.optJSONObject("coins") != null ? new JSONObject(c.getJSONObject("coins").toString()) : new JSONObject();
+            for (Map.Entry<String, Integer> k : keys.entrySet()) {
+                if (!k.getKey().startsWith("c:") || k.getValue() <= 0) continue;
+                String coin = k.getKey().substring(2);
+                coins.put(coin, coins.optInt(coin) + k.getValue());
+                coinsLeft.put(coin, Math.max(0, coinsLeft.optInt(coin) - k.getValue()));
+                got.add(k.getValue() + " " + coin);
+            }
+            c.put("coins", coins);
+            c.put("rev", c.optLong("rev") + 1);
+            if (!got.isEmpty()) {
+                JSONObject g = new JSONObject();
+                g.put("character", a.getKey());
+                g.put("name", c.optString("name"));
+                g.put("items", new JSONArray(got));
+                t.getJSONArray("given").put(g);
+            }
+        }
+        // What's left: fewer of what was taken; a taken container's contents fall out of it.
+        Set<String> gone = new HashSet<>();
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject e = items.getJSONObject(i);
+            Integer q = taken.get(e.optString("uid"));
+            if (q == null) continue;
+            e.put("qty", e.optInt("qty") - q);
+            if (e.optInt("qty") <= 0) gone.add(e.optString("uid"));
+        }
+        Set<String> pieces = new HashSet<>();
+        for (int i = 0; i < items.length(); i++) if (gone.contains(parentOf(items.getJSONObject(i))) && isPiece(items.getJSONObject(i))) pieces.add(items.getJSONObject(i).optString("uid"));
+        gone.addAll(pieces);
+        JSONArray left = new JSONArray();
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject x = items.getJSONObject(i);
+            if (gone.contains(x.optString("uid"))) continue;
+            if (gone.contains(parentOf(x))) { x.put("parent", JSONObject.NULL); x.put("strapped", false); }
+            left.put(x);
+        }
+        t.put("items", left);
+        JSONObject coins = new JSONObject();
+        for (Iterator<String> it = coinsLeft.keys(); it.hasNext(); ) { String k = it.next(); if (coinsLeft.optInt(k) > 0) coins.put(k, coinsLeft.optInt(k)); }
+        t.put("coins", coins);
+    }
+
+    /** Everyone's ready (or the GM says so): give out what isn't contested; the GM settles the rest. */
+    private void treasureSettle(JSONObject t) throws JSONException {
+        List<String> contested = treasureContested(t);
+        Map<String, Map<String, Integer>> alloc = new HashMap<>();
+        JSONObject picks = t.getJSONObject("picks"), still = new JSONObject();
+        for (Iterator<String> it = picks.keys(); it.hasNext(); ) {
+            String key = it.next();
+            JSONObject p = picks.getJSONObject(key);
+            if (contested.contains(key)) { still.put(key, p); continue; }
+            for (Iterator<String> c = p.keys(); c.hasNext(); ) {
+                String cid = c.next();
+                if (p.optInt(cid) > 0) alloc.computeIfAbsent(cid, x -> new HashMap<>()).put(key, p.optInt(cid));
+            }
+        }
+        treasureGive(t, alloc);
+        t.put("picks", still);
+        t.put("status", still.length() > 0 ? "settling" : "done");
+    }
+
+    private JSONArray cleanTreasureItems(JSONArray raw) throws JSONException {
+        JSONArray items = new JSONArray();
+        Set<String> uids = new HashSet<>();
+        for (int i = 0; raw != null && i < raw.length() && i < 3000; i++) {
+            JSONObject e = raw.optJSONObject(i);
+            JSONObject it = e == null ? null : e.optJSONObject("item");
+            if (it == null || it.optString("name").isEmpty()) continue;
+            JSONObject x = new JSONObject(e.toString());
+            String uid = e.optString("uid");
+            x.put("uid", uid.isEmpty() ? newId("") : cut(uid, 40));
+            x.put("qty", Math.max(1, e.optInt("qty", 1)));
+            x.put("parent", parentOf(e).isEmpty() ? JSONObject.NULL : cut(parentOf(e), 40));
+            uids.add(x.getString("uid"));
+            items.put(x);
+        }
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject x = items.getJSONObject(i);
+            if (!x.isNull("parent") && !uids.contains(x.getString("parent"))) { x.put("parent", JSONObject.NULL); x.put("strapped", false); }
+        }
+        return items;
+    }
+
+    private JSONObject treasureApi(Request req, List<String> parts, String token) throws ApiError, JSONException {
+        boolean isGm = isGm(req, token);
+        JSONObject body = req.method.equals("POST") ? req.json() : new JSONObject();
+        synchronized (lock) {
+            JSONObject r = new JSONObject();
+            if (req.method.equals("POST") && parts.isEmpty()) {
+                if (!isGm) throw new ApiError(403, "Only a GM can show treasure");
+                if (!partyEnabled()) throw new ApiError(404, "No party is being hosted");
+                JSONArray players = new JSONArray(), in = body.optJSONArray("players");
+                for (int i = 0; in != null && i < in.length() && players.length() < 30; i++) if (characters.has(in.optString(i))) players.put(in.optString(i));
+                if (players.length() == 0) throw new ApiError(400, "Choose who to show it to");
+                JSONObject coins = new JSONObject(), inCoins = body.optJSONObject("coins");
+                for (Iterator<String> it = inCoins == null ? java.util.Collections.<String>emptyIterator() : inCoins.keys(); it.hasNext(); ) {
+                    String k = it.next();
+                    Object n = inCoins.opt(k);
+                    if (n instanceof Integer || n instanceof Long) { long v = ((Number) n).longValue(); if (v > 0) coins.put(cut(k, 10), Math.min(v, 1000000000L)); }
+                }
+                JSONObject t = new JSONObject();
+                t.put("id", newId("t"));
+                t.put("name", cut(body.optString("name", "Treasure"), 80));
+                t.put("hoard", cut(body.optString("hoard"), 40));
+                t.put("items", cleanTreasureItems(body.optJSONArray("items")));
+                t.put("coins", coins);
+                t.put("players", players);
+                t.put("picks", new JSONObject());
+                t.put("ready", new JSONArray());
+                t.put("status", "picking");
+                t.put("given", new JSONArray());
+                treasure.put(t);
+                changed(true);
+                r.put("id", t.getString("id"));
+                return r;
+            }
+            JSONObject t = null;
+            int at = -1;
+            for (int i = 0; !parts.isEmpty() && i < treasure.length(); i++) if (treasure.getJSONObject(i).optString("id").equals(parts.get(0))) { t = treasure.getJSONObject(i); at = i; }
+            if (t == null) throw new ApiError(404, "That treasure isn't being shown");
+            String action = parts.size() > 1 ? parts.get(1) : null;
+            if (req.method.equals("DELETE") && action == null) {
+                if (!isGm) throw new ApiError(403, "Only a GM can do that");
+                treasure.remove(at);
+                changed(true);
+                r.put("ok", true);
+                return r;
+            }
+            if (!req.method.equals("POST")) throw new ApiError(404, "Unknown endpoint");
+            if ("pick".equals(action) || "ready".equals(action)) {
+                String cid = body.optString("character");
+                JSONObject c = characters.optJSONObject(cid);
+                if (c == null || !c.optString("owner").equals(token)) throw new ApiError(403, "You can only pick for your own character");
+                if (!jsonHas(t.getJSONArray("players"), cid)) throw new ApiError(403, c.optString("name") + " isn't sharing this treasure");
+                if (!t.optString("status").equals("picking")) throw new ApiError(409, "The picking is over");
+                JSONArray ready = t.getJSONArray("ready");
+                if ("pick".equals(action)) {
+                    String key = body.optString("key");
+                    int qty = body.optInt("qty", -1);
+                    int avail = (key.startsWith("e:") || key.startsWith("c:")) ? treasureAvailable(t, key) : 0;
+                    if (avail == 0 || qty < 0 || qty > avail) throw new ApiError(400, "There isn't that much");
+                    JSONObject picks = t.getJSONObject("picks");
+                    JSONObject p = picks.optJSONObject(key);
+                    if (p == null) { p = new JSONObject(); picks.put(key, p); }
+                    if (qty > 0) p.put(cid, qty);
+                    else { p.remove(cid); if (p.length() == 0) picks.remove(key); }
+                    jsonRemove(ready, cid); // changed their mind: not ready any more
+                } else {
+                    if (body.optBoolean("ready")) { if (!jsonHas(ready, cid)) ready.put(cid); }
+                    else jsonRemove(ready, cid);
+                    boolean all = true;
+                    JSONArray players = t.getJSONArray("players");
+                    for (int i = 0; i < players.length(); i++) if (!jsonHas(ready, players.getString(i))) all = false;
+                    if (all) treasureSettle(t);
+                }
+                changed(true);
+                r.put("ok", true);
+                r.put("status", t.getString("status"));
+                return r;
+            }
+            if (!isGm) throw new ApiError(403, "Only a GM can do that");
+            if ("settle".equals(action)) {
+                String key = body.optString("key");
+                JSONObject give = body.optJSONObject("give");
+                if (!t.getJSONObject("picks").has(key) || !t.optString("status").equals("settling") || give == null) throw new ApiError(400, "That isn't waiting to be settled");
+                Map<String, Map<String, Integer>> alloc = new HashMap<>();
+                int sum = 0;
+                for (Iterator<String> it = give.keys(); it.hasNext(); ) {
+                    String cid = it.next();
+                    Object q = give.opt(cid);
+                    if (!jsonHas(t.getJSONArray("players"), cid) || !(q instanceof Integer || q instanceof Long) || ((Number) q).intValue() <= 0) continue;
+                    Map<String, Integer> m = new HashMap<>();
+                    m.put(key, ((Number) q).intValue());
+                    alloc.put(cid, m);
+                    sum += ((Number) q).intValue();
+                }
+                if (sum > treasureAvailable(t, key)) throw new ApiError(400, "There isn't that much");
+                treasureGive(t, alloc);
+                t.getJSONObject("picks").remove(key);
+                if (t.getJSONObject("picks").length() == 0) t.put("status", "done");
+                changed(true);
+                r.put("ok", true);
+                r.put("status", t.getString("status"));
+                return r;
+            }
+            if ("end".equals(action)) {
+                if (body.optBoolean("settle")) { if (t.optString("status").equals("picking")) treasureSettle(t); }
+                else { t.put("picks", new JSONObject()); t.put("status", "done"); }
+                changed(true);
+                r.put("ok", true);
+                r.put("status", t.getString("status"));
+                return r;
+            }
+            throw new ApiError(404, "Unknown endpoint");
+        }
+    }
+
+    private static boolean jsonHas(JSONArray a, String v) {
+        for (int i = 0; i < a.length(); i++) if (v.equals(a.optString(i))) return true;
+        return false;
+    }
+    private static void jsonRemove(JSONArray a, String v) {
+        for (int i = a.length() - 1; i >= 0; i--) if (v.equals(a.optString(i))) a.remove(i);
     }
 
     private static void mergeInto(JSONObject dst, JSONObject entry) throws JSONException {
@@ -1541,6 +1924,7 @@ public class PartyServer {
         }
         if (p0.equals("shops")) return shopsApi(req, parts.subList(1, parts.size()), token);
         if (p0.equals("gm")) return gmApi(req, parts.subList(1, parts.size()), token);
+        if (p0.equals("treasure")) return treasureApi(req, parts.subList(1, parts.size()), token);
         if (p0.equals("presence") || p0.equals("host") || p0.equals("quit")) {
             if (!req.fromApp) throw new ApiError(403, "Only the app on the hosting device can do that");
             if (m.equals("GET") && p0.equals("presence")) {

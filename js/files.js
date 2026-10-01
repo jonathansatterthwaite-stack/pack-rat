@@ -18,7 +18,7 @@ function campaignLocked() {
 function switchCampaign(id) {
   if (id === store.campaign().id || campaignLocked()) return;
   commit(() => { store.data.activeCampaign = id; store.campaign().lastPlayed = Date.now(); });
-  ui.invType = "all"; ui.invSub = null;
+  resetList("inventory"); // its filters were for the other campaign's items
   toast(`Now playing ${store.campaign().name}`);
 }
 
@@ -132,6 +132,17 @@ async function exportCampaign(camp) {
     images: await bundleImages(new Set([...campaignImageRefs([camp]), ...allImageRefs([], packages.flatMap(p => p.customItems))])) });
 }
 
+// Which character a campaign is played as: a dropdown inset in its card. For the campaign being
+// played it switches character (in a party, among this device's characters there).
+function campaignCharacterPick(camp, current) {
+  const chars = current && party.active ? party.linked() : camp.characters.filter(c => !isBlankCharacter(c) || c.id === camp.activeId);
+  if (!chars.length) return null;
+  const sel = h("select", { "aria-label": `${termCap("character")} for ${camp.name}`, disabled: chars.length < 2,
+    onchange: ev => commit(() => { camp.activeId = ev.target.value; }, current ? `Now playing ${chars.find(c => c.id === ev.target.value)?.name}` : null) },
+    chars.map(c => h("option", { value: c.id, selected: c.id === camp.activeId }, c.name)));
+  return h("label", { class: "campaign-pick" }, h("span", { class: "small muted" }, "Playing as"), sel);
+}
+
 function campaignsView() {
   const active = store.campaign();
   const card = camp => {
@@ -142,12 +153,13 @@ function campaignsView() {
       h("div", { class: "campaign-head" },
         h("h3", null, camp.name), current && h("span", { class: "tag on" }, party.active ? "in this party" : "playing")),
       camp.notes && h("p", { class: "muted small campaign-notes" }, camp.notes),
+      campaignCharacterPick(camp, current),
       h("dl", { class: "campaign-facts" },
         h("dt", null, "Game system"), h("dd", null, systemName(camp.system), camp.system && !systemById(camp.system) && h("span", { class: "warn-text small" }, " (you don't have it: import it in Files)")),
         h("dt", null, termCap("characters")), h("dd", null, players.length ? players.map(c => c.name).join(", ") : "None yet"),
         h("dt", null, "Rule packages"), h("dd", null, pkgs.length ? pkgs.map(p => p.name).join(", ") : "None"),
         (camp.shops.length > 0 || camp.gmControls.length > 0) && [h("dt", null, "GM"), h("dd", null,
-          [camp.shops.length && plural(camp.shops.length, "shop"), camp.gmControls.length && plural(camp.gmControls.length, "control")].filter(Boolean).join(", "))],
+          [camp.shops.length && plural(camp.shops.length, "shop"), camp.gmControls.length && plural(camp.gmControls.length, "panel")].filter(Boolean).join(", "))],
         camp.lastPlayed && [h("dt", null, "Last played"), h("dd", null, new Date(camp.lastPlayed).toLocaleDateString())]),
       h("div", { class: "inline wrap campaign-actions" },
         !party.active && !current && h("button", { class: "btn primary", onclick: () => switchCampaign(camp.id) }, "Play this campaign"),
@@ -315,7 +327,7 @@ function filesView() {
       + "Import takes any Pack Rat file: a whole backup, a campaign, a character, a rule package or a drawing."),
 
     filesSection("Campaigns", camps.map(c => fileRow(icon("book"), [c.name, c === store.campaign() && h("span", { class: "tag on" }, "current")],
-      `${plural(c.characters.length, term("character"), term("characters"))} · ${plural(c.shops.length, "shop")} · ${plural(c.gmControls.length, "GM control")}`, sizeOf(c), [
+      `${plural(c.characters.length, term("character"), term("characters"))} · ${plural(c.shops.length, "shop")} · ${plural(c.gmControls.length, "GM panel")}`, sizeOf(c), [
         fileBtn("edit", `Edit ${c.name}`, () => editCampaign(c)),
         fileBtn("download", `Export ${c.name}`, () => exportCampaign(c)),
         fileBtn("copy", `Copy ${c.name}`, () => duplicateCampaign(c)),
@@ -364,8 +376,8 @@ function filesView() {
         () => commit(() => { c.shops = c.shops.filter(x => x.id !== sh.id); }, `Deleted ${sh.name}`, true)), "danger-hover"),
     ]))), null, party.active ? "The party's shops are kept by its host; these are your campaigns' own." : null),
 
-    filesSection("GM controls", camps.flatMap(c => c.gmControls.map(g => fileRow(icon("grid"), g.name, `${c.name} · ${plural(g.pins.length, "pin")}`, sizeOf(g), [
-      fileBtn("trash", `Delete ${g.name}`, () => confirmDialog(`Delete the control “${g.name}”?`, "Delete",
+    filesSection("GM panels", camps.flatMap(c => c.gmControls.map(g => fileRow(icon("grid"), g.name, `${c.name} · ${plural(g.controls.length, "control")}`, sizeOf(g), [
+      fileBtn("trash", `Delete ${g.name}`, () => confirmDialog(`Delete the panel “${g.name}”?`, "Delete",
         () => commit(() => { c.gmControls = c.gmControls.filter(x => x.id !== g.id); }, `Deleted ${g.name}`, true)), "danger-hover"),
     ])))),
 
