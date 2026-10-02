@@ -49,6 +49,7 @@ public class PartyServer {
     static final int DEFAULT_LAN_PORT = 8765;
     static final int[] APP_PORTS = {47651, 47652, 47653, 47654, 47655};
     static final int MAX_BODY = 8 * 1024 * 1024;
+    static final int MAX_VALUES = 200; // Global and Local values kept in one place (the party's, a character's, an item's)
     static final int MAX_IMAGE_BYTES = 5 * 1024 * 1024;
     static final String[][] IMAGE_TYPES = {{"image/png", "png"}, {"image/jpeg", "jpg"}, {"image/webp", "webp"}, {"image/gif", "gif"}};
     static final java.util.regex.Pattern IMAGE_ID = java.util.regex.Pattern.compile("[a-z0-9]{6,40}");
@@ -1001,7 +1002,12 @@ public class PartyServer {
         if (!isGm(req, token)) {
             if (scope.equals("party")) throw new ApiError(403, "Only a GM can set Global values");
             synchronized (lock) {
-                JSONObject c = characters.optJSONObject(target.split("/", -1)[0]);
+                // Their own character, or an item of it (one just added may not have arrived yet, so
+                // its id is checked for shape; how many items keep values is limited below).
+                int slash = target.indexOf('/');
+                String cid = slash < 0 ? target : target.substring(0, slash), uid = slash < 0 ? "" : target.substring(slash + 1);
+                JSONObject c = characters.optJSONObject(cid);
+                if (scope.equals("character") != uid.isEmpty() || (!uid.isEmpty() && !uid.matches("[A-Za-z0-9_-]{1,64}"))) throw new ApiError(400, "Not one of your characters' items");
                 JSONArray gmOnly = campaign == null ? null : campaign.optJSONArray("gmOnly");
                 boolean kept = false;
                 for (int i = 0; gmOnly != null && i < gmOnly.length(); i++) if (name.equals(gmOnly.optString(i))) kept = true;
@@ -1023,10 +1029,17 @@ public class PartyServer {
                 String key = scope.equals("character") ? "characters" : "items";
                 group = gm.optJSONObject(key);
                 if (group == null) { group = new JSONObject(); gm.put(key, group); }
+                if (scope.equals("item") && !group.has(target) && !clear) {
+                    String prefix = target.substring(0, target.indexOf('/') + 1);
+                    int n = 0;
+                    for (Iterator<String> it = group.keys(); it.hasNext(); ) if (it.next().startsWith(prefix)) n++;
+                    if (n >= MAX_VALUES) throw new ApiError(400, "Too many items with values");
+                }
                 bucket = group.optJSONObject(target);
                 if (bucket == null) { bucket = new JSONObject(); group.put(target, bucket); }
             }
             if (clear) bucket.remove(name);
+            else if (!bucket.has(name) && bucket.length() >= MAX_VALUES) throw new ApiError(400, "Too many values there");
             else bucket.put(name, value);
             if (group != null && bucket.length() == 0) group.remove(target);
             changed(true);
@@ -1665,7 +1678,16 @@ public class PartyServer {
 
         /** From this device (the host curates shops): the app's own listener, loopback (IPv4 or IPv6) or its own address. */
         boolean fromHostDevice() {
-            return fromApp || (remote != null && (remote.isLoopbackAddress() || lanAddresses().contains(remote.getHostAddress())));
+            return fromApp || (ownPage() && remote != null && (remote.isLoopbackAddress() || lanAddresses().contains(remote.getHostAddress())));
+        }
+
+        /** Not sent by some other web page (see own_page in server.py): the host's rights go by where
+         *  a request comes from, so a website open on this phone could otherwise use them. */
+        boolean ownPage() {
+            String site = headers.get("sec-fetch-site");
+            if (site != null && !site.equals("same-origin") && !site.equals("none")) return false;
+            String origin = headers.get("origin");
+            return origin == null || origin.equals("http://" + headers.getOrDefault("host", ""));
         }
 
         String token() {
@@ -1699,7 +1721,7 @@ public class PartyServer {
             String[] parts = line.split(" ");
             if (parts.length < 2) return;
             Request req = new Request();
-            req.fromApp = fromApp;
+            req.fromApp = fromApp; // (checked against other web pages once the headers are in: ownPage)
             req.remote = s.getInetAddress();
             req.method = parts[0].toUpperCase();
             String target = parts[1];
@@ -1711,6 +1733,7 @@ public class PartyServer {
                 int c = h.indexOf(':');
                 if (c > 0) req.headers.put(h.substring(0, c).trim().toLowerCase(), h.substring(c + 1).trim());
             }
+            req.fromApp = fromApp && req.ownPage();
             int len = 0;
             try { len = Integer.parseInt(req.headers.getOrDefault("content-length", "0")); } catch (NumberFormatException ignored) {}
             if (len > MAX_BODY) {

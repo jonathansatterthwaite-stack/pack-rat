@@ -191,17 +191,27 @@ const valuePlace = {
   "char.local.*": (c, name) => c.char && { scope: "character", target: c.char.id, name },
   "local.*": (c, name) => c.char && (c.entry ? { scope: "item", target: `${c.char.id}/${c.entry.uid}`, name } : { scope: "character", target: c.char.id, name }),
 };
+const ruleWrites = { second: 0, n: 0 };
+function ruleWriteAllowed() {
+  const s = Math.floor(Date.now() / 1000);
+  if (s !== ruleWrites.second) Object.assign(ruleWrites, { second: s, n: 0 });
+  return ++ruleWrites.n <= 20;
+}
 function setValue(c, place, value, by) {
   if (!place || !isValueName(place.name)) return failed("Not a value");
   if (by !== "gm") {
     if (place.scope === "party") return failed(`Only the ${term("gm")} can set Global values`);
     if (!ownChar(c.char)) return failed("Not one of your characters");
-    if (by === "player" && systemStates().some(st => limitValueName(st) === place.name)) return failed(`Only the ${term("gm")} can set that`);
+    if (systemStates().some(st => limitValueName(st) === place.name)) return failed(`Only the ${term("gm")} can set that`);
+    // Rules (from an item anyone could have made) change values at most so often: each change is
+    // sent to the party's host.
+    if (by === "rule" && !ruleWriteAllowed()) return failed("Rules are changing values too fast");
   }
   const r = valueCheck(place.name, value, valueAt(place.scope, place.target, valueKey(place.name)));
   if (r.error) return failed(r.error);
   // A rule's change waits until the redraw it ran in is over (it redraws again itself).
-  if (by === "rule") return { ok: true, done: new Promise(res => queueMicrotask(() => res(putValue(place.scope, place.target, valueKey(place.name), r.value)))) };
+  // (A refusal is the host's to give: a rule doesn't fail loudly for it.)
+  if (by === "rule") return { ok: true, done: new Promise(res => queueMicrotask(() => res(putValue(place.scope, place.target, valueKey(place.name), r.value)))).catch(() => false) };
   return { ok: true, done: putValue(place.scope, place.target, valueKey(place.name), r.value) };
 }
 for (const [pattern, place] of Object.entries(valuePlace)) clockwork.find(pattern).def.set = (c, rest, value, by) => setValue(c, place(c, rest), value, by);
@@ -424,7 +434,7 @@ const layerHasContent = L => !!L && Object.entries(L).some(([, v]) => v !== "" &
 
 function itemConnections(char, e) {
   const it = e.item, ctx = { char, entry: e };
-  const triggers = Array.isArray(it.triggers) ? it.triggers : [];
+  const triggers = rulesOf(it); // (checked: js/triggers.js)
   const layers = systemStates().filter(st => layerHasContent(it.layers?.[st.key]));
   const doc = it.iconDoc, refs = doc ? drawingValueRefs(doc) : new Map();
   const live = !!doc && isLiveDrawing(doc);

@@ -70,6 +70,7 @@ function compileFormula(text) {
   };
   let out;
   try { const f = expr(); if (i < toks.length) fail(); out = f; } catch { out = null; }
+  if (formulaCache.size >= 500) formulaCache.clear(); // (rules come from anywhere: don't grow without end)
   formulaCache.set(text, out);
   return out;
 }
@@ -125,20 +126,20 @@ const allHold = (ctx, list) => (list || []).every(c => conditionHolds(ctx, c));
 
 const ruleActions = new Map(); // name -> { key (its field), label, run(ctx, a) -> { warning?, message? }, words(a), check(a) }
 clockwork.action = (name, def) => ruleActions.set(name, { name, ...def });
-const actionOf = a => a && [...ruleActions.values()].find(d => d.key in a);
+const actionOf = a => a && typeof a === "object" ? [...ruleActions.values()].find(d => d.key in a) : undefined;
 // What a rule may change: an item's states and charges, and Local values.
 const RULE_SETTABLE = /^(item\.state\.[\w-]+|item\.charges|local\.[A-Za-z]\w*|char\.local\.[A-Za-z]\w*)$/;
 
 clockwork.action("set", { key: "set", label: "Set",
-  check: a => RULE_SETTABLE.test(a.set) && a.to !== undefined && a.to !== "",
+  check: a => typeof a.set === "string" && RULE_SETTABLE.test(a.set) && (typeof a.to === "number" || (typeof a.to === "string" && a.to !== "")),
   run: (ctx, a) => clockwork.set(ctx, a.set, a.set.startsWith("item.state.") ? !!ruleNumber(ctx, a.to, a.set) : ruleNumber(ctx, a.to, a.set), "rule"),
   words: a => a.set.startsWith("item.state.") ? `turn ${addressLabel(a.set)} ${ruleNumber({}, a.to) ? "on" : "off"}` : `set ${addressLabel(a.set)} to ${a.to}` });
 clockwork.action("add", { key: "add", label: "Add",
-  check: a => RULE_SETTABLE.test(a.add) && !a.add.startsWith("item.state.") && a.by !== undefined && a.by !== "",
+  check: a => typeof a.add === "string" && RULE_SETTABLE.test(a.add) && !a.add.startsWith("item.state.") && (typeof a.by === "number" || (typeof a.by === "string" && a.by !== "")),
   run: (ctx, a) => clockwork.set(ctx, a.add, (ruleRead(ctx, a.add) ?? 0) + ruleNumber(ctx, a.by, a.add), "rule"),
   words: a => `${String(a.by).trim().startsWith("-") ? "take" : "add"} ${String(a.by).replace(/^\s*-/, "")} ${String(a.by).trim().startsWith("-") ? "from" : "to"} ${addressLabel(a.add)}` });
 clockwork.action("change", { key: "change", label: "Change over time",
-  check: a => /^(local|char\.local)\./.test(a.change) && typeof a.rate === "number" && a.rate !== 0,
+  check: a => typeof a.change === "string" && /^(local|char\.local)\.[A-Za-z]\w*$/.test(a.change) && Number.isFinite(a.rate) && a.rate !== 0,
   run: (ctx, a) => clockwork.set(ctx, a.change, { rate: a.rate, ...(typeof a.until === "number" ? { until: a.until } : {}) }, "rule"),
   words: a => `start ${addressLabel(a.change)} ${a.rate > 0 ? "rising" : "falling"} ${Math.abs(a.rate)} a second` + (typeof a.until === "number" ? ` to ${a.until}` : "") });
 clockwork.action("message", { key: "message", label: "Message",
@@ -161,7 +162,16 @@ function ruleOf(t) {
     ...(t.message ? { message: t.message } : {}),
   };
 }
-const rulesOf = item => (Array.isArray(item?.triggers) ? item.triggers : []).map(ruleOf).filter(Boolean);
+// An item's rules, checked first: items come from trades, treasure, other devices and files, so
+// their rules are cleaned as the editor's are (cached per list: a changed item gets a new one).
+const rulesCache = new WeakMap();
+function rulesOf(item) {
+  const list = item?.triggers;
+  if (!Array.isArray(list)) return [];
+  let rules = rulesCache.get(list);
+  if (!rules) rulesCache.set(list, rules = cleanTriggers(list).map(ruleOf).filter(Boolean));
+  return rules;
+}
 // What tells one rule from another in entry.seen (edited conditions start afresh).
 const ruleKey = r => JSON.stringify([r.when, r.test || []]);
 
@@ -331,7 +341,9 @@ const ruleCondWords = c => isOnOff(c) ? onOffWords(c)
 const BECOMES_WORDS = { "=": "reaches", "!=": "moves off", "<": "drops below", "<=": "drops to", ">": "rises above", ">=": "reaches", between: "comes between" };
 // A rule in words: "When Charges reaches 0: turn Cursed on. “The wand crumbles.”"
 function ruleWords(t) {
-  const r = ruleOf(t);
+  try { return ruleWordsOf(ruleOf(t)); } catch { return "A rule Pack Rat can't read."; }
+}
+function ruleWordsOf(r) {
   const becomes = c => isOnOff(c) ? (c.value === "item.equipped" ? onOffWords(c).replace("it's", "it's now").replace("it isn't", "it's no longer")
       : `${addressLabel(c.value)} turns ${!!ruleNumber({}, c.to) === (c.op === "=") ? "on" : "off"}`)
     : `${addressLabel(c.value)} ${BECOMES_WORDS[c.op] || c.op} ${c.to}` + (c.op === "between" ? ` and ${c.to2}` : "") + (c.op === "<=" ? " or below" : "");
@@ -465,27 +477,36 @@ function triggersEditor(owner) {
 }
 
 // Rules as saved: complete ones only (older triggers are kept as they are).
+// Also used on rules from elsewhere (rulesOf), so it takes nothing on trust: lists, strings and
+// numbers are checked, and text is cut short.
 function cleanTriggers(list) {
-  const okCond = c => c && typeof c.value === "string" && clockwork.find(c.value) && RULE_OPS.some(o => o[0] === c.op) && c.to !== undefined && c.to !== "";
-  const cond = c => ({ value: c.value, op: c.op, to: typeof c.to === "number" ? c.to : String(c.to).slice(0, 200),
-    ...(c.op === "between" ? { to2: typeof c.to2 === "number" ? c.to2 : String(c.to2 ?? "").slice(0, 200) } : {}) });
+  const arr = x => Array.isArray(x) ? x.slice(0, 20) : [];
+  const text = (x, n = 200) => String(x ?? "").slice(0, n);
+  const num = x => typeof x === "number" && Number.isFinite(x);
+  const toOf = x => num(x) ? x : text(x);
+  const okCond = c => c && typeof c === "object" && typeof c.value === "string" && c.value.length <= 80 && clockwork.find(c.value)
+    && RULE_OPS.some(o => o[0] === c.op) && (num(c.to) || (typeof c.to === "string" && c.to !== ""));
+  const cond = c => ({ value: c.value, op: c.op, to: toOf(c.to), ...(c.op === "between" ? { to2: toOf(c.to2) } : {}) });
   return (Array.isArray(list) ? list : []).slice(0, 30).map(t => {
-    if (!t?.when) {
-      return t && typeof t.on === "string" && ((t.do || []).length || t.message) ? { on: t.on, ...(t.if ? { if: { state: t.if.state, is: t.if.is !== false } } : {}),
-        do: (t.do || []).filter(a => a && typeof a.set === "string").map(a => ({ set: a.set, to: a.to !== false })),
-        ...(t.message ? { message: String(t.message).slice(0, 200) } : {}) } : null;
+    if (!t || typeof t !== "object") return null;
+    if (!t.when) {
+      const acts = arr(t.do).filter(a => a && typeof a === "object" && typeof a.set === "string" && a.set.length <= 40);
+      return typeof t.on === "string" && t.on.length <= 60 && (acts.length || t.message) ? { on: t.on,
+        ...(t.if && typeof t.if === "object" ? { if: { state: text(t.if.state, 40), is: t.if.is !== false } } : {}),
+        do: acts.map(a => ({ set: a.set, to: a.to !== false })), ...(t.message ? { message: text(t.message) } : {}) } : null;
     }
     if (!RULE_WHEN.some(w => w[0] === t.when)) return null;
     const watched = t.when === "becomes" || t.when === "while";
-    const test = (t.test || []).filter(okCond).map(cond), guard = (t.if || []).filter(okCond).map(cond);
-    const acts = (t.do || []).filter(a => actionOf(a)?.check(a)).map(a => {
+    const test = arr(t.test).filter(okCond).map(cond), guard = arr(t.if).filter(okCond).map(cond);
+    const acts = arr(t.do).filter(a => actionOf(a)?.check(a)).map(a => {
       const d = actionOf(a);
-      return d.key === "message" ? { message: a.message.slice(0, 200) } : d.key === "change" ? { change: a.change, rate: a.rate, ...(typeof a.until === "number" ? { until: a.until } : {}) }
-        : { [d.key]: a[d.key], [d.key === "set" ? "to" : "by"]: a[d.key === "set" ? "to" : "by"] };
+      return d.key === "message" ? { message: text(a.message) }
+        : d.key === "change" ? { change: a.change, rate: a.rate, ...(num(a.until) ? { until: a.until } : {}) }
+        : { [d.key]: a[d.key], [d.key === "set" ? "to" : "by"]: toOf(a[d.key === "set" ? "to" : "by"]) };
     });
     if ((watched && !test.length) || (!acts.length && !t.message)) return null;
     return { when: t.when, ...(watched ? { test } : {}), ...(guard.length ? { if: guard } : {}),
-      ...(t.when === "while" ? { every: Math.max(0.25, +t.every || 1) } : {}), do: acts,
-      ...(t.message ? { message: String(t.message).slice(0, 200) } : {}) };
+      ...(t.when === "while" ? { every: Math.min(86400, Math.max(0.25, +t.every || 1)) } : {}), do: acts,
+      ...(t.message ? { message: text(t.message) } : {}) };
   }).filter(Boolean);
 }

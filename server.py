@@ -43,6 +43,7 @@ NON_STACKING = {"weapon", "armor", "container", "magic", "pack"}
 # give change in. Parties from before game systems, or GMs on older versions: D&D 5e's.
 DEFAULT_CURRENCY = {"coins": [["pp", 1000], ["gp", 100], ["ep", 50], ["sp", 10], ["cp", 1]], "change": ["gp", "sp", "cp"]}
 MAX_BODY = 8 * 1024 * 1024
+MAX_VALUES = 200  # Global and Local values kept in one place (the party's, a character's, an item's)
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 IMAGE_TYPES = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif"}
 KEEP_RESOLVED_TRADES = 50
@@ -952,8 +953,11 @@ class Handler(SimpleHTTPRequestHandler):
         return self.headers.get("X-Player") or parse_qs(urlparse(self.path).query).get("player", [""])[0]
 
     def body(self):
-        length = int(self.headers.get("Content-Length") or 0)
-        if length > MAX_BODY:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            raise ApiError(400, "Bad Content-Length")
+        if length < 0 or length > MAX_BODY:
             raise ApiError(413, "Request too large")
         raw = self.rfile.read(length) if length else b"{}"
         try:
@@ -1007,9 +1011,22 @@ class Handler(SimpleHTTPRequestHandler):
     def do_DELETE(self):
         self.api("DELETE")
 
+    def own_page(self):
+        """Not sent by some other web page. The host's rights (and the app's) go by where a request
+        comes from, so a website open in a browser on the host computer could otherwise use them:
+        browsers send such requests (they only hide the reply). Browsers say where a request comes
+        from: Sec-Fetch-Site, and Origin on anything but a plain GET. The app's own pages are this
+        server's origin; other programs send neither."""
+        site = self.headers.get("Sec-Fetch-Site")
+        if site not in (None, "same-origin", "none"):
+            return False
+        origin = self.headers.get("Origin")
+        return origin is None or origin == "http://" + (self.headers.get("Host") or "")
+
     def is_host_pc(self):
-        """Request from the computer running this server (the host curates shops)."""
-        return self.client_address[0] in own_ips()
+        """Request from the computer running this server (the host curates shops), from Pack Rat's
+        own page there (see own_page)."""
+        return self.client_address[0] in own_ips() and self.own_page()
 
     def is_gm(self, token):
         """The GM role (see role_of): runs shops and GM values."""
@@ -1017,7 +1034,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def is_app(self):
         """Request from this PC (the app's window, or a browser on it) rather than another player's device."""
-        return DESKTOP and self.client_address[0] in own_ips()
+        return DESKTOP and self.client_address[0] in own_ips() and self.own_page()
 
     # -------------------------------------------------------------- routes
     def route(self, method, parts, token):
@@ -1639,8 +1656,13 @@ class Handler(SimpleHTTPRequestHandler):
         if not self.is_gm(token):
             if scope == "party":
                 raise ApiError(403, "Only a GM can set Global values")
-            owner = (state["characters"].get(target.split("/")[0]) or {}).get("owner")
-            if owner != token or name.startswith("gm_state_") or name in ((state.get("campaign") or {}).get("gmOnly") or []):
+            # Their own character, or an item of it (one just added may not have arrived yet, so
+            # its id is checked for shape; how many items keep values is limited below).
+            cid, _, uid = target.partition("/")
+            c = state["characters"].get(cid) or {}
+            if (scope == "character") != (not uid) or (uid and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", uid)):
+                raise ApiError(400, "Not one of your characters' items")
+            if c.get("owner") != token or name.startswith("gm_state_") or name in ((state.get("campaign") or {}).get("gmOnly") or []):
                 raise ApiError(403, "Only a GM can set that")
         if value is not None:
             value = clean_value(name, value)
@@ -1652,9 +1674,14 @@ class Handler(SimpleHTTPRequestHandler):
                 group, bucket = None, gm.setdefault("party", {})
             else:
                 group = gm.setdefault("characters" if scope == "character" else "items", {})
+                if scope == "item" and target not in group and value is not None \
+                        and sum(1 for t in group if t.startswith(target.split("/")[0] + "/")) >= MAX_VALUES:
+                    raise ApiError(400, "Too many items with values")
                 bucket = group.setdefault(target, {})
             if value is None:
                 bucket.pop(name, None)
+            elif name not in bucket and len(bucket) >= MAX_VALUES:
+                raise ApiError(400, "Too many values there")
             else:
                 bucket[name] = value
             if group is not None and not bucket:
