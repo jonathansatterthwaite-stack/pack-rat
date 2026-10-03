@@ -250,8 +250,8 @@ const DISPLAY_PARTS = [
   { key: "worth", label: "Worth", default: (st, layout) => layout === "tiles" || !!st.showWorth },
   { key: "weight", label: "Weight" },
   { key: "count", label: "Quantity", hint: "How many (and, on tiles, how full a container is)" },
-  // (On tiles too, as before, except where a list keeps them to its rows: catalogs' tileExtras: false.)
-  { key: "buttons", label: "Buttons", hint: "Equip, write in, and the list's own", default: (st, layout) => layout === "list" || st.tileExtras !== false },
+  // (Rows only: on tiles, they're in the item menu: press and hold a tile.)
+  { key: "buttons", label: "Buttons", hint: "Equip, write in, and the list's own (on tiles: press and hold one)", rowsOnly: true },
   { key: "card", label: "Card", hint: "The border and background, and the colour showing how full a container is" },
 ];
 function loadShowPrefs(key, oldWorth = "1", oldWeight = "1") {
@@ -264,9 +264,10 @@ function loadShowPrefs(key, oldWorth = "1", oldWeight = "1") {
 }
 // Does this list's layout show this part?
 function displayShows(st, layout, part) {
+  const p = DISPLAY_PARTS.find(x => x.key === part);
+  if (layout === "tiles" && p.rowsOnly) return false;
   const saved = st.prefs?.show?.[layout]?.[part];
   if (typeof saved === "boolean") return saved;
-  const p = DISPLAY_PARTS.find(x => x.key === part);
   return p.default ? p.default(st, layout) : !(layout === "tiles" && p.tiles === false);
 }
 function setDisplayPart(prefs, key, layout, part, on) {
@@ -329,7 +330,7 @@ function displayToggles(st, prefs, key, onChange) {
   const changed = Object.keys(prefs.show?.[layout] || {}).length > 0;
   return [
     h("div", { class: "chips show-parts", role: "group", "aria-label": `Show on ${layout === "tiles" ? "tiles" : "rows"}` },
-      DISPLAY_PARTS.map(p => {
+      DISPLAY_PARTS.filter(p => !(layout === "tiles" && p.rowsOnly)).map(p => {
         const on = displayShows(st, layout, p.key);
         return h("button", { type: "button", class: "chip-btn" + (on ? " active" : ""), "aria-pressed": String(on), title: p.hint || "",
           onclick: () => { setDisplayPart(prefs, key, layout, p.key, !on); onChange(); } }, on && icon("check"), p.label);
@@ -636,12 +637,12 @@ function sortControl(state, key, sorts, onChange) {
 //     setQty(e, n) − / + and the number (absent: no quantity controls; "×3" shows instead)
 //     move(uid, parent, strapped)   drag and drop between sections (absent: no dragging)
 //     reorder(ids) moving container sections up and down (absent: no arrows)
-//     extras(e)    more controls at the row's end (equip, a pick, states…)
+//     extras(e)    more controls at the row's end (equip, a pick, states…); on tiles, in the item menu
+//     menu(e)      the item menu's options (js/radial.js), instead of extras' buttons
 //     sub(e)       more for the row's second line
 //     rowClass(e)  more for the row's (or tile's) class, e.g. "contested"
 //     tags(e)      tags after the name ("custom")
 //     showWorth    a worth column (catalogs);  noCog: no Clockwork cog (catalogs: not an inventory's)
-//     tileExtras   false: extras start hidden under tiles (the view menu's Buttons shows them)
 // itemManager (below) gives a storage its list's search, filters, sort and display options.
 //     search, type, typeSub   filters (the inventory's search box and type chips)
 //     keep(e)      shown whatever the search (a trade's picked items)
@@ -987,7 +988,7 @@ function itemManager(o) {
 function catalogStorage(items, o = {}) {
   const char = { id: null, items: items.map(i => ({ uid: i.id, srcId: i.id, item: i, qty: i.bundle || 1, parent: null })) };
   return {
-    char, id: o.id || "catalog", flat: true, noCog: true, showWorth: true, tileExtras: false,
+    char, id: o.id || "catalog", flat: true, noCog: true, showWorth: true,
     open: e => (o.open || openCatalogItem)(e.item),
     tags: e => e.srcId?.startsWith("custom-") && h("span", { class: "tag custom" }, "custom"),
     extras: o.extras || (e => iconBtn("plus", "Add to inventory", () => quickAdd(e.item), "add")),
@@ -999,7 +1000,7 @@ function catalogStorage(items, o = {}) {
 function charStorage(char) {
   return {
     char, id: "", rootLabel: "On person",
-    open: e => openEntry(e.uid), setQty: setEntryQty, canCount, move: moveEntry,
+    open: e => openEntry(e.uid), setQty: setEntryQty, canCount, move: moveEntry, menu: inventoryMenu,
     reorder: ids => commit((s, c) => { c.containerOrder = [...ids, ...(c.containerOrder || []).filter(id => !ids.includes(id) && c.items.some(e => e.uid === id))]; }),
     extras: e => [writingButton(e),
       isEquipable(e) && iconBtn(equipKind(e) === "wielded" ? "sword" : "shield", e.equipped ? "Unequip" : "Equip",
@@ -1255,8 +1256,9 @@ function entryTags(st, e, it, path) {
 }
 
 // A tile shows the parts its list's tiles show (displayShows): the picture with the name over it,
-// details and tags along its foot, worth and weight on its top edge, the count on its bottom edge,
-// and the buttons under it. Without its card, it's just the picture and the words.
+// details and tags along its foot, worth and weight on its top edge, the count on its bottom edge.
+// Without its card, it's just the picture and the words. A tap opens its details; pressing and
+// holding opens the item menu (js/radial.js), with its buttons and the rest.
 function entryTile(st, e, showPath) {
   const char = st.char, it = currentItem(e, char); // as it is now (its active layers)
   const path = showPath ? locationLabel(char, e) : null;
@@ -1275,10 +1277,8 @@ function entryTile(st, e, showPath) {
     minimalCorners(show("worth") ? entryTotalValue(char, e) : 0, show("weight") ? entryTotalWeight(char, e) : 0,
       show("count") ? containerCapacity(char, e) || (e.qty !== 1 ? "×" + e.qty.toLocaleString() : null) : null));
   el.style.setProperty("--type", itemColor(it));
-  const tile = show("card") ? withFill(el, fillLevel(char, e)) : el;
-  // The buttons (equip, write, a pick…) sit under the tile.
-  const more = !show("buttons") ? [] : [st.extras?.(e)].flat().filter(Boolean);
-  return more.length ? h("div", { class: "tile-wrap" }, tile, h("div", { class: "tile-extras" }, more)) : tile;
+  attachItemMenu(el, st, e);
+  return show("card") ? withFill(el, fillLevel(char, e)) : el;
 }
 
 // A row shows the parts its list's rows show (displayShows); without its card, no background or fill.
@@ -1304,6 +1304,8 @@ function entryRow(st, e, showPath = false) {
       h("input", { type: "number", inputmode: "numeric", value: e.qty, min: 0, "aria-label": "Quantity",
         onchange: ev => setQty(Math.floor(+ev.target.value || 0)) }),
       iconBtn("plus", "Increase", () => setQty(e.qty + 1))));
+  row.setAttribute("aria-label", entryName(e));
+  attachItemMenu(row, st, e);
   return show("card") ? withFill(row, fillLevel(char, e)) : row;
 }
 
@@ -1739,7 +1741,7 @@ function openEntry(entryUid) {
     }, `Unpacked ${entryName(e)}`, true);
   };
   const footer = [
-    h("button", { class: "btn danger", onclick: () => { close(); commit((s, c) => removeEntry(c, e.uid), `Removed ${entryName(e)}`, true); } }, icon("trash"), "Remove"),
+    h("button", { class: "btn danger", onclick: () => confirmRemoveEntry(e.uid, () => close()) }, icon("trash"), "Remove"),
     planner && h("button", { class: "btn primary", onclick: unpack }, icon("package"), "Unpack"),
     h("button", { class: "btn", onclick: () => { close(); openSell(e.uid); } }, icon("coins"), "Sell"),
     // Player mode: no editing items (a copy can still be renamed with its display name).

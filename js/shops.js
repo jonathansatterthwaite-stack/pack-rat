@@ -463,7 +463,6 @@ function openStockPicker(opts) {
       const st = catalogStorage(store.catalog(), { id: "stock",
         open: item => openStoredItem(st, st.char.items.find(e => e.uid === item.id)),
         extras: e => opts.has(e.srcId) ? h("span", { class: "tag on" }, "added") : iconBtn("plus", `Add ${e.item.name}`, () => add(e.item), "add") });
-      st.tileExtras = true; // the picker's tiles have their add button under them
       return st;
     } });
   close = openModal(opts.title, mgr, { wide: true, footer: [h("button", { class: "btn primary", onclick: () => { close(); render(); } }, icon("check"), "Done")] });
