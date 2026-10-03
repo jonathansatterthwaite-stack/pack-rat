@@ -1474,6 +1474,129 @@ function iconFocusSwitch() {
       } }));
 }
 
+// ------------------------------------------------------------------ interactive drawings
+// A drawing with hotspots (svg-lay-tool: docs/interactive-items-plan.md) can be used in an
+// inventory item's details while they show just the icon: a tap or a drag on a hotspot changes
+// variables, and its bindings redraw it. local_ names (and older drawings' gm_) are the item copy's
+// Local values, set as the player (saved, synced, read by rules, and they go with it in a trade);
+// a GM's device can set global_ ones too; the rest last while the details are open (`touch`).
+
+function drawingIsInteractive(doc) {
+  const walk = layers => (layers || []).some(l => (l.hotspot?.gestures || []).some(g => (g.actions || []).length || (g.release || []).length) || (l.type === "group" && walk(l.children)));
+  return !!doc && walk(doc.layers);
+}
+
+// What a drawing's hotspots can ask Pack Rat to do with its item (the editor offers them; see
+// appAction for what each does, checked as if the player did it by hand).
+function iconAppActions() {
+  return [
+    { app: "state", label: "Switch a state", hint: "Turns one of the item's states on or off (as the player could: limits and locks apply).",
+      key: { label: "State", options: systemStates().map(s => ({ value: s.key, label: s.label })) },
+      value: { label: "On when", default: "1", placeholder: "on when not 0, e.g. 1 - local_lit" } },
+    { app: "useOne", label: "Use one", hint: "The item's count goes down by one (where it counts in Play mode); the last one goes." },
+    { app: "addOne", label: "Add one", hint: "The item's count goes up by one (where it counts in Play mode)." },
+    { app: "charge", label: "Use charges", hint: "For an item with charges: uses some (a negative number gets them back).",
+      value: { label: "How many", default: "1" } },
+    { app: "draw", label: "Draw a piece", hint: "For a set (a deck of cards): draws one, as Draw a card does." },
+    { app: "details", label: "Show its details", hint: "Turns the picture back into the item's details." },
+  ].filter(a => a.app !== "state" || a.key.options.length);
+}
+
+// An app action from a drawing's hotspot, for one of this device's inventory items: done as the
+// player would do it by hand (or the GM, on the GM's device), with the same checks.
+function appAction(panel, entryUid, app, key, value) {
+  const char = store.char(), e = char?.items.find(i => i.uid === entryUid);
+  if (!e) return;
+  const by = isGmDevice() ? "gm" : "player";
+  switch (app) {
+    case "state":
+      if (!statesFor(e).some(s => s.key === key)) return;
+      if (by === "gm") clockwork.change({ char, entry: e }, `item.state.${key}`, value ? 1 : 0, "gm");
+      else if (!playerSetState(e.uid, key, !!value)) toast(`You can't change ${systemStates().find(s => s.key === key)?.label || key} now`);
+      return;
+    case "useOne":
+    case "addOne":
+      if (!canCount(e)) return toast("In Play mode only things like ammunition, rations and potions are counted");
+      return setEntryQty(e, e.qty + (app === "addOne" ? 1 : -1));
+    case "charge": {
+      const it = currentItem(e, char);
+      if (!hasFeature(it, "charges", e.srcId) || !it.maxCharges) return;
+      const now = e.charges ?? it.maxCharges, next = Math.max(0, Math.min(it.maxCharges, now - (value ?? 1)));
+      if (next !== now) clockwork.change({ char, entry: e }, "item.charges", next, by);
+      return;
+    }
+    case "draw":
+      if (!isDeckEntry(e)) return toast("Only a set (a deck of cards) can be drawn from");
+      if (!cardsIn(char, e).length) return toast("There's nothing left to draw");
+      return openDraw(e.uid, 1);
+    case "details":
+      if (panel.classList.contains("icon-focus")) panel.querySelector(".icon-focus-switch input")?.click();
+      return;
+  }
+}
+
+// The Sounds setting (This device): how loud interactive drawings' sounds play.
+const SOUND_LEVELS = [["on", "On", 1], ["quiet", "Quiet", 0.35], ["off", "Off", 0]];
+const soundLevel = () => { const v = readPref("packrat-sounds", "on"); return SOUND_LEVELS.some(([k]) => k === v) ? v : "on"; };
+const soundVolume = () => SOUND_LEVELS.find(([k]) => k === soundLevel())[2];
+
+// panel: the details dialog; vars: the picture's values (the copy's, with `touch` on top).
+function makeIconInteractive(panel, doc, entryUid, touch, vars) {
+  const backdrop = panel.querySelector(".modal-backdrop");
+  if (!backdrop) return;
+  panel.classList.add("interactive");
+  let ix = null, sent = 0;
+  const art = () => backdrop.querySelector(".details-watermark");
+  // A point on screen in the drawing's coordinates (the picture's own transform: its viewBox is the drawing's).
+  const toDoc = (x, y) => {
+    const m = art()?.getScreenCTM?.();
+    if (!m) return null;
+    const p = new DOMPoint(x, y).matrixTransform(m.inverse());
+    return { x: p.x, y: p.y };
+  };
+  const scale = () => Math.abs(art()?.getScreenCTM?.()?.a || 1);
+  const entryCtx = () => { const c = store.char(); return { char: c, entry: c?.items.find(i => i.uid === entryUid) }; };
+  const env = () => {
+    const T = window.SvgLayTool, n = normalizedDrawing(doc, T.normalizeDocument);
+    return T.documentEnv(n, { ...iconVariableDefaults(n), ...readVars(vars) });
+  };
+  const changed = (values, done) => {
+    const ctx = entryCtx();
+    const by = isGmDevice() ? "gm" : "player", setNow = done || Date.now() - sent > 300; // (others follow a drag a few times a second)
+    for (const [name, v] of Object.entries(values)) {
+      const local = /^(?:local|gm)_([A-Za-z][A-Za-z0-9_]*)$/.exec(name), global = /^global_([A-Za-z][A-Za-z0-9_]*)$/.exec(name);
+      const address = !ctx.entry ? null : local ? `local.${local[1]}` : global && isGmDevice() ? `global.${global[1]}` : null;
+      if (!address) { touch[name] = v; continue; }
+      if (!done) clockwork.preview(ctx, address, v);
+      if (setNow) clockwork.change(ctx, address, v, by);
+    }
+    if (setNow) sent = done ? 0 : Date.now();
+    if (done) clockwork.endPreview();
+    refreshLiveIcons();
+  };
+  backdrop.addEventListener("pointerdown", ev => {
+    if (!ix || !ev.isPrimary || !panel.classList.contains("icon-focus")) return;
+    const p = toDoc(ev.clientX, ev.clientY);
+    if (!p || !ix.down(p)) return;
+    ev.preventDefault();
+    const id = ev.pointerId;
+    const move = m => { if (m.pointerId !== id) return; const q = toDoc(m.clientX, m.clientY); if (q) ix.move(q); };
+    const up = u => { if (u.pointerId !== id) return; stop(); const q = toDoc(u.clientX, u.clientY); if (q) ix.up(q); else ix.cancel(); };
+    const cancel = c => { if (c.pointerId === id) { stop(); ix.cancel(); } };
+    const stop = () => { removeEventListener("pointermove", move); removeEventListener("pointerup", up); removeEventListener("pointercancel", cancel); };
+    addEventListener("pointermove", move); addEventListener("pointerup", up); addEventListener("pointercancel", cancel);
+  });
+  loadSvgLay().then(() => {
+    const T = window.SvgLayTool, n = normalizedDrawing(doc, T.normalizeDocument);
+    ix = T.createInteraction({ document: () => T.resolveDocument(n, env()), env, onChange: changed,
+      // Sounds play on this device only, as loud as its Sounds setting says; a buzz where the phone can.
+      onSound: (sound, volume) => { const f = soundVolume(); if (f > 0) T.playSound(n, sound, volume * f); },
+      onVibrate: ms => { try { navigator.vibrate?.(ms); } catch {} },
+      onApp: (app, key, value) => appAction(panel, entryUid, app, key, value),
+      slop: () => 8 / scale(), tolerance: () => 14 / scale() });
+  }).catch(() => {});
+}
+
 // ------------------------------------------------------------------ layers in details and editing
 
 // The fields a layer can change: the template's simple ones (not icons, pictures, pieces…).
@@ -1700,7 +1823,7 @@ function refreshEntryDetails() {
   if (x && JSON.stringify(entryStates(c, x)) !== d.states) d.reopen();
 }
 
-function openEntry(entryUid) {
+function openEntry(entryUid, opts = {}) {
   const char = store.char();
   const e = char.items.find(x => x.uid === entryUid);
   if (!e) return;
@@ -1814,12 +1937,17 @@ function openEntry(entryUid) {
     const c = store.char(), x = c?.items.find(i => i.uid === entryUid);
     return x ? entryIconVars(c, x) : {};
   };
+  // An interactive drawing (hotspots): what's touched while open shows on top of the copy's values.
+  const interactive = !it.image && it.iconSvg && drawingIsInteractive(it.iconDoc), touch = {};
+  const artVars = interactive ? () => ({ ...vars(), ...touch }) : vars;
   close = openModal(entryName(e), [e.customName && h("p", { class: "muted small" }, it.name),
     readBtn, liquidCap(e) > 0 && liquidControls(e), isDeckEntry(e) && deckSection(e, reopen, () => close()),
     cardBackButton(e, () => close()), controls, planner?.el, itemDetails(shown, changeIcon, e.srcId, vars, true), layerSections(base, key => stateOn(char, e, key))],
-  { footer, wide: !!planner, head: [clockworkCog(char, e, () => close()), iconFocusSwitch()], backdrop: iconBackdrop(it, vars) });
+  { footer, wide: !!planner, head: [clockworkCog(char, e, () => close()), iconFocusSwitch()], backdrop: iconBackdrop(it, artVars) });
   // Its states can change while it's open (a trigger, the GM): render() redraws it if they do.
   panel = [...document.querySelectorAll("#modal-root .modal")].pop();
+  if (interactive) makeIconInteractive(panel, it.iconDoc, entryUid, touch, artVars);
+  if (opts.use) panel.querySelector(".icon-focus-switch input")?.click(); // Use: straight to the picture
   entryDetailsOpen = { uid: entryUid, states: JSON.stringify(entryStates(char, e)), panel, reopen };
 }
 
@@ -2551,7 +2679,7 @@ async function openIconDrawer(opts, onSave) {
     close();
   };
   // Start from a copy of a library drawing (a template); undo brings the old canvas back.
-  const startFrom = opts.templates && (store.state.iconLibrary || []).length > 0 &&
+  const startFrom = opts.templates && ((store.state.iconLibrary || []).length > 0 || typeof STARTER_DRAWINGS !== "undefined") &&
     h("button", { class: "btn", onclick: () => pickDrawing("Start from a drawing", d => {
       editor?.store.commit(normalizeDocument(clone(d.doc)));
       editor?.fitToView();
@@ -2580,6 +2708,8 @@ async function openIconDrawer(opts, onSave) {
       // The values Pack Rat fills in for an item, and how to use Global and Local values: formulas can
       // use them, and the Variables tab lists them (with this copy's real values in an inventory).
       variableGroups: [iconVariableGroup(opts.vars)],
+      // What a hotspot can ask Pack Rat to do with the item (see makeIconInteractive).
+      appActions: iconAppActions(),
       // "+ Global value" and "+ Local value" beside "+ Add variable": a global_ or local_ variable
       // with a slider (its default and range). See js/clockwork.js.
       variablePresets: [
@@ -2764,7 +2894,7 @@ function liveDrawnIcon(doc, svgText, cls, vars) {
     if (!timed && !reads.length) return;
     // Smooth hands and loops ("t", "time", "now", dt) every frame; whole hours, minutes and seconds
     // once a second, unless a moving value needs more.
-    const smooth = /\b(t|time|now|dayFraction|dt)\b/.test(formulas);
+    const smooth = /\b(t|time|now|dayFraction|dt|since)\b/.test(formulas);
     const moving = () => reads.some(name => movingNames().has(name));
     frameClock.add({ node, animates: () => timed || moving(), every: () => smooth || moving() ? 0 : 1000,
       draw: (now, dt) => redrawLive(live, now, dt) });
@@ -2833,11 +2963,17 @@ function updateDrawing(id, doc, svg) {
 }
 
 // A small list to pick a library drawing from.
-function pickDrawing(title, onPick) {
+function pickDrawing(title, onPick, starters = true) {
   let close;
-  close = openModal(title, h("div", { class: "icon-grid" }, drawingLibrary().map(d =>
-    h("button", { type: "button", class: "icon-tile drawing", title: d.name, onclick: () => { close(); onPick(d); } },
-      drawnIcon(d.svg) || icon("image"), h("span", null, d.name)))), { wide: true });
+  const starts = starters && typeof STARTER_DRAWINGS !== "undefined" ? STARTER_DRAWINGS : [];
+  close = openModal(title, [
+    drawingLibrary().length > 0 && h("div", { class: "icon-grid" }, drawingLibrary().map(d =>
+      h("button", { type: "button", class: "icon-tile drawing", title: d.name, onclick: () => { close(); onPick(d); } },
+        drawnIcon(d.svg) || icon("image"), h("span", null, d.name)))),
+    starts.length > 0 && [h("h4", null, "Starters (interactive)"), h("div", { class: "icon-grid" }, starts.map(s =>
+      h("button", { type: "button", class: "icon-tile drawing", title: s.hint, onclick: () => { close(); onPick(s); } },
+        starterArt(s, ""), h("span", null, s.name))))],
+  ], { wide: true });
 }
 
 // Edit an item's drawing (in a form: `it` is the draft). One used by other items too asks
@@ -2922,7 +3058,40 @@ function drawingsSection() {
           h("button", { class: "link", onclick: () => rename(d) }, "Rename"),
           h("button", { class: "link danger-link", onclick: () => remove(d) }, "Delete")));
     }))
-      : h("p", { class: "muted pad" }, "No drawings yet. Draw one here, or with Draw… next to an item's icon."));
+      : h("p", { class: "muted pad" }, "No drawings yet. Draw one here, or with Draw… next to an item's icon."),
+    starterSection());
+}
+
+// ------------------------------------------------------------------ starter drawings
+// Interactive drawings to start from (js/starter-drawings.js, made by tools/build_starters.mjs): an
+// abacus, an hourglass, a lantern, a drum, a die, a card deck. Shown in Catalog → Drawings (to add to
+// your own) and in the icon editor's Start from….
+
+// A starter's picture: live (it animates), once the editor library has loaded.
+function starterArt(s, cls = "drawing-svg") {
+  const box = h("span", { class: "starter-art" }, icon("image"));
+  loadSvgLay().then(() => box.replaceChildren(liveDrawnIcon(s.doc, drawingSvg(s.doc), cls, null))).catch(() => {});
+  return box;
+}
+
+async function addStarter(s) {
+  await loadSvgLay();
+  const doc = clone(s.doc);
+  addDrawing(s.name, doc, drawingSvg(doc));
+  toast(`Added “${s.name}” to your drawings: give it to an item from its icon (Choose…), or change it with Edit`);
+}
+
+function starterSection() {
+  if (typeof STARTER_DRAWINGS === "undefined" || !STARTER_DRAWINGS.length) return null;
+  return h("section", { class: "starter-drawings" },
+    h("div", { class: "section-head" }, h("h2", null, "Starters")),
+    h("p", { class: "muted small" }, "Drawings you can use: tap, drag or flip them in an item's details (show just the icon, or Use in its menu). Add one to your drawings to give it to an item, or to change it."),
+    h("div", { class: "drawing-grid" }, STARTER_DRAWINGS.map(s => h("div", { class: "drawing-tile" },
+      h("span", { class: "drawing-art", title: s.hint }, starterArt(s)),
+      h("span", { class: "tag" }, "interactive"),
+      h("b", null, s.name),
+      h("small", { class: "muted" }, s.hint),
+      h("div", { class: "tpl-actions" }, h("button", { class: "link", onclick: () => addStarter(s) }, "Add to my drawings"))))));
 }
 
 // An item's own image, shown in place of its icon (a playing card's face, a portrait…).
@@ -3589,13 +3758,19 @@ function renderSettings() {
         frameClock.start();
         render();
       }, { even: true, cls: "seg-field" })));
+  // Sounds (interactive drawings' sound actions): on, quiet or off, on this device.
+  const soundsBox = h("section", null,
+    h("div", { class: "switch-row" },
+      h("span", null, h("b", null, "Sounds"),
+        h("span", { class: "muted small" }, "What items you can use make when touched: a drum's beat, a bell, a die's rattle. Quiet plays them softly; Off keeps them silent on this device.")),
+      slideSwitch("Sounds", SOUND_LEVELS.map(([k, label]) => [k, label]), soundLevel(), k => { writePref("packrat-sounds", k); render(); }, { even: true, cls: "seg-field" })));
   const guide = h("section", { class: "settings-card help-link" },
     icon("book"),
     h("div", null, h("b", null, "User guide"),
       h("p", { class: "muted small" }, "How everything works, with pictures: containers, sets, drawn icons, parties, shops and values.")),
     h("a", { class: "btn", href: GUIDE_URL, target: "_blank", rel: "noopener" }, "Open the guide"));
   // Two columns on a wide page: this device's settings, then the party and the guide.
-  return h("div", { class: "view-settings" }, pageColumns([modeBox, roleBox, animBox], [partySettings(), guide]),
+  return h("div", { class: "view-settings" }, pageColumns([modeBox, roleBox, animBox, soundsBox], [partySettings(), guide]),
     h("section", { class: "credits muted small" },
       h("p", null, "Includes material from the System Reference Document 5.1 by Wizards of the Coast LLC, licensed under ",
         h("a", { href: "https://creativecommons.org/licenses/by/4.0/legalcode", target: "_blank", rel: "noopener" }, "CC BY 4.0"), "."),

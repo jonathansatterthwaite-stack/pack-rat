@@ -1,9 +1,9 @@
 // Offline support: serve the app shell from cache, refresh it in the background.
 // Bump VERSION when shipping changes so clients pick them up.
-const VERSION = "packrat-v122";
+const VERSION = "packrat-v127";
 const SHELL = [
   "./", "index.html", "manifest.webmanifest", "css/app.css", "js/vendor/qrcode.min.js", "js/vendor/marked.min.js", "js/vendor/purify.min.js", "js/vendor/jsQR.js", "js/vendor/svg-lay-tool.js", "js/documents.js", "js/shops.js", "js/files.js", "js/panels.js", "js/triggers.js",
-  "js/srd-data.js", "js/systems/dnd5e.js", "js/systems/dnd5e-panels.js", "js/systems/slot-delve.js", "js/templates.js", "js/system.js", "js/icons-data.js", "js/icons.js", "js/store.js", "js/party.js", "js/party-ui.js", "js/gm-controls.js", "js/control-panels.js", "js/treasure.js", "js/clockwork.js", "js/clockwork-ui.js", "js/app.js", "js/radial.js",
+  "js/srd-data.js", "js/systems/dnd5e.js", "js/systems/dnd5e-panels.js", "js/systems/slot-delve.js", "js/templates.js", "js/system.js", "js/icons-data.js", "js/icons.js", "js/store.js", "js/party.js", "js/party-ui.js", "js/gm-controls.js", "js/control-panels.js", "js/treasure.js", "js/clockwork.js", "js/clockwork-ui.js", "js/starter-drawings.js", "js/app.js", "js/radial.js",
   "icons/icon.svg", "icons/icon-192.png", "icons/icon-512.png", "icons/maskable-512.png",
 ];
 

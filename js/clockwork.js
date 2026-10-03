@@ -176,17 +176,19 @@ function limitCheck(char, e, st, on, by) {
 // { rate, until?, from? } starts it moving from from (else where it is now), rate a second, stopping
 // at until (a declared value stops at the end of its range anyway).
 const okNum = (v, limit = 1e9) => typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= limit;
+// A value may be as big as a time in ms (a drawing's "mark the time" keeps now); the hosts agree.
+const VALUE_LIMIT = 1e13;
 function valueCheck(name, value, from = 0) {
   if (value === null) return { value };
   const decl = (activeSystem().values || []).find(v => v.name === name);
-  const [lo, hi] = !decl ? [-1e9, 1e9] : decl.choices?.length ? [0, decl.choices.length - 1] : [decl.min ?? -1e9, decl.max ?? 1e9];
+  const [lo, hi] = !decl ? [-VALUE_LIMIT, VALUE_LIMIT] : decl.choices?.length ? [0, decl.choices.length - 1] : [decl.min ?? -VALUE_LIMIT, decl.max ?? VALUE_LIMIT];
   const clampTo = x => Math.max(Math.min(lo, hi), Math.min(Math.max(lo, hi), x));
   if (isMoving(value)) {
     if (!okNum(value.rate, 1e6) || (value.until != null && !okNum(value.until))) return { error: "A change over time needs a rate a second, and where it stops" };
     const until = value.until != null ? clampTo(value.until) : !decl ? undefined : value.rate > 0 ? Math.max(lo, hi) : Math.min(lo, hi);
     return { value: { value: okNum(value.from) ? value.from : okNum(from) ? from : 0, rate: value.rate, since: clockNow(), ...(until !== undefined ? { until } : {}) } };
   }
-  if (!okNum(value)) return { error: "Values are numbers" };
+  if (!okNum(value, VALUE_LIMIT)) return { error: "Values are numbers" };
   if (!decl) return { value };
   let v = clampTo(value);
   if (decl.choices?.length) v = Math.round(v);

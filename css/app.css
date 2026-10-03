@@ -761,6 +761,14 @@ img.details-watermark { aspect-ratio: auto; border-radius: 12px; }
 .modal.icon-focus .details-watermark { opacity: 1; width: min(100cqw, 100cqh); max-height: none; }
 .modal.icon-focus img.details-watermark { width: auto; height: auto; max-width: 100cqw; max-height: 100cqh; }
 .icon-focus-switch { display: flex; align-items: center; gap: 6px; color: var(--muted); cursor: pointer; }
+/* An interactive drawing (hotspots): the picture takes touches while it's shown on its own. */
+.modal.icon-focus.interactive .modal-backdrop { pointer-events: auto; touch-action: none; -webkit-user-select: none; user-select: none; }
+/* (the details, hidden while it shows, sit on top: let touches and clicks through to the picture) */
+.modal.icon-focus.interactive .modal-body { pointer-events: none; }
+/* Starter drawings (Catalog → Drawings) */
+.starter-drawings { margin-top: 24px; }
+.starter-art { display: contents; }
+.starter-drawings .drawing-tile small { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .icon-focus-switch .icon { width: 18px; height: 18px; }
 @media (prefers-reduced-motion: reduce) {
   .details-watermark, .modal.has-backdrop .modal-body > * { transition: none; }

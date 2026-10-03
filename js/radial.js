@@ -239,6 +239,8 @@ function openRadial(el, menu, o = {}) {
 function inventoryMenu(e) {
   const char = store.char();
   return [
+    // An interactive drawing: straight to the picture, to use it.
+    drawingIsInteractive(currentItem(e, char)?.iconDoc) && { icon: "image", label: "Use", run: () => openEntry(e.uid, { use: true }) },
     ...menuFromButtons(writingButton(e)),
     isEquipable(e) && { icon: equipKind(e) === "wielded" ? "sword" : "shield", label: e.equipped ? "Unequip" : "Equip", run: () => toggleEquip(e.uid) },
     // The player's states (Attuned…), unless only the GM can change them now.

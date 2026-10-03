@@ -26,6 +26,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -1594,6 +1595,23 @@ public class PartyServer {
         e.put("seen", JSONObject.NULL); // new to its receiver: its "acquired" triggers fire there
     }
 
+    // An item's Local values (js/clockwork.js) go with it to its new owner: an abacus keeps its
+    // count. Moved with the whole item (and what's in it); copied for part of a stack (partUid).
+    private void carryValues(JSONObject src, JSONObject dst, Collection<String> uids, String partUid) throws JSONException {
+        JSONObject items = gm.optJSONObject("items");
+        if (items == null) return;
+        for (String uid : uids) {
+            String key = src.optString("id") + "/" + uid;
+            JSONObject v = items.optJSONObject(key);
+            if (v == null) continue;
+            if (partUid != null) items.put(dst.optString("id") + "/" + partUid, new JSONObject(v.toString()));
+            else {
+                items.remove(key);
+                items.put(dst.optString("id") + "/" + uid, v);
+            }
+        }
+    }
+
     private void transfer(JSONObject src, JSONObject dst, String uid, int qty) throws JSONException {
         JSONObject e = findEntry(src, uid);
         if (qty >= e.optInt("qty")) {
@@ -1607,6 +1625,7 @@ public class PartyServer {
                 if (!moving.contains(x.optString("uid"))) keep.put(x);
             }
             src.put("items", keep);
+            carryValues(src, dst, moving, null);
             makeLoose(e);
             for (JSONObject k : kids) {
                 k.put("equipped", false);
@@ -1624,6 +1643,7 @@ public class PartyServer {
             makeLoose(part);
             part.put("uid", newId(""));
             part.put("qty", qty);
+            carryValues(src, dst, Collections.singletonList(uid), part.optString("uid"));
             mergeInto(dst, part);
         }
     }
@@ -2328,7 +2348,7 @@ public class PartyServer {
     /** A value as kept: a number, or a moving one {value, rate, until?} stamped with this host's time
      *  (since, ms); null when it isn't one. See clean_value in server.py. */
     static Object cleanValue(String name, Object v) throws JSONException {
-        if (isNum(v, 1e9)) return v;
+        if (isNum(v, 1e13)) return v; // (as big as a time in ms: a drawing's "mark the time")
         if (!(v instanceof JSONObject) || name.startsWith("gm_state_")) return null;
         JSONObject m = (JSONObject) v;
         if (!isNum(m.opt("value"), 1e9) || !isNum(m.opt("rate"), 1e6)) return null;

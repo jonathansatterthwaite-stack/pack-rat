@@ -166,8 +166,9 @@ def clean_value(name, v):
     """A value as kept: a number, or a moving one {value, rate, until?} (a change over time: rate a
     second, stopping at until), stamped with the host's time (since, in ms). Moving values are worked
     out from the time on every device, so only starting and stopping one is sent. None: not a value.
-    The GM's state overrides (gm_state_…) are numbers only."""
-    if is_num(v):
+    The GM's state overrides (gm_state_…) are numbers only. A number may be as big as a time in ms
+    (a drawing's "mark the time" keeps now)."""
+    if is_num(v, 1e13):
         return v
     if not isinstance(v, dict) or name.startswith("gm_state_") or not is_num(v.get("value")) or not is_num(v.get("rate"), 1e6):
         return None
@@ -785,6 +786,22 @@ def merge_into(dst, entry):
     dst["items"].append(entry)
 
 
+def carry_values(src, dst, uids, part_uid=None):
+    """An item's Local values (js/clockwork.js) go with it to its new owner: an abacus keeps its
+    count. Moved with the whole item (and what's in it); copied for part of a stack (part_uid)."""
+    items = (state.get("gm") or {}).get("items")
+    if not items:
+        return
+    for uid in uids:
+        key = f"{src['id']}/{uid}"
+        if key not in items:
+            continue
+        if part_uid:
+            items[f"{dst['id']}/{part_uid}"] = copy.deepcopy(items[key])
+        else:
+            items[f"{dst['id']}/{uid}"] = items.pop(key)
+
+
 def transfer(src, dst, uid, qty):
     e = find_entry(src, uid)
     # Traded items arrive loose and unequipped, with the game system's toggles (attuned…) off.
@@ -793,6 +810,7 @@ def transfer(src, dst, uid, qty):
         kids = descendants(src, uid)
         moving = {uid} | {k["uid"] for k in kids}
         src["items"] = [x for x in src["items"] if x["uid"] not in moving]
+        carry_values(src, dst, moving)
         e.update(loose)
         for k in kids:
             k["equipped"] = k["attuned"] = False
@@ -808,6 +826,7 @@ def transfer(src, dst, uid, qty):
         e["qty"] -= qty
         part = copy.deepcopy(e)
         part.update(loose, uid=new_id(), qty=qty)
+        carry_values(src, dst, [uid], part["uid"])
         merge_into(dst, part)
 
 
