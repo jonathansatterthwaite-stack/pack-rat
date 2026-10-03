@@ -17,10 +17,12 @@ function entryMenu(st, e) {
   const side = [{ icon: "eye", label: "Details", run: () => st.open(e) }, ...(st.menu ? st.menu(e) : menuFromButtons(st.extras?.(e)))];
   // − and +: for what stacks (or is more than one), where it can be counted now.
   const counts = !!st.setQty && (st.canCount?.(e) ?? true) && (e.qty > 1 || stacks(currentItem(e, st.char), e.srcId));
+  // (From the count as it is when chosen: the app may have redrawn since the menu opened.)
+  const now = () => st.current?.(e) || st.char.items.find(x => x.uid === e.uid) || e;
   return {
     side: side.filter(Boolean),
-    plus: counts && { icon: "plus", label: "Add one", run: () => st.setQty(e, e.qty + 1) },
-    minus: counts && { icon: "minus", label: e.qty > 1 ? "Use one" : "Use the last one", run: () => st.setQty(e, e.qty - 1) },
+    plus: counts && { icon: "plus", label: "Add one", run: () => { const x = now(); st.setQty(x, x.qty + 1); } },
+    minus: counts && { icon: "minus", label: e.qty > 1 ? "Use one" : "Use the last one", run: () => { const x = now(); st.setQty(x, x.qty - 1); } },
   };
 }
 
@@ -160,7 +162,7 @@ function openRadial(el, menu, o = {}) {
   const lift = h("div", { class: "radial-lift" });
   Object.assign(lift.style, { left: box.left + "px", top: box.top + "px", width: box.width + "px", height: box.height + "px" });
   // The middle: letting go there does nothing; it names the option under the finger.
-  const label = h("button", { type: "button", class: "radial-label", "aria-label": "Close the menu", onclick: () => close() }, "Close");
+  const label = h("button", { type: "button", class: "radial-label", "aria-label": "Close the menu", onclick: () => close(true) }, "Close");
   label.style.left = cx + "px"; label.style.top = cy + "px";
   const trail = h("div", { class: "radial-trail" });
   const btns = all.map(op => {
@@ -172,7 +174,7 @@ function openRadial(el, menu, o = {}) {
     return b;
   });
   root.append(lift, trail, ...btns, label);
-  root.addEventListener("pointerdown", ev => { if (!o.drag && ev.target === root) close(); });
+  root.addEventListener("pointerdown", ev => { if (!o.drag && ev.target === root) close(true); });
   document.body.append(root);
   requestAnimationFrame(() => root.classList.add("shown"));
   if (o.drag && navigator.vibrate) try { navigator.vibrate(8); } catch {}
@@ -202,7 +204,7 @@ function openRadial(el, menu, o = {}) {
     op?.run?.();
   }
   const onKey = ev => {
-    if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); close(); el.focus?.(); return; }
+    if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); close(true); return; }
     // Arrows go round the ring (and the middle, Close).
     if (["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp"].includes(ev.key)) {
       ev.preventDefault();
@@ -211,14 +213,19 @@ function openRadial(el, menu, o = {}) {
     }
   };
   document.addEventListener("keydown", onKey, true);
+  // Scrolling or resizing (a phone turned) leaves it where it was: close it.
   const onScroll = () => close();
-  addEventListener("scroll", onScroll, { passive: true, once: true });
-  function close() {
+  addEventListener("scroll", onScroll, { passive: true });
+  addEventListener("resize", onScroll);
+  // refocus: closed without choosing (Escape, the middle, outside), so the keyboard goes back to the item.
+  function close(refocus = false) {
     if (radialOpen !== api) return;
     radialOpen = null;
     document.removeEventListener("keydown", onKey, true);
     removeEventListener("scroll", onScroll);
+    removeEventListener("resize", onScroll);
     root.remove();
+    if (refocus && !o.drag && el.isConnected) (el.matches("button") ? el : el.querySelector(".row-main"))?.focus({ preventScroll: true });
   }
   const api = { root, close, track, release, drag: !!o.drag };
   radialOpen = api;
@@ -237,7 +244,10 @@ function inventoryMenu(e) {
     // The player's states (Attuned…), unless only the GM can change them now.
     ...statesFor(e).filter(s => s.who === "player" && (canPlayerSet(char, e, s.key) || isGmDevice())).map(s => {
       const on = stateOn(char, e, s.key);
-      return { icon: "wand", label: `${s.label}: turn ${on ? "off" : "on"}`, run: () => playerSetState(e.uid, s.key, !on) };
+      return { icon: "wand", label: `${s.label}: turn ${on ? "off" : "on"}`, run: () => {
+        const c = store.char(), x = c?.items.find(i => i.uid === e.uid);
+        if (x) playerSetState(e.uid, s.key, !stateOn(c, x, s.key));
+      } };
     }),
     editing() && { icon: "edit", label: "Edit", run: () => openItemForm(e.item, { entryUid: e.uid }) },
     { icon: "move", label: "Move to…", run: () => openMoveTo(e.uid) },

@@ -386,21 +386,33 @@ function syncTileSize(root = document.getElementById("view")) {
 
 // Shrink each tile's name until it fits its tile (binary search on the font size).
 // If even the smallest size can't fit a long word, let it break.
+// Every name is reset and measured together (one layout, not one per tile); only the ones that
+// don't fit are searched, and what was found is remembered for that name at that size.
+const tileNameSizes = new Map(); // "name|width|height" -> { size, tight }
 function fitTileNames(box) {
   if (!box.isConnected) return;
-  for (const el of box.querySelectorAll(".tile-name")) {
-    el.style.fontSize = "";
-    el.classList.remove("tight");
-    const fits = () => el.scrollHeight <= el.clientHeight + 1 && el.scrollWidth <= el.clientWidth + 1;
-    if (fits()) continue;
+  const els = [...box.querySelectorAll(".tile-name")];
+  for (const el of els) { el.style.fontSize = ""; el.classList.remove("tight"); }
+  const fits = el => el.scrollHeight <= el.clientHeight + 1 && el.scrollWidth <= el.clientWidth + 1;
+  const known = [], search = [];
+  for (const el of els) { // (reads only)
+    const key = el.textContent + "|" + el.clientWidth + "|" + el.clientHeight, size = tileNameSizes.get(key);
+    if (size) known.push([el, size]);
+    else if (!fits(el)) search.push([el, key]);
+  }
+  for (const [el, { size, tight }] of known) { el.style.fontSize = size + "px"; el.classList.toggle("tight", tight); }
+  if (tileNameSizes.size > 2000) tileNameSizes.clear();
+  for (const [el, key] of search) {
     let lo = 8, hi = parseFloat(getComputedStyle(el).fontSize);
     for (let i = 0; i < 6; i++) {
       const mid = (lo + hi) / 2;
       el.style.fontSize = mid + "px";
-      if (fits()) lo = mid; else hi = mid;
+      if (fits(el)) lo = mid; else hi = mid;
     }
     el.style.fontSize = lo + "px";
-    if (!fits()) el.classList.add("tight");
+    const tight = !fits(el);
+    el.classList.toggle("tight", tight);
+    tileNameSizes.set(key, { size: lo, tight });
   }
 }
 
@@ -639,6 +651,7 @@ function sortControl(state, key, sorts, onChange) {
 //     reorder(ids) moving container sections up and down (absent: no arrows)
 //     extras(e)    more controls at the row's end (equip, a pick, states…); on tiles, in the item menu
 //     menu(e)      the item menu's options (js/radial.js), instead of extras' buttons
+//     current(e)   the entry as it is now (the menu's − / +, after a redraw); else found in char.items
 //     sub(e)       more for the row's second line
 //     rowClass(e)  more for the row's (or tile's) class, e.g. "contested"
 //     tags(e)      tags after the name ("custom")
@@ -1001,6 +1014,7 @@ function charStorage(char) {
   return {
     char, id: "", rootLabel: "On person",
     open: e => openEntry(e.uid), setQty: setEntryQty, canCount, move: moveEntry, menu: inventoryMenu,
+    current: e => store.char()?.items.find(x => x.uid === e.uid), // (the entry as it is now: see entryMenu)
     reorder: ids => commit((s, c) => { c.containerOrder = [...ids, ...(c.containerOrder || []).filter(id => !ids.includes(id) && c.items.some(e => e.uid === id))]; }),
     extras: e => [writingButton(e),
       isEquipable(e) && iconBtn(equipKind(e) === "wielded" ? "sword" : "shield", e.equipped ? "Unequip" : "Equip",
