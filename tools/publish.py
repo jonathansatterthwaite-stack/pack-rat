@@ -120,6 +120,7 @@ def release(title_extra=None, notes_file=None):
 
 
 def main():
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # (messages may have − or …; Windows' console is cp1252)
     args = sys.argv[1:]
     message = args[args.index("-m") + 1] if "-m" in args else f"Update Pack Rat ({datetime.date.today():%Y-%m-%d})"
     stage()
