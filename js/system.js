@@ -290,10 +290,6 @@ function standardiseTemplate(tpl, sys = DND5E_SYSTEM) {
   };
 }
 
-function standardiseTemplates(data) {
-  for (const p of data.packages || []) p.templates = (p.templates || []).map(t => standardiseTemplate(t));
-}
-
 // ------------------------------------------------------------------ system files
 
 // A system as a file: everything, its catalog included (D&D 5e's comes from srd-data.js).

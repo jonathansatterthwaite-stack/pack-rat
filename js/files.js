@@ -326,7 +326,7 @@ function filesView() {
       h("div", { class: "inline wrap" },
         h("button", { class: "btn", onclick: () => fileInput.click() }, icon("upload"), "Import a file"),
         h("button", { class: "btn", onclick: exportAll }, icon("download"), "Export everything"), fileInput)),
-    h("p", { class: "muted small" }, `Everything you've made, saved ${party.app?.localStore ? "on this " + (party.app.android ? "phone" : "PC") : "in this browser"}: ${fmtBytes(total)} of data, plus pictures. `
+    h("p", { class: "muted small" }, `Everything you've made, saved ${kv.remote && party.app?.localStore ? "on this " + (party.app.android ? "phone" : "PC") : "in this browser"}: ${fmtBytes(total)} of data, plus pictures. `
       + "Import takes any Pack Rat file: a whole backup, a campaign, a character, a rule package or a drawing."),
 
     // Two columns on a wide page: the campaigns' own things, then what's made and shared.

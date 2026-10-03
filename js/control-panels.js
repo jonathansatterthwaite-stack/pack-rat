@@ -27,7 +27,6 @@ const CONTROL_TYPES = [["slider", "Slider"], ["range", "Range slider"], ["toggle
 // The kinds offered when making one: a range slider is a slider with two handles (Handles).
 const CONTROL_KINDS = CONTROL_TYPES.filter(([k]) => k !== "range");
 const SETS_VALUE = new Set(["slider", "toggle", "button", "dropdown"]); // one value, `name`
-const isPanel = ctl => ctl?.kind === "panel";
 const isUpright = ctl => ctl.h > ctl.w;
 // The pictures a panel's boards use (so exports carry them).
 const panelImages = panel => (panel.controls || []).map(c => c.board?.image).filter(Boolean);

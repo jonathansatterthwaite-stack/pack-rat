@@ -819,13 +819,18 @@ function typeChips(st, state, o, onPick) {
   return [row, sub];
 }
 
-// A flat list (a catalog): filtered, sorted, a page at a time.
+// A flat list (a catalog): filtered, sorted, a page at a time. A long one is drawn a screenful first
+// (down to below where the page is scrolled), the rest just after (drawRest), so a tap that redraws
+// the catalog doesn't wait for hundreds of rows.
 function flatList(st, state, o, redraw) {
   const q = (st.search || "").trim();
   const hits = sortEntries(st, listed(st.char).filter(e => invTypeMatches(e, st.type || "all", st.typeSub) && (!q || entryMatches(st.char, e, q) || st.keep?.(e))));
+  const shown = hits.slice(0, state.limit), first = Math.max(40, Math.ceil((window.scrollY + window.innerHeight * 2) / 36));
+  const list = hits.length ? entryList(st, shown.slice(0, first)) : null;
+  if (list && shown.length > first) drawRest(st, list, shown.slice(first));
   return [
     h("p", { class: "muted small list-count" }, plural(hits.length, "item")),
-    hits.length ? entryList(st, hits.slice(0, state.limit)) : (st.empty ? st.empty() : h("p", { class: "muted pad" }, "Nothing matches.")),
+    list || (st.empty ? st.empty() : h("p", { class: "muted pad" }, "Nothing matches.")),
     hits.length > state.limit && h("button", { class: "btn wide", onclick: () => { state.limit += 300; redraw(); } }, `Show more (${hits.length - state.limit} left)`),
   ];
 }
@@ -1213,6 +1218,21 @@ function withFill(el, fill) {
   if (fill.over) el.classList.add("fill-over");
   el.style.setProperty("--fill", Math.min(100, fill.ratio * 100).toFixed(1) + "%");
   return el;
+}
+
+// The rest of a long list (see flatList), in batches once it's on screen; stops if it's redrawn first.
+function drawRest(st, list, rest) {
+  const tiles = !Array.isArray(list);
+  let last = tiles ? list : list[list.length - 1];
+  const step = () => {
+    if (!last.isConnected) return; // redrawn since
+    const batch = rest.splice(0, 60);
+    if (tiles) list.append(...batch.map(e => entryTile(st, e)));
+    else { const rows = batch.map(e => entryRow(st, e)); last.after(...rows); last = rows[rows.length - 1]; }
+    if (rest.length) setTimeout(step);
+    else if (tiles) fitTileNames(list);
+  };
+  setTimeout(step);
 }
 
 // Rows or a tile grid, depending on the layout preference.
@@ -3632,7 +3652,7 @@ function campaignRulesBlock() {
 function dataCard() {
   return h("section", { class: "settings-card data-card" },
     h("b", null, "Data"),
-    h("p", { class: "muted small" }, party.app?.localStore
+    h("p", { class: "muted small" }, kv.remote && party.app?.localStore
       ? ["Saved on this ", party.app.android ? "phone" : "PC", " in ", h("code", null, party.app.localDir), ". Every Pack Rat window here shares it",
          party.app.appPort ? [" — you can also open Pack Rat in any browser here at ", h("code", null, `http://localhost:${party.app.appPort}`), " while the app is running"] : "", "."]
       : party.active

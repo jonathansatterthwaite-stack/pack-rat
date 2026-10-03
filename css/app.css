@@ -193,10 +193,6 @@ input:invalid { border-color: var(--bad); }
 .ability select { width: 76px; text-align: center; font-size: 1rem; font-weight: 700; padding: 4px; min-height: 36px; }
 
 /* Character panel: collapsible; closed, its header shows the coins (opens the purse) and weight carried. */
-.char-panel > .stats { padding: 10px; }
-.char-panel .stat { box-shadow: none; }
-.char-panel.closed .group-head { border-bottom: 0; flex-wrap: wrap; }
-.char-panel.closed .collapse { flex: none; }
 .panels { display: flex; flex-direction: column; gap: 12px; margin-bottom: 12px; }
 .sys-panel .panel-frame { display: block; width: 100%; height: 0; border: 0; background: transparent; }
 .sys-panel.closed .group-head { border-bottom: 0; flex-wrap: wrap; }
@@ -212,8 +208,6 @@ input:invalid { border-color: var(--bad); }
 .purse-btn > .icon { width: 16px; height: 16px; color: var(--muted); flex: none; }
 .purse-btn .coins { margin: 0; gap: 2px 8px; font-size: .85rem; }
 .purse-btn .coin b { font-size: .95rem; }
-.carried-mini { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; font-size: .85rem; color: var(--muted); white-space: nowrap; }
-.carried-mini .icon { width: 14px; height: 14px; }
 
 /* ------------------------------------------------------------ page layouts (docs/ui-patterns.md)
    Page columns (pageColumns): two stacks side by side once the page is 900px wide, else one after
@@ -283,12 +277,9 @@ svg.drawn-icon { overflow: visible; }
 }
 
 /* The GM's Party screen: tabs, and GM values as a hierarchy (value → player → item). */
-.party-tabs { margin-bottom: 14px; }
-.seg.party-tabs button { width: auto; padding: 0 16px; white-space: nowrap; font-weight: 600; }
 /* Sub-tabs at the top of a screen (Catalog: Items, My items…; Settings: Settings, Campaigns, Files) */
 .seg.sub-tabs { display: flex; width: fit-content; max-width: 100%; overflow-x: auto; margin-bottom: 14px; }
 .seg.sub-tabs button { width: auto; padding: 0 16px; white-space: nowrap; font-weight: 600; flex: none; }
-.package-group .group-head h3 { flex: 1; text-align: left; }
 .gm-values .gm-level, .cw .gm-level { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .gm-var .collapse { flex: none; }
 .gm-var .group-head h3 { flex: 1; text-align: left; }
@@ -377,18 +368,15 @@ svg.drawn-icon { overflow: visible; }
 .cp-tabs.turned.left > button { flex-direction: column-reverse; }
 .cp-tab-tree { display: grid; gap: 6px; }
 .cp-tab-node { display: grid; gap: 6px; }
-.cp-tab-letter { font-size: 1.05rem; }
 .cp-handle.cp-handle-corner { inset: auto; top: 2px; left: 2px; width: 26px; height: 26px; z-index: 2; background: var(--surface);
   border: 1px solid var(--border); display: grid; place-items: center; color: var(--muted); }
 .cp-handle.cp-handle-corner .icon { width: 16px; height: 16px; }
 .cp-arrange-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 0 10px; }
 .cp-arrange-bar p { flex: 1 1 280px; margin: 8px 0; }
-.cp-tab-rows { display: grid; gap: 6px; }
 .cp-tab-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .cp-tab-row input[type=text] { flex: 1 1 140px; min-width: 0; }
 .cp-tab-row.removed input { text-decoration: line-through; opacity: .6; }
 .cp-tab-pick { width: 40px; padding: 0; justify-content: center; }
-.cp-tab-moveto { flex-basis: 100%; display: flex; align-items: center; gap: 6px; padding-left: 4px; }
 /* The range slider: two handles on a track */
 .cp-dual { display: flex; flex-direction: column; gap: 2px; }
 .cp-dual.upright { flex: 1 1 0; min-height: 0; align-items: center; }
@@ -722,9 +710,6 @@ img.item-img { object-fit: contain; border-radius: 4px; }
 .chip-count { font-size: .75rem; font-weight: 700; opacity: .6; }
 .view-inventory .chips { margin-bottom: 10px; }
 .chip { display: inline-block; padding: 2px 9px; border-radius: 99px; background: var(--surface-2); font-size: .82rem; cursor: help; }
-.cat-list .row { background: var(--surface); }
-.cat-list { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); box-shadow: var(--shadow); margin-top: 6px; }
-.cat-list > .btn.wide { border-radius: 0; margin: 0; border-width: 1px 0 0; }
 
 section { margin-bottom: 28px; }
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
@@ -828,15 +813,13 @@ table.mini th { color: var(--muted); font-weight: 600; }
 .seg button.active { background: var(--accent-soft); color: var(--accent); }
 
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 8px; padding: 10px; }
-.cat-tiles { padding: 0; margin-top: 6px; }
 .tile {
   position: relative; display: flex; flex-direction: column; gap: 3px; min-width: 0; min-height: 96px;
   padding: 10px 10px 8px; text-align: left; font-size: .85rem;
   background: var(--surface); border: 1px solid var(--border); border-top: 3px solid var(--type); border-radius: 10px;
 }
-button.tile:hover, .tile:has(.tile-hit:hover) { border-color: var(--muted); border-top-color: var(--type); }
+button.tile:hover { border-color: var(--muted); border-top-color: var(--type); }
 .tile.equipped { background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface)); box-shadow: inset 0 0 0 1px var(--accent); }
-.tile-hit { position: absolute; inset: 0; border: 0; background: none; border-radius: inherit; }
 .tile-name { font-weight: 600; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 
 /* Tiles: the colour, the icon, and the name over it — square tiles as small as they go. */
@@ -1082,7 +1065,6 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
 .trade-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
 .trade-col { min-width: 0; }
 .trade-col h4:first-child { margin-top: 0; }
-.trade-search { flex: none; min-width: 0; margin-bottom: 6px; }
 /* A trade side: its toolbar and chips stay put; the items scroll. */
 .picker { border: 1px solid var(--border); border-radius: 8px; background: var(--surface); padding: 6px; min-width: 0; }
 .picker .inv-list { max-height: 340px; overflow-y: auto; }
@@ -1186,7 +1168,6 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
 .shop-edit-row .field.mini input { min-height: 34px; padding: 4px 8px; }
 .editor-foot { margin-top: 16px; }
 .editor-foot .grow { flex: 1; }
-.stock-list { max-height: 55vh; overflow-y: auto; margin-top: 8px; }
 .sell-btn { margin: 0 0 12px; }
 .stockroom { margin: 18px 0; padding: 14px; border: 1px dashed var(--border); border-radius: var(--radius); background: color-mix(in srgb, var(--surface-2) 50%, transparent); }
 .stockroom h3 { margin: 0; }
@@ -1229,7 +1210,6 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
 
 /* ------------------------------------------------------------ combat panel */
 .combat { margin: 14px 0 12px; }
-.combat-summary { overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
 .combat-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 8px 14px; border-bottom: 1px solid var(--border); }
 .combat-settings .check { min-height: 32px; }
 .prof-field { display: flex; align-items: center; gap: 8px; font-weight: 500; }
@@ -1290,7 +1270,6 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
   .toolbar .btn { flex: none; }
   .view-menu { left: 0; width: auto; }
   .tiles { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 6px; padding: 8px; }
-  .cat-tiles { padding: 0; }
   .tile { min-height: 88px; padding: 8px 8px 6px; }
   .row { flex-wrap: wrap; padding-left: 10px; }
   /* The icon and the name share the first line; the weight and controls take the second. */
@@ -1298,10 +1277,6 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
   .row:has(> .cw-cog) .row-main { flex-basis: calc(100% - 86px); }
   .row .type-dot, .row .row-icon { align-self: flex-start; margin-top: 8px; }
   .inv-list .row-weight { margin-left: 18px; text-align: left; width: auto; flex: 1; }
-  .cat-row { flex-wrap: nowrap; }
-  .cat-row .row-main { flex: 1; }
-  .cat-row .row-weight { display: none; }
-  .cat-row .row-cost { width: auto; }
   .overlay { padding: 0; place-items: end stretch; }
   .modal, .modal.wide { width: 100%; max-height: 92vh; border-radius: 16px 16px 0 0; border-bottom: 0; }
   .form.grid, .grid, .entry-controls { grid-template-columns: 1fr; }
