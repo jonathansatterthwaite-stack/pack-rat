@@ -23,20 +23,45 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 
 const MOVED_FLAG = "packrat-moved-to-pc";
 
+// A fresh-start test (fresh-start.bat, or ?fresh in the address): this tab runs as on a
+// new device. Everything it saves is kept in memory only, and the real saved data is never read or
+// written; leaving the test (or closing the tab) brings it all back.
+const FRESH_TEST_KEY = "packrat-fresh-test";
+const FRESH_TEST = (() => {
+  try {
+    const q = new URLSearchParams(location.search);
+    if (q.has("fresh")) {
+      sessionStorage.setItem(FRESH_TEST_KEY, "1");
+      q.delete("fresh");
+      history.replaceState(null, "", location.pathname + (q.toString() ? "?" + q : "") + location.hash);
+    }
+    return sessionStorage.getItem(FRESH_TEST_KEY) === "1";
+  } catch { return false; }
+})();
+function setFreshTest(on) {
+  try { on ? sessionStorage.setItem(FRESH_TEST_KEY, "1") : sessionStorage.removeItem(FRESH_TEST_KEY); } catch {}
+  ui.leaving = true;
+  if (on) history.replaceState(null, "", location.pathname + location.search); // a new device starts on the first screen
+  location.reload();
+}
+
 const kv = {
   remote: false,
+  memory: FRESH_TEST ? {} : null, // the fresh-start test's storage
   data: {},
   pending: {},
   timer: null,
   client: Math.random().toString(36).slice(2),
 
   get(key) {
+    if (this.memory) return key in this.memory ? this.memory[key] : null;
     if (this.remote) return key in this.data ? this.data[key] : null;
     try { return localStorage.getItem(key); } catch { return null; }
   },
 
   set(key, value) {
     value = String(value);
+    if (this.memory) { this.memory[key] = value; return; }
     if (!this.remote) {
       try { localStorage.setItem(key, value); } catch (e) { console.warn("Could not save", e); }
       return;
@@ -48,6 +73,7 @@ const kv = {
   },
 
   remove(key) {
+    if (this.memory) { delete this.memory[key]; return; }
     if (!this.remote) {
       try { localStorage.removeItem(key); } catch {}
       return;

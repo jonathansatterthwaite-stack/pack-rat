@@ -116,7 +116,7 @@ const party = {
   async detect() {
     if (location.protocol.startsWith("http")) this.app = await fetchInfo("", 4000);
     // In the Windows and Android apps, saved data lives in a file shared by every window.
-    if (this.app?.localStore) {
+    if (this.app?.localStore && !FRESH_TEST) { // (a fresh-start test keeps to itself)
       try {
         await kv.connect();
       } catch (e) {
@@ -128,10 +128,10 @@ const party = {
     if (this.isApp()) {
       const presence = new EventSource("api/presence");
       presence.addEventListener("local", e => {
-        if (JSON.parse(e.data).by !== kv.client) reloadSharedData();
+        if (JSON.parse(e.data).by !== kv.client && !FRESH_TEST) reloadSharedData();
       });
     }
-    if (this.app?.party) return this.start("", this.app);
+    if (this.app?.party && !FRESH_TEST) return this.start("", this.app); // (a test doesn't join this PC's party)
     const joined = this.isApp() && kv.get(JOINED_KEY);
     if (joined) {
       const info = await fetchInfo(joined);

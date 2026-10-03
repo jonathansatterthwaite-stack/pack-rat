@@ -413,7 +413,7 @@ const VIEWS = {
   settings: { label: "Settings", icon: "sliders", render: renderSettingsTabs },
 };
 
-// The campaign rules settings the system uses (D&D 5e: encumbrance, size), shown in Settings → Rules.
+// The campaign rules settings the system uses (D&D 5e: encumbrance), shown on the campaign's card in Settings → Campaigns.
 const usesSetting = (key, sys = activeSystem()) => (sys.campaignSettings || []).includes(key);
 
 // ------------------------------------------------------------------ modes
@@ -490,7 +490,7 @@ function render() {
   const scroll = window.scrollY;
   tileObserver?.disconnect(); // the grids being replaced; new ones observe themselves
   // Above the view: its notices, then the system's panels (they stay loaded: see js/panels.js).
-  setChildren(document.getElementById("view-top"), !joining && treasureBanner(), !joining && VIEWS[ui.view].top?.());
+  setChildren(document.getElementById("view-top"), freshTestBanner(), !joining && treasureBanner(), !joining && VIEWS[ui.view].top?.());
   syncPanels(char, !joining && ui.view === "inventory");
   main.replaceChildren(joining ? renderJoin() : VIEWS[ui.view].render());
   // Tiles are laid out now: size them and shrink names to fit (resizes are handled by each grid's observer).
@@ -3497,18 +3497,10 @@ function importFile(file) {
 // The user guide: the GitHub project's wiki.
 const GUIDE_URL = "https://github.com/jonathansatterthwaite-stack/pack-rat/wiki";
 
+// Settings → This device: this device's own settings (mode, role, animations), joining or hosting a
+// party, and the guide. A campaign's rules and characters are on its card in Campaigns; backups and
+// erasing everything in Files.
 function renderSettings() {
-  const s = store.state;
-  const setSetting = (k, v) => commit(st => { st.settings[k] = v; });
-  const fileInput = h("input", { type: "file", accept: "application/json,.json", hidden: true,
-    onchange: e => { if (e.target.files[0]) importFile(e.target.files[0]); e.target.value = ""; } });
-  // Rules, values and controls (clockworkOn) for this campaign; in a party, sent to the host.
-  const setClockwork = async on => {
-    commit(() => { store.campaign().clockwork = on; }, on ? "Rules, values and controls are on" : "Rules, values and controls are off for this campaign");
-    if (party.active && party.isGm() && party.campaign?.id === store.campaign().id) {
-      try { await party.loadCampaign(store.campaign()); } catch (e) { toast(e.message); }
-    }
-  };
   // The mode (see playMode): Play or Edit, for players and GMs alike. Per device.
   const setMode = mode => {
     ui.mode = mode;
@@ -3524,92 +3516,39 @@ function renderSettings() {
     render();
     toast(role === "gm" ? "GM role: the GM tab has your controls, values, treasure and connections" : "Player role");
   };
+  const modeBox = h("section", null,
+    h("div", { class: "switch-row" },
+      h("span", null, h("b", null, "Mode"),
+        h("span", { class: "muted small" }, isGmDevice()
+          ? "Play puts the catalog and editing away while you run the game: shops still open and close, treasure is still given out, and panels still work. Edit is for preparing: making items, shops, panels and tables."
+          : `Play is for the table: your gear comes from the ${term("gm")}, shops, trades and treasure, and only things like ammunition, rations and potions count up and down. Items can still be renamed and written in. Edit lets you make and change items.`)),
+      slideSwitch("Mode", [["play", "Play"], ["edit", "Edit"]], ui.mode, setMode, { even: true, cls: "seg-field" })));
   const roleBox = h("section", { class: "role-box" },
     h("div", { class: "switch-row" },
       h("span", null, h("b", null, "Role on this device"),
         h("span", { class: "muted small" }, party.active
           ? (party.isGm() ? "You're a GM in this party." : "In a party, the host decides who's a GM.")
           : `As ${term("gm")}, prepare each campaign's shops, values and controls without hosting a party. In a party, the host chooses the ${term("gm")}.`)),
-      slideSwitch("Role", [["player", "Player"], ["gm", term("gm")]], ui.role, setRole, { disabled: party.active, even: true, cls: "seg-field" })),
-    h("p", { class: "muted small device-line" }, "In parties this device is called ", h("b", null, deviceName()), ". ",
-      h("button", { class: "link", onclick: renameDevice }, "Rename")));
-  // Two columns on a wide page: this device's settings, then the campaign's and the data.
-  return h("div", { class: "view-settings" }, pageColumns([
-    roleBox,
-    h("section", { class: "help-link" },
-      icon("book"),
-      h("div", null, h("b", null, "User guide"),
-        h("p", { class: "muted small" }, "How everything works, with pictures: containers, sets, drawn icons, parties, shops and values.")),
-      h("a", { class: "btn", href: GUIDE_URL, target: "_blank", rel: "noopener" }, "Open the guide")),
-    h("section", null,
-      h("div", { class: "switch-row" },
-        h("span", null, h("b", null, "Mode"),
-          h("span", { class: "muted small" }, isGmDevice()
-            ? "Play puts the catalog and editing away while you run the game: shops still open and close, treasure is still given out, and panels still work. Edit is for preparing: making items, shops, panels and tables."
-            : `Play is for the table: your gear comes from the ${term("gm")}, shops, trades and treasure, and only things like ammunition, rations and potions count up and down. Items can still be renamed and written in. Edit lets you make and change items.`)),
-        slideSwitch("Mode", [["play", "Play"], ["edit", "Edit"]], ui.mode, setMode, { even: true, cls: "seg-field" }))),
-    h("section", null,
-      h("div", { class: "switch-row" },
-        h("span", null, h("b", null, "Animations"),
-          h("span", { class: "muted small" }, "How smoothly moving icons (clocks, and ones following a value as it changes) animate on this device. Pack Rat slows them down by itself when this device is busy; Off shows them still.")),
-        slideSwitch("Animations", ANIMATIONS.map(([k, label]) => [k, label]), animationsSetting(), k => {
-          writePref("packrat-animations", k);
-          frameClock.rate = 0; // from the new cap
-          frameClock.start();
-          render();
-        }, { even: true, cls: "seg-field" }))),
-  ], [
-    partySettings(),
-    h("section", null,
-      h("div", { class: "section-head" }, h("h2", null, termCap("characters")),
-        h("button", { class: "btn primary", onclick: () => newCharPrompt() }, icon("plus"), "New " + term("character"))),
-      h("div", { class: "group" }, s.characters.map(c => h("div", { class: "row" + (c.id === s.activeId ? " equipped" : "") },
-        h("button", { class: "row-main", onclick: () => { commit(st => { st.activeId = c.id; }); go("inventory"); } },
-          h("div", { class: "row-title" }, c.name, c.id === s.activeId && h("span", { class: "tag on" }, "active")),
-          h("div", { class: "row-sub" }, `${entriesLabel(c)} · ${coinSummary(c.coins)}`)),
-        iconBtn("edit", "Rename", () => renamePrompt(c)),
-        iconBtn("download", "Export character", async () => download(`${c.name.replace(/\W+/g, "_")}.json`,
-          { kind: "character", character: c, templates: store.allTemplates().filter(t => c.items.some(e => e.item.template === t.id)),
-            images: await bundleImages(allImageRefs([c])) })),
-        iconBtn("copy", "Duplicate", () => commit(st => { st.characters.push({ ...clone(c), id: uid(), name: c.name + " (copy)" }); }, `Duplicated ${c.name}`)),
-        (s.characters.length > 1 || party.active) && iconBtn("trash", "Delete", () => confirmDialog(
-          party.isLinked(c.id) ? `Delete ${c.name} from this device? They also leave the party, and their inventory is deleted from the host.` : `Delete ${c.name} and their whole inventory?`, "Delete",
-          () => commit(st => { st.characters = st.characters.filter(x => x.id !== c.id); if (st.activeId === c.id) st.activeId = st.characters[0]?.id; }, `Deleted ${c.name}`, true)), "danger-hover"))))),
-    h("section", null,
-      h("h2", null, `Rules for ${store.campaign().name}`),
-      // Clockwork (js/clockwork.js), for the whole campaign: the GM's to switch.
-      isGmDevice() && h("label", { class: "switch-row campaign-clockwork" },
-        h("span", null, h("b", null, "Rules, values and controls"),
-          h("span", { class: "muted small" }, `Items' rules, Global and Local values, the ${term("gm")}'s control panels and connections, and shops that follow values. Off, they're put away for everyone in this campaign, for a simpler game. Item states and limits stay.`)),
-        h("input", { type: "checkbox", role: "switch", class: "switch", checked: clockworkOn(), onchange: ev => setClockwork(ev.target.checked) })),
-      h("div", { class: "form grid" },
-        h("label", { class: "field" }, h("span", null, "Game system"),
-          h("button", { class: "btn", type: "button", onclick: () => editCampaign(store.campaign()) }, icon("book"), activeSystem().name)),
-        usesSetting("encumbrance") && h("label", { class: "field" }, h("span", null, "Encumbrance"),
-          h("select", { onchange: e => setSetting("encumbrance", e.target.value) },
-            [["standard", "Standard (capacity = STR × 15)"], ["variant", "Variant (speed penalties at STR × 5 / × 10)"], ["off", "Off"]]
-              .map(([v, l]) => h("option", { value: v, selected: s.settings.encumbrance === v }, l)))),
-        usesSetting("carryMultiplier") && h("label", { class: "field" }, h("span", null, `Carry multiplier for ${store.char().name}`),
-          h("select", { onchange: e => commit((st, c) => { c.stats = { ...statsOf(c), carryMultiplier: +e.target.value }; }) },
-            [[0.5, "×½ (Tiny)"], [1, "×1 (Small / Medium)"], [2, "×2 (Large, Powerful Build)"], [4, "×4 (Huge)"], [8, "×8 (Gargantuan)"]]
-              .map(([v, l]) => h("option", { value: v, selected: (statsOf(store.char()).carryMultiplier || 1) === v }, l)))),
-        currency().perWeight > 0 && h("label", { class: "check field" }, h("input", { type: "checkbox", checked: s.settings.coinWeight, onchange: e => setSetting("coinWeight", e.target.checked) }),
-          ` Coins have weight (${currency().perWeight} coins = 1 ${weightUnit()})`))),
-    h("section", null,
-      h("h2", null, "Data"),
-      h("p", { class: "muted small" }, party.app?.localStore
-        ? ["Saved on this PC in ", h("code", null, party.app.localDir), ". Every Pack Rat window on this PC shares it — you can also open Pack Rat in any browser here at ",
-           h("code", null, `http://localhost:${party.app.appPort}`), " while the app is running."]
-        : party.active
-        ? "Party characters are saved on the host computer. Custom items, templates and settings stay in this browser."
-        : "Everything is saved in this browser only. Export a backup to move data between your PC and phone."),
-      h("div", { class: "inline wrap" },
-        h("button", { class: "btn", onclick: exportAll }, icon("download"), "Export all"),
-        h("button", { class: "btn", onclick: () => fileInput.click() }, icon("upload"), "Import"),
-        fileInput,
-        !party.active && h("button", { class: "btn danger", onclick: () => confirmDialog("Erase all characters, custom items and templates?", "Erase everything",
-          () => commit(() => store.reset(), "All data reset", true)) }, icon("trash"), "Reset"))),
-  ]),
+      slideSwitch("Role", [["player", "Player"], ["gm", term("gm")]], ui.role, setRole, { disabled: party.active, even: true, cls: "seg-field" }),
+      h("p", { class: "muted small device-line" }, "In parties this device is called ", h("b", null, deviceName()), ". ",
+        h("button", { class: "link", onclick: renameDevice }, "Rename"))));
+  const animBox = h("section", null,
+    h("div", { class: "switch-row" },
+      h("span", null, h("b", null, "Animations"),
+        h("span", { class: "muted small" }, "How smoothly moving icons (clocks, and ones following a value as it changes) animate on this device. Pack Rat slows them down by itself when this device is busy; Off shows them still.")),
+      slideSwitch("Animations", ANIMATIONS.map(([k, label]) => [k, label]), animationsSetting(), k => {
+        writePref("packrat-animations", k);
+        frameClock.rate = 0; // from the new cap
+        frameClock.start();
+        render();
+      }, { even: true, cls: "seg-field" })));
+  const guide = h("section", { class: "settings-card help-link" },
+    icon("book"),
+    h("div", null, h("b", null, "User guide"),
+      h("p", { class: "muted small" }, "How everything works, with pictures: containers, sets, drawn icons, parties, shops and values.")),
+    h("a", { class: "btn", href: GUIDE_URL, target: "_blank", rel: "noopener" }, "Open the guide"));
+  // Two columns on a wide page: this device's settings, then the party and the guide.
+  return h("div", { class: "view-settings" }, pageColumns([modeBox, roleBox, animBox], [partySettings(), guide]),
     h("section", { class: "credits muted small" },
       h("p", null, "Includes material from the System Reference Document 5.1 by Wizards of the Coast LLC, licensed under ",
         h("a", { href: "https://creativecommons.org/licenses/by/4.0/legalcode", target: "_blank", rel: "noopener" }, "CC BY 4.0"), "."),
@@ -3619,10 +3558,11 @@ function renderSettings() {
     party.isApp() && quitSection());
 }
 
+// The Party card: where this device is connected, or hosting and joining (the apps), or how to host.
 function partySettings() {
+  const card = (...kids) => h("section", { class: "settings-card party-card" }, h("b", null, "Party"), kids);
   if (party.active) {
-    return h("section", null,
-      h("h2", null, "Party"),
+    return card(
       h("p", { class: "muted small" }, party.isHosting() ? "You're hosting a party. Others on this network join by opening:"
         : party.isJoinedElsewhere() ? `You joined the party at ${hostLabel(party.base)}. Others on this network join by opening:`
         : "You're connected to a party server. Others on this network join by opening:"),
@@ -3630,12 +3570,78 @@ function partySettings() {
       party.isHosting() && h("button", { class: "btn danger", onclick: stopHosting }, "Stop hosting"),
       party.isJoinedElsewhere() && h("button", { class: "btn", onclick: confirmLeave }, "Leave party"));
   }
-  if (party.isApp()) return [hostPartySection(), joinOtherSection()];
-  return h("section", null,
-    h("h2", null, "Party play"),
+  if (party.isApp()) return card(h("p", { class: "muted small" }, "Play together on your network: host a party here, or join someone else's."),
+    hostPartySection(), joinOtherSection());
+  return card(
     h("p", { class: "muted small" }, "Want everyone at the table to have their own inventory and trade items? On the computer that will host, run ",
       h("code", null, "start-party.bat"), " (or ", h("code", null, "python server.py"), ") from the app folder. It shows an address like ",
       h("code", null, "http://192.168.1.20:8765"), " — anyone on the same Wi-Fi opens it in their browser to join."));
+}
+
+// The current campaign's characters, on its card in Campaigns.
+function campaignCharactersBlock() {
+  const s = store.state;
+  return h("section", { class: "campaign-block" },
+    h("div", { class: "section-head" }, h("h4", null, termCap("characters")),
+      h("button", { class: "btn", onclick: () => newCharPrompt() }, icon("plus"), "New " + term("character"))),
+    h("div", { class: "group" }, s.characters.map(c => h("div", { class: "row" + (c.id === s.activeId ? " equipped" : "") },
+      h("button", { class: "row-main", onclick: () => { commit(st => { st.activeId = c.id; }); go("inventory"); } },
+        h("div", { class: "row-title" }, c.name, c.id === s.activeId && h("span", { class: "tag on" }, "active")),
+        h("div", { class: "row-sub" }, `${entriesLabel(c)} · ${coinSummary(c.coins)}`)),
+      iconBtn("edit", "Rename", () => renamePrompt(c)),
+      iconBtn("download", "Export character", async () => download(`${c.name.replace(/\W+/g, "_")}.json`,
+        { kind: "character", character: c, templates: store.allTemplates().filter(t => c.items.some(e => e.item.template === t.id)),
+          images: await bundleImages(allImageRefs([c])) })),
+      iconBtn("copy", "Duplicate", () => commit(st => { st.characters.push({ ...clone(c), id: uid(), name: c.name + " (copy)" }); }, `Duplicated ${c.name}`)),
+      (s.characters.length > 1 || party.active) && iconBtn("trash", "Delete", () => confirmDialog(
+        party.isLinked(c.id) ? `Delete ${c.name} from this device? They also leave the party, and their inventory is deleted from the host.` : `Delete ${c.name} and their whole inventory?`, "Delete",
+        () => commit(st => { st.characters = st.characters.filter(x => x.id !== c.id); if (st.activeId === c.id) st.activeId = st.characters[0]?.id; }, `Deleted ${c.name}`, true)), "danger-hover")))));
+}
+
+// The current campaign's rules, on its card in Campaigns (also in its Edit). A character's carry
+// multiplier is in the system's Character panel, beside STR.
+function campaignRulesBlock() {
+  const s = store.state;
+  const setSetting = (k, v) => commit(st => { st.settings[k] = v; });
+  // Rules, values and controls (clockworkOn) for this campaign; in a party, sent to the host.
+  const setClockwork = async on => {
+    commit(() => { store.campaign().clockwork = on; }, on ? "Rules, values and controls are on" : "Rules, values and controls are off for this campaign");
+    if (party.active && party.isGm() && party.campaign?.id === store.campaign().id) {
+      try { await party.loadCampaign(store.campaign()); } catch (e) { toast(e.message); }
+    }
+  };
+  return h("section", { class: "campaign-block" },
+    h("h4", null, "Rules"),
+    // Clockwork (js/clockwork.js), for the whole campaign: the GM's to switch.
+    isGmDevice() && h("label", { class: "switch-row campaign-clockwork" },
+      h("span", null, h("b", null, "Rules, values and controls"),
+        h("span", { class: "muted small" }, `Items' rules, Global and Local values, the ${term("gm")}'s control panels and connections, and shops that follow values. Off, they're put away for everyone in this campaign, for a simpler game. Item states and limits stay.`)),
+      h("input", { type: "checkbox", role: "switch", class: "switch", checked: clockworkOn(), onchange: ev => setClockwork(ev.target.checked) })),
+    h("div", { class: "form" },
+      h("label", { class: "field" }, h("span", null, "Game system"),
+        h("button", { class: "btn", type: "button", onclick: () => editCampaign(store.campaign()) }, icon("book"), activeSystem().name)),
+      usesSetting("encumbrance") && h("label", { class: "field" }, h("span", null, "Encumbrance"),
+        h("select", { onchange: e => setSetting("encumbrance", e.target.value) },
+          [["standard", "Standard (capacity = STR × 15)"], ["variant", "Variant (speed penalties at STR × 5 / × 10)"], ["off", "Off"]]
+            .map(([v, l]) => h("option", { value: v, selected: s.settings.encumbrance === v }, l)))),
+      currency().perWeight > 0 && h("label", { class: "check field" }, h("input", { type: "checkbox", checked: s.settings.coinWeight, onchange: e => setSetting("coinWeight", e.target.checked) }),
+        ` Coins have weight (${currency().perWeight} coins = 1 ${weightUnit()})`)));
+}
+
+// Files' Data card: where everything is saved, and erasing it all (apart from Export and Import).
+function dataCard() {
+  return h("section", { class: "settings-card data-card" },
+    h("b", null, "Data"),
+    h("p", { class: "muted small" }, party.app?.localStore
+      ? ["Saved on this ", party.app.android ? "phone" : "PC", " in ", h("code", null, party.app.localDir), ". Every Pack Rat window here shares it",
+         party.app.appPort ? [" — you can also open Pack Rat in any browser here at ", h("code", null, `http://localhost:${party.app.appPort}`), " while the app is running"] : "", "."]
+      : party.active
+      ? "Party characters are saved on the host computer. Custom items, templates and settings stay in this browser."
+      : "Everything is saved in this browser only. Export everything to move it between your PC and phone, or to keep a backup."),
+    !party.active && [
+      h("p", { class: "muted small" }, "Erasing removes every campaign, character, rule package and drawing on this device. Export everything first: it can't be undone."),
+      h("button", { class: "btn danger", onclick: () => confirmDialog("Erase every campaign, character, rule package and drawing on this device?", "Erase everything",
+        () => commit(() => store.reset(), "All data erased", true)) }, icon("trash"), "Erase everything on this device…")]);
 }
 
 function newCharPrompt() {
@@ -3733,6 +3739,18 @@ async function lookForSavedData() {
   if (!found || !isFreshData()) return;
   ui.foundElsewhere = found;
   render();
+}
+
+// The fresh-start test, on every screen while it's on (see FRESH_TEST in js/store.js).
+function freshTestBanner() {
+  if (!FRESH_TEST) return null;
+  return h("section", { class: "found-banner fresh-test" },
+    icon("undo"),
+    h("div", null,
+      h("b", null, "Fresh-start test"),
+      h("p", { class: "muted small" }, "Pack Rat as it starts on a new device. Nothing you do here is kept, and your own data is untouched.")),
+    h("button", { class: "btn", onclick: () => setFreshTest(true) }, "Start again"),
+    h("button", { class: "btn primary", onclick: () => setFreshTest(false) }, "Leave the test"));
 }
 
 function foundElsewhereBanner() {

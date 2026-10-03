@@ -80,8 +80,9 @@ const DND5E_SYSTEM = {
   },
   weight: { unit: "lb" },
 
-  // The campaign rules settings it uses (Settings → Rules, a campaign's Edit).
-  campaignSettings: ["encumbrance", "carryMultiplier"],
+  // The campaign rules settings it uses (Settings → Campaigns, a campaign's Edit). (A character's
+  // carry multiplier is in the Character panel, beside STR.)
+  campaignSettings: ["encumbrance"],
 
   // Fields every template of this system has (after weight, before the description).
   commonFields: [

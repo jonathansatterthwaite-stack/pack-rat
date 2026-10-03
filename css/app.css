@@ -190,6 +190,7 @@ input:invalid { border-color: var(--bad); }
 .ability { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: .75rem; font-weight: 700; color: var(--muted); }
 .ability input { width: 58px; text-align: center; font-size: 1.1rem; font-weight: 700; padding: 4px; min-height: 36px; }
 .ability small { font-size: .8rem; color: var(--text); }
+.ability select { width: 76px; text-align: center; font-size: 1rem; font-weight: 700; padding: 4px; min-height: 36px; }
 
 /* Character panel: collapsible; closed, its header shows the coins (opens the purse) and weight carried. */
 .char-panel > .stats { padding: 10px; }
@@ -1342,6 +1343,14 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
 .campaign-facts dd { margin: 0; }
 .campaign-actions { margin-top: auto; }
 .campaign-actions .icon-btn { margin-left: auto; }
+/* The campaign being played, opened up across the grid: its facts, characters and rules side by side,
+   stacked when narrow. */
+.campaign-card.open { grid-column: 1 / -1; }
+.campaign-open { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 16px 22px; align-items: start; }
+.campaign-block { display: flex; flex-direction: column; gap: 8px; min-width: 0; margin: 0; }
+.campaign-block h4 { margin: 0; }
+.campaign-block .section-head { margin: 0; }
+.campaign-block .form { gap: 10px; }
 .pkg-choice .row { gap: 10px; }
 .pkg-choice .grow { flex: 1; }
 /* Settings → Files */
@@ -1378,6 +1387,14 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
 .campaign-banner { margin-bottom: 14px; }
 .devices-card { margin-bottom: 18px; }
 .device-line { margin: 8px 0 0; }
+.switch-row > .device-line { flex: 1 1 100%; margin: 0; } /* (Role's card: under its switch) */
+/* A card in Settings that isn't a setting row: the same box (the Party, the guide, Files' Data). */
+.settings-card { padding: 14px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+.settings-card > p { margin: 4px 0 0; }
+.party-card section { margin: 0; }
+.party-card h3 { font-size: 1rem; margin: 16px 0 4px; }
+.data-card { margin-top: 12px; }
+.data-card .btn { margin-top: 10px; }
 
 /* Item states: the GM's switches and a character's limits */
 .gm-state-list { display: flex; flex-wrap: wrap; gap: 8px 16px; }

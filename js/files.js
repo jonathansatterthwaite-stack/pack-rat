@@ -149,14 +149,11 @@ function campaignsView() {
     const current = camp.id === active.id;
     const pkgs = store.packages().filter(p => camp.packages.includes(p.id));
     const players = camp.characters.filter(c => !isBlankCharacter(c));
-    return h("div", { class: "campaign-card" + (current ? " current" : "") },
-      h("div", { class: "campaign-head" },
-        h("h3", null, camp.name), current && h("span", { class: "tag on" }, party.active ? "in this party" : "playing")),
-      camp.notes && h("p", { class: "muted small campaign-notes" }, camp.notes),
+    const facts = [
       campaignCharacterPick(camp, current),
       h("dl", { class: "campaign-facts" },
         h("dt", null, "Game system"), h("dd", null, systemName(camp.system), camp.system && !systemById(camp.system) && h("span", { class: "warn-text small" }, " (you don't have it: import it in Files)")),
-        h("dt", null, termCap("characters")), h("dd", null, players.length ? players.map(c => c.name).join(", ") : "None yet"),
+        !current && [h("dt", null, termCap("characters")), h("dd", null, players.length ? players.map(c => c.name).join(", ") : "None yet")],
         h("dt", null, "Rule packages"), h("dd", null, pkgs.length ? pkgs.map(p => p.name).join(", ") : "None"),
         (camp.shops.length > 0 || camp.gmControls.length > 0) && [h("dt", null, "GM"), h("dd", null,
           [camp.shops.length && plural(camp.shops.length, "shop"), camp.gmControls.length && plural(camp.gmControls.length, "panel")].filter(Boolean).join(", "))],
@@ -169,7 +166,13 @@ function campaignsView() {
         h("button", { class: "btn", onclick: () => editCampaign(camp) }, icon("edit"), "Edit"),
         h("button", { class: "btn", onclick: () => duplicateCampaign(camp) }, icon("copy"), "Copy"),
         h("button", { class: "btn", onclick: () => exportCampaign(camp) }, icon("download"), "Export"),
-        store.campaigns().length > 1 && iconBtn("trash", `Delete ${camp.name}`, () => deleteCampaign(camp), "danger-hover")));
+        store.campaigns().length > 1 && iconBtn("trash", `Delete ${camp.name}`, () => deleteCampaign(camp), "danger-hover"))];
+    return h("div", { class: "campaign-card" + (current ? " current open" : "") },
+      h("div", { class: "campaign-head" },
+        h("h3", null, camp.name), current && h("span", { class: "tag on" }, party.active ? "in this party" : "playing")),
+      camp.notes && h("p", { class: "muted small campaign-notes" }, camp.notes),
+      // The one being played opens up: its characters and rules beside its facts (stacked when narrow).
+      current ? h("div", { class: "campaign-open" }, h("div", { class: "campaign-block" }, facts), campaignCharactersBlock(), campaignRulesBlock()) : facts);
   };
   return h("div", { class: "view-campaigns" },
     h("div", { class: "section-head" }, h("h2", null, "Campaigns"),
@@ -334,7 +337,7 @@ function filesView() {
         fileBtn("download", `Export ${c.name}`, () => exportCampaign(c)),
         fileBtn("copy", `Copy ${c.name}`, () => duplicateCampaign(c)),
         camps.length > 1 && fileBtn("trash", `Delete ${c.name}`, () => deleteCampaign(c), "danger-hover"),
-      ])), h("button", { class: "btn", onclick: () => editCampaign(null) }, icon("plus"), "New")),
+      ]))),
 
     filesSection(termCap("characters"), allCharacters().map(({ char, campaign }) => fileRow(icon("user"), char.name,
       `${campaign.name} · ${entriesLabel(char)} · ${coinSummary(char.coins)}`, sizeOf(char), [
@@ -385,6 +388,7 @@ function filesView() {
       ])), null, "Icons drawn in the icon editor (SVG). Catalog → Drawings edits them."),
 
     filesSection("Pictures", [picturesBox], null, "Pictures in documents, item images, set pieces and GM control backgrounds.", null),
+    dataCard(),
     ]));
 }
 
@@ -406,9 +410,9 @@ async function drawPictures(box) {
       storedImage(p.id, "picture-thumb"), h("figcaption", { class: "muted small" }, fmtBytes(p.bytes), !used.has(p.id) && " · unused")))));
 }
 
-// ------------------------------------------------------------------ the Settings tab: Settings · Campaigns · Files
+// ------------------------------------------------------------------ the Settings tab: This device · Campaigns · Files
 
-const SETTINGS_TABS = [["settings", "Settings"], ["campaigns", "Campaigns"], ["files", "Files"]];
+const SETTINGS_TABS = [["settings", "This device"], ["campaigns", "Campaigns"], ["files", "Files"]];
 
 function renderSettingsTabs() {
   const tab = SETTINGS_TABS.some(([k]) => k === ui.settingsTab) ? ui.settingsTab : "settings";

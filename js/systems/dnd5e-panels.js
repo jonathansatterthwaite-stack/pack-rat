@@ -122,6 +122,17 @@ function dnd5eCharacterPanel() {
       h("small", null, fmtMod(DnD.mod(v))));
   };
 
+  // How much a character can carry for their size (×1 Small or Medium).
+  const CARRY = [[0.5, "×½", "Tiny"], [1, "×1", "Medium"], [2, "×2", "Large"], [4, "×4", "Huge"], [8, "×8", "Gargantuan"]];
+  const carry = state => {
+    const v = state.character.stats.carryMultiplier || 1, size = (CARRY.find(c => c[0] === v) || CARRY[1])[2];
+    return h("label", { class: "ability", title: "Carry multiplier: ×½ Tiny, ×1 Small or Medium, ×2 Large or Powerful Build, ×4 Huge, ×8 Gargantuan" },
+      h("span", null, "CARRY"),
+      h("select", { "aria-label": "Carry multiplier", onchange: e => request("setStat", { key: "carryMultiplier", value: +e.target.value }) },
+        CARRY.map(([m, label, name]) => h("option", { value: m, selected: m === v, title: name }, label))),
+      h("small", null, size));
+  };
+
   PackRat.on("state", state => {
     const ac = DnD.armorClass(state), enc = DnD.encumbrance(state), t = state.totals;
     const att = state.limits.attuned || { count: 0, limit: 3 };
@@ -145,7 +156,7 @@ function dnd5eCharacterPanel() {
         h("div", { class: "stat-sub" }, "Worth " + t.coinsWorth + " · gear " + t.gearWorth)),
       h("div", { class: "stat" },
         h("div", { class: "stat-label" }, icon("user"), "Abilities"),
-        h("div", { class: "abilities" }, ability(state, "STR", "str"), ability(state, "DEX", "dex")),
+        h("div", { class: "abilities" }, ability(state, "STR", "str"), ability(state, "DEX", "dex"), !enc.off && carry(state)),
         h("div", { class: "stat-sub" + (att.limit != null && att.count > att.limit ? " warn-text" : "") }, "Attuned " + att.count + " / " + att.limit))));
     PackRat.summary([{ coins: true, closed: true },
       !enc.off && { icon: "weight", text: load, title: enc.label, warn: enc.status !== "ok", closed: true }]);

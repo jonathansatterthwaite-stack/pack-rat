@@ -26,7 +26,7 @@ const valueKey = name => "gm_" + name;
 const keyName = key => key.replace(/^gm_/, "");
 
 // ------------------------------------------------------------------ on or off
-// Clockwork can be switched off for a campaign (Settings → Rules, by the GM; users see it as
+// Clockwork can be switched off for a campaign (on its card in Settings → Campaigns, by the GM; users see it as
 // "Rules, values and controls"): the GM's Controls tab, the cogs, items' Rules, Global and Local
 // values in drawings and shops following values are put away, and items' rules don't run (they
 // keep up with what happens, so switching it back on fires nothing from meanwhile). Item states,

@@ -443,7 +443,7 @@ function stopHosting() {
 function hostPartySection() {
   let port = party.app.defaultPort || 8765;
   return h("section", null,
-    h("h2", null, "Host a party"),
+    h("h3", null, "Host a party"),
     h("p", { class: "muted small" }, "Let everyone at the table use Pack Rat on their own phone or laptop, with their own inventory, and trade items with each other. Players on the same Wi-Fi join by opening the address shown once the party starts. Nothing to install for them."),
     h("div", { class: "inline wrap" },
       h("label", { class: "field port-field" }, h("span", null, "Port"),
@@ -505,7 +505,7 @@ function joinOtherSection() {
     }
   };
   return h("section", null,
-    h("h2", null, "Join someone else's party"),
+    h("h3", null, "Join someone else's party"),
     h("p", { class: "muted small" }, "Type the address shown on the host's Party tab (or under the QR code). Your characters stay saved here; you choose which to play."),
     party.unreachable && h("p", { class: "warn-text small" }, `Couldn't reach the party you joined at ${hostLabel(party.unreachable)}. `,
       h("button", { class: "link", onclick: () => { addr = hostLabel(party.unreachable); join(); } }, "Try again"), " · ",

@@ -13,6 +13,7 @@ const KEEP_ORIGINAL_BYTES = 400 * 1024;
 
 const imageStore = {
   dbPromise: null,
+  memory: FRESH_TEST ? new Map() : null, // the fresh-start test's pictures (see FRESH_TEST)
 
   db() {
     if (!this.dbPromise) {
@@ -27,6 +28,7 @@ const imageStore = {
   },
 
   async put(id, data) {
+    if (this.memory) { this.memory.set(id, data); return; }
     if (kv.remote) {
       const res = await fetch("api/local/images", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, data }) });
       if (!res.ok) throw new Error("Couldn't save the image");
@@ -42,6 +44,7 @@ const imageStore = {
   },
 
   async get(id) {
+    if (this.memory) return this.memory.get(id) || null;
     if (kv.remote) {
       try {
         const res = await fetch("api/local/images/" + id);
@@ -64,6 +67,7 @@ const imageStore = {
 
   // Every picture saved on this device: [{ id, bytes }].
   async list() {
+    if (this.memory) return [...this.memory].map(([id, data]) => ({ id, bytes: Math.round(data.length * 0.75) }));
     if (kv.remote) {
       try {
         const res = await fetch("api/local/images", { cache: "no-store" });
@@ -77,6 +81,7 @@ const imageStore = {
 
   async remove(id) {
     imageSrcCache.delete(id);
+    if (this.memory) { this.memory.delete(id); return; }
     if (kv.remote) {
       await fetch("api/local/images/" + id, { method: "DELETE" });
       return;
