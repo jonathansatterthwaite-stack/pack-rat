@@ -756,7 +756,10 @@ img.details-watermark { aspect-ratio: auto; border-radius: 12px; }
 .modal.has-backdrop .modal-body > * { transition: opacity .2s ease; }
 .modal.icon-focus .modal-body { overflow: hidden; }
 .modal.icon-focus .modal-body > * { opacity: 0; visibility: hidden; }
-.modal.icon-focus .details-watermark { opacity: 1; transform: scale(1.04); }
+/* Just the icon: between the head and the foot, at the top, as big as fits (its width or its height). */
+.modal.icon-focus .modal-backdrop { inset: var(--head-h, 56px) 0 var(--foot-h, 0px); place-items: start center; padding: 16px; container-type: size; }
+.modal.icon-focus .details-watermark { opacity: 1; width: min(100cqw, 100cqh); max-height: none; }
+.modal.icon-focus img.details-watermark { width: auto; height: auto; max-width: 100cqw; max-height: 100cqh; }
 .icon-focus-switch { display: flex; align-items: center; gap: 6px; color: var(--muted); cursor: pointer; }
 .icon-focus-switch .icon { width: 18px; height: 18px; }
 @media (prefers-reduced-motion: reduce) {

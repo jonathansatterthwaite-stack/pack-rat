@@ -1453,10 +1453,25 @@ function toggleEquip(entryUid) {
 // switch in its header to see just the icon: the details fade out and the icon comes up full.
 // The icon is the real one, live drawings included, so it keeps updating either way.
 const iconBackdrop = (item, vars) => itemIcon(item, "details-watermark", vars);
+// Just the icon (or picture): it fills the space between the dialog's head and foot (measured, as
+// a long name can take two lines), at the top, as big as fits either way (see .icon-focus).
 function iconFocusSwitch() {
   return h("label", { class: "icon-focus-switch", title: "Show just the icon" }, icon("image"),
     h("input", { type: "checkbox", role: "switch", class: "switch", "aria-label": "Show just the icon",
-      onchange: e => e.target.closest(".modal").classList.toggle("icon-focus", e.target.checked) }));
+      onchange: e => {
+        const modal = e.target.closest(".modal"), head = modal.querySelector(".modal-head"), foot = modal.querySelector(".modal-foot");
+        const measure = () => {
+          modal.style.setProperty("--head-h", (head?.offsetHeight || 56) + "px");
+          modal.style.setProperty("--foot-h", (foot?.offsetHeight || 0) + "px");
+        };
+        measure();
+        // (and again if they change size: the window resized, a phone turned)
+        if (!modal.fitWatch && window.ResizeObserver) {
+          modal.fitWatch = new ResizeObserver(measure);
+          for (const el of [head, foot]) if (el) modal.fitWatch.observe(el);
+        }
+        modal.classList.toggle("icon-focus", e.target.checked);
+      } }));
 }
 
 // ------------------------------------------------------------------ layers in details and editing
@@ -1786,7 +1801,13 @@ function openEntry(entryUid) {
       icon(kind === "picture" ? "image" : "edit"), kind === "picture" ? (read ? "Change picture" : "Add a picture") : read ? "Write" : "Write in it"));
   // Older inventory copies of catalog containers get their capacity from the catalog.
   const shown = { ...it, holds: containerField(e, "holds"), liquidPints: containerField(e, "liquidPints") };
-  const reopen = () => { close(); openEntry(entryUid); };
+  // Redrawn (its states changed, a card drawn): showing just the icon stays so.
+  let panel = null;
+  const reopen = () => {
+    const iconOnly = panel?.classList.contains("icon-focus");
+    close(); openEntry(entryUid);
+    if (iconOnly) entryDetailsOpen?.panel.querySelector(".icon-focus-switch input")?.click();
+  };
   // Live drawings read this copy's values as they are now (it may have changed, or been
   // replaced by a party update, since the dialog opened).
   const vars = () => {
@@ -1798,7 +1819,8 @@ function openEntry(entryUid) {
     cardBackButton(e, () => close()), controls, planner?.el, itemDetails(shown, changeIcon, e.srcId, vars, true), layerSections(base, key => stateOn(char, e, key))],
   { footer, wide: !!planner, head: [clockworkCog(char, e, () => close()), iconFocusSwitch()], backdrop: iconBackdrop(it, vars) });
   // Its states can change while it's open (a trigger, the GM): render() redraws it if they do.
-  entryDetailsOpen = { uid: entryUid, states: JSON.stringify(entryStates(char, e)), panel: [...document.querySelectorAll("#modal-root .modal")].pop(), reopen };
+  panel = [...document.querySelectorAll("#modal-root .modal")].pop();
+  entryDetailsOpen = { uid: entryUid, states: JSON.stringify(entryStates(char, e)), panel, reopen };
 }
 
 const LIQUIDS = ["Water", "Wine", "Ale", "Beer", "Mead", "Cider", "Milk", "Juice", "Tea", "Brandy", "Rum", "Whiskey",
@@ -2555,9 +2577,9 @@ async function openIconDrawer(opts, onSave) {
         colorMode: "monochrome", monoColor: opts.color || "#888",
         export: false, canvasSize: false, background: false,
       },
-      // The values Pack Rat fills in for an item: formulas can use them, and the Variables tab lists
-      // them (with this copy's real values when editing one in an inventory).
-      variableGroups: [iconVariableGroup(opts.vars, opts.doc)],
+      // The values Pack Rat fills in for an item, and how to use Global and Local values: formulas can
+      // use them, and the Variables tab lists them (with this copy's real values in an inventory).
+      variableGroups: [iconVariableGroup(opts.vars)],
       // "+ Global value" and "+ Local value" beside "+ Add variable": a global_ or local_ variable
       // with a slider (its default and range). See js/clockwork.js.
       variablePresets: [
@@ -2592,27 +2614,17 @@ function drawingSvg(doc, variables, time = undefined) {
     variables: { ...iconVariableDefaults(n), ...(variables || {}) }, ...(time !== undefined ? { time } : {}) });
 }
 
-// The editor's app values win over a drawing's own variables of the same name. Keep them in step:
-// a value the drawing declares follows its slider unless this inventory copy has a real value for it,
-// and global_ / local_ names added while drawing join the list. Held while a pointer is down, so redrawing the
-// Variables panel doesn't interrupt dragging a slider. Returns a function that stops it.
+// The Global and Local values a drawing uses reach the editor's preview as app values (which win
+// over the drawing's own variables of the same name), not as a list: keep them in step as it
+// changes. Held while a pointer is down, so redrawing the Variables panel doesn't interrupt
+// dragging a slider. Returns a function that stops it.
 function syncIconVariables(editor, host, vars) {
-  const actual = readVars(vars);
   const known = knownValues(); // elsewhere in Pack Rat: doesn't change while drawing
-  let listed = "", held = false, pending = false;
+  let held = false, pending = false;
   const sync = () => {
     pending = false;
-    const doc = editor.getDocument();
-    const group = iconVariableGroup(vars, doc, known);
-    const names = group.variables.map(v => v.name).join();
-    if (names !== listed) { listed = names; editor.registerVariables(group); }
-    const follow = {};
-    for (const v of doc.variables || []) {
-      // A formula variable computes its own value (an override would freeze it).
-      if (v.expression?.trim()) continue;
-      if (group.variables.some(g => g.name === v.name) && !(v.name in actual)) follow[v.name] = v.value;
-    }
-    if (Object.keys(follow).length) editor.setVariables(follow);
+    const values = iconValueOverrides(vars, editor.getDocument(), known);
+    if (Object.keys(values).length) editor.setVariables(values);
   };
   host.addEventListener("pointerdown", () => { held = true; }, true);
   const release = () => { if (held) { held = false; if (pending) sync(); } };
@@ -2653,35 +2665,34 @@ function bindingFormulas(doc) {
 }
 const drawingFormulas = doc => [...(doc?.variables || []).map(v => v.expression || "").filter(Boolean), ...bindingFormulas(doc)];
 
-// Pack Rat's values as a variable group for the editor's Variables tab: the item values, then the
-// Global and Local values (this drawing's, and every other one Pack Rat knows of, so names stay
-// consistent). actual: the real values for the inventory copy being edited, if any. A value the
-// drawing declares itself shows its slider value (see openIconDrawer, which keeps the two in step).
-function iconVariableGroup(vars, doc, known = knownValues()) {
+// Pack Rat's values as a variable group for the editor's Variables tab: the item values (this
+// inventory copy's real ones, if it's one), then how to make Global and Local values. The ones
+// made aren't listed: a drawing's own show as its variables, and the GM tab → Values has them all.
+function iconVariableGroup(vars) {
   const actual = readVars(vars);
-  const declared = new Map((doc?.variables || []).map(v => [v.name, v.value]));
-  const value = (name, fallback) => name in actual ? actual[name] : declared.has(name) ? declared.get(name) : fallback;
-  const here = drawingValueRefs(doc, true), refs = new Map(here);
-  for (const v of known.values()) {
-    const varName = `${v.scope}_${v.name}`;
-    if (!refs.has(varName)) refs.set(varName, { varName, name: v.name, scope: v.scope, spec: v });
-  }
-  const label = r => (r.scope === "global" ? "Global value: one for the whole campaign, the same on every item"
-    : r.scope === "local" ? "Local value: this item's own, else its character's"
-    : "An older GM value: this item's Local, else its character's, else the Global") +
-    ` (GM tab → Values)${r.varName in actual ? `; this item: ${actual[r.varName]}` : ""}.` +
-    (here.has(r.varName) ? " This drawing uses it." : " Used elsewhere in Pack Rat.");
   return { id: "packrat", title: "Pack Rat item", variables: [
-    ...ICON_VARIABLES.map(v => ({ name: v.name, label: v.label, value: value(v.name, v.value) })),
+    ...ICON_VARIABLES.map(v => ({ name: v.name, label: v.label, value: v.name in actual ? actual[v.name] : v.value })),
     // How to make one, listed with the item values (the names "global_" and "local_" on their own aren't values).
     { name: "global_", value: 0, label: "Global values: variables named global_ followed by a word, e.g. global_storm. One for the whole campaign: every item sees the same. " +
       "Add one with + Global value (its slider sets the default and range; rename it, keeping the global_), or just use a global_ name in a formula (it starts at 0). The GM sets it in the GM tab → Values." },
     { name: "local_", value: 0, label: "Local values: variables named local_ followed by a word, e.g. local_heat. Each item's own, else its character's. " +
       "Add one with + Local value, or use a local_ name in a formula. The GM sets it in the GM tab → Values, for a character or one item. " +
-      "Older drawings' gm_ names still work: the item's, else its character's, else the Global. The values Pack Rat knows of are listed below." },
-    ...[...refs.values()].sort((a, b) => a.varName.localeCompare(b.varName))
-      .map(r => ({ name: r.varName, label: label(r), value: value(r.varName, r.spec?.value ?? 0) })),
+      "Older drawings' gm_ names still work: the item's, else its character's, else the Global. The GM tab → Values lists every value in use." },
   ] };
+}
+
+// The values a drawing uses (global_, local_ and older gm_ names), for the editor's preview: this
+// inventory copy's real value if it's one, else the drawing's own slider (a variable it declares),
+// else the value set elsewhere in Pack Rat, else 0. (Formula variables compute their own.)
+function iconValueOverrides(vars, doc, known = knownValues()) {
+  const actual = readVars(vars), out = {};
+  const declared = new Set((doc?.variables || []).map(v => v.name));
+  for (const r of drawingValueRefs(doc, true).values()) {
+    if (r.varName in actual) out[r.varName] = actual[r.varName];
+    else if (declared.has(r.varName)) out[r.varName] = r.spec.value ?? 0;
+    else out[r.varName] = [...known.values()].find(v => `${v.scope}_${v.name}` === r.varName)?.value ?? r.spec.value ?? 0;
+  }
+  return out;
 }
 
 // Stored drawings may be from an older editor version: normalise each once.
