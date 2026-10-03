@@ -1,7 +1,7 @@
 // The item menu: press and hold an item's tile or row and a ring of what can be done with it opens
-// around it. Slide to an option and let go to choose it; let go in the middle for its details (as a
-// tap); let go outside for nothing. + and − (when it counts up and down) are always straight above
-// and below; the rest share the sides (only the side away from the edge, at an edge of the screen).
+// around it (Details among them). Slide to an option and let go to choose it; let go in the middle,
+// or outside, to cancel. A tap is still its details. + and − (when it counts up and down) are always
+// straight above and below; the rest share the sides (only the side away from the edge, at an edge).
 // With a mouse or the keyboard, the context menu (right-click, the menu key) opens it to click.
 //
 // A list (a storage: see storageTree) gives the options: menu(e) for its own, else the buttons its
@@ -14,7 +14,7 @@ let radialOpen = null;         // the menu showing: { root, close, ... }
 
 // An item's options: [{ icon, label, run, danger }], and whether it counts (− / +).
 function entryMenu(st, e) {
-  const side = st.menu ? st.menu(e) : menuFromButtons(st.extras?.(e));
+  const side = [{ icon: "eye", label: "Details", run: () => st.open(e) }, ...(st.menu ? st.menu(e) : menuFromButtons(st.extras?.(e)))];
   // − and +: for what stacks (or is more than one), where it can be counted now.
   const counts = !!st.setQty && (st.canCount?.(e) ?? true) && (e.qty > 1 || stacks(currentItem(e, st.char), e.srcId));
   return {
@@ -34,7 +34,6 @@ function menuFromButtons(...els) {
 // el: what's pressed; target: what the ring goes round (the tile, or the row at the press).
 function attachItemMenu(el, st, e) {
   const options = () => entryMenu(st, e);
-  const details = () => st.open(e);
   el.addEventListener("pointerdown", ev => {
     if (ev.pointerType === "mouse" || !ev.isPrimary || radialOpen) return;
     // Not from the row's own controls (− / +, the number, buttons): those work as they are.
@@ -42,7 +41,7 @@ function attachItemMenu(el, st, e) {
     const id = ev.pointerId, x0 = ev.clientX, y0 = ev.clientY;
     let timer = setTimeout(() => {
       timer = null;
-      openRadial(el, options(), details, { x: x0, y: y0, row: !el.classList.contains("tile"), drag: true });
+      openRadial(el, options(), { x: x0, y: y0, row: !el.classList.contains("tile"), drag: true });
     }, RADIAL_PRESS_MS);
     const move = m => {
       if (m.pointerId !== id) return;
@@ -65,7 +64,7 @@ function attachItemMenu(el, st, e) {
     ev.preventDefault();
     if (radialOpen) return; // (a touch press already opened it; phones also send this)
     const keyboard = !ev.clientX && !ev.clientY;
-    openRadial(el, options(), details, { x: keyboard ? null : ev.clientX, y: keyboard ? null : ev.clientY, row: !el.classList.contains("tile"), drag: false });
+    openRadial(el, options(), { x: keyboard ? null : ev.clientX, y: keyboard ? null : ev.clientY, row: !el.classList.contains("tile"), drag: false });
   });
   // Dragging (to move it between containers) doesn't start from a press that opened the menu.
   el.addEventListener("dragstart", ev => { if (radialOpen) ev.preventDefault(); });
@@ -82,59 +81,86 @@ function swallowClick(el) {
 // While the menu follows a finger, the page doesn't scroll.
 addEventListener("touchmove", ev => { if (radialOpen?.drag) ev.preventDefault(); }, { passive: false });
 
-// Where each option goes: + above and − below; the rest spaced around the open arcs (the sides
-// between them, or the whole circle), keeping to what's on screen.
+// Where each option goes: + above and − below; the rest spaced evenly round the free arcs (the sides
+// between − and +, or the whole circle), keeping to the screen. Neighbours are always at least GAP
+// apart: each arc takes only as many as fit (shared out by how many each holds), and the ring grows
+// when they don't. Near the edge of the screen an arc stops short of it by half a gap, so the two
+// options either side of the part that's off screen are a gap apart too.
 function radialLayout(cx, cy, n, counts) {
-  const W = innerWidth, H = innerHeight, deg = Math.PI / 180, edge = 30;
-  let r = Math.max(84, 58 * (n + (counts ? 2 : 0)) / (2 * Math.PI));
-  const fits = (a, rr) => { const x = cx + Math.cos(a) * rr, y = cy + Math.sin(a) * rr; return x > edge && x < W - edge && y > edge && y < H - edge; };
-  // The longest unbroken stretch of an arc that's on screen (a whole circle may wrap past its start).
-  const trim = ([a0, a1]) => {
-    const steps = Math.round((a1 - a0) / (2 * deg)), ok = i => fits(a0 + (i % (steps + 1)) * 2 * deg, r + 20), circle = a1 - a0 > 350 * deg;
-    if ([...Array(steps + 1).keys()].every(ok)) return [a0, a1];
-    let s0 = 0;
-    if (circle) while (s0 <= steps && ok(s0)) s0++;
-    let best = null, run = null;
-    for (let j = 0; j <= steps; j++) {
-      const i = s0 + j;
-      if (ok(i)) { run = run ? [run[0], i] : [i, i]; if (!best || run[1] - run[0] > best[1] - best[0]) best = run; } else run = null;
+  const W = innerWidth, H = innerHeight, deg = Math.PI / 180, edge = 28, GAP = 60, TAU = 2 * Math.PI;
+  const onScreen = (a, r) => { const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r; return x > edge && x < W - edge && y > edge && y < H - edge; };
+  const apart = (a, b) => { const d = Math.abs(a - b) % TAU; return Math.min(d, TAU - d); };
+  const at = i => (i - 90) * deg; // whole degrees, from the top
+  let r = Math.max(84, GAP * (n + (counts ? 2 : 0)) / TAU), result;
+  const cy0 = cy;
+  for (;;) {
+    // With − and +, the ring moves up or down (off the item's middle) as far as it must to keep them on screen.
+    if (counts) cy = Math.min(Math.max(cy0, edge + 26 + r), Math.max(edge + 26 + r, H - edge - 26 - r));
+    const g = 2 * Math.asin(Math.min(1, GAP / (2 * r))), half = Math.ceil(g / 2 / deg);
+    const seen = [...Array(360)].map((_, i) => onScreen(at(i), r));
+    const free = seen.map((_, i) => {
+      for (let j = -half; j <= half; j++) if (!seen[(i + j + 360) % 360]) return false;
+      return !counts || (apart(at(i), -90 * deg) >= g - 1e-6 && apart(at(i), 90 * deg) >= g - 1e-6);
+    });
+    // The free arcs: [first, last] in degrees (one may wrap past the top), or the whole circle.
+    let arcs;
+    if (free.every(Boolean)) arcs = [{ whole: true }];
+    else {
+      arcs = [];
+      const s0 = free.indexOf(false);
+      let run = null;
+      for (let j = 1; j <= 360; j++) {
+        const i = s0 + j;
+        if (free[i % 360]) run = run ? [run[0], i] : [i, i];
+        else if (run) { arcs.push({ a0: at(run[0]), a1: at(run[1]) }); run = null; }
+      }
     }
-    return best && [a0 + best[0] * 2 * deg, a0 + best[1] * 2 * deg];
-  };
-  const arcs = (counts ? [[-90 * deg, 90 * deg], [90 * deg, 270 * deg]] : [[-90 * deg, 270 * deg]])
-    .map(trim).filter(a => a && a[1] - a[0] >= 60 * deg);
-  const total = arcs.reduce((s, [a0, a1]) => s + a1 - a0, 0) || 1;
-  const angles = [];
-  let left = n;
-  arcs.forEach(([a0, a1], i) => {
-    const k = i === arcs.length - 1 ? left : Math.min(left, Math.round(n * (a1 - a0) / total));
-    left -= k;
-    const whole = a1 - a0 > 350 * deg, ends = !counts && !whole; // an edge arc's ends are free when there's no − / +
-    const parts = whole ? k : ends ? Math.max(1, k - 1) : k + 1;
-    for (let j = 0; j < k; j++) angles.push(a0 + (a1 - a0) * (whole || ends ? j : j + 1) / parts);
-    if (k) r = Math.min(130, Math.max(r, 58 / ((a1 - a0) / parts)));
-  });
-  while (angles.length < n) angles.push(angles.length * 2 * Math.PI / n); // (nowhere fits: round anyway)
-  const at = a => [cx + Math.cos(a) * r, cy + Math.sin(a) * r];
-  return { r, side: angles.map(at), plus: [cx, cy - r], minus: [cx, cy + r] };
+    for (const arc of arcs) arc.cap = arc.whole ? Math.floor(TAU / g + 1e-9) : Math.floor((arc.a1 - arc.a0) / g + 1e-9) + 1;
+    const cap = arcs.reduce((s, x) => s + x.cap, 0);
+    if (cap >= n || r >= 170) {
+      // Shared out by how many each holds (the largest remainders first), never over (unless nowhere fits).
+      const k = arcs.map(x => Math.floor(n * x.cap / Math.max(1, cap)));
+      let left = n - k.reduce((s, x) => s + x, 0);
+      const frac = i => (n * arcs[i].cap / Math.max(1, cap)) % 1;
+      const order = arcs.map((x, i) => i).sort((i, j) => frac(j) - frac(i));
+      for (let pass = 0; pass < 2 && left > 0; pass++)
+        for (const i of order) if (left > 0 && (k[i] < arcs[i].cap || (pass && cap < n))) { k[i]++; left--; }
+      const angles = [];
+      arcs.forEach((arc, i) => {
+        for (let j = 0; j < k[i]; j++) angles.push(arc.whole ? -90 * deg + TAU * j / k[i]
+          : k[i] === 1 ? (arc.a0 + arc.a1) / 2 : arc.a0 + (arc.a1 - arc.a0) * j / (k[i] - 1));
+      });
+      while (angles.length < n) angles.push(-90 * deg + TAU * angles.length / n); // (nothing free at all)
+      // Round the ring from the top, so the options keep their order clockwise.
+      const fromTop = a => ((a + 90 * deg) % TAU + TAU) % TAU;
+      angles.sort((x, y) => fromTop(x) - fromTop(y));
+      result = { r, cx, cy, side: angles.map(a => [cx + Math.cos(a) * r, cy + Math.sin(a) * r]), plus: [cx, cy - r], minus: [cx, cy + r] };
+      break;
+    }
+    r += 8;
+  }
+  return result;
 }
 
 // Open the menu round el. o: { x, y } (where it was pressed; else el's middle), row (centred on the
 // press, along the row), drag (following a finger; else to click).
-function openRadial(el, menu, details, o = {}) {
+function openRadial(el, menu, o = {}) {
   radialOpen?.close();
   const box = el.getBoundingClientRect();
   const cx = o.row && o.x != null ? Math.min(Math.max(o.x, box.left + 40), box.right - 40) : box.left + box.width / 2;
-  const cy = box.top + box.height / 2;
+  let cy = box.top + box.height / 2;
   const opts = [...menu.side];
   const lay = radialLayout(cx, cy, opts.length, !!menu.plus);
+  const px = cx, py = cy; // where it was pressed (letting go there, too, does nothing)
+  cy = lay.cy;
   const all = opts.map((op, i) => ({ ...op, pos: lay.side[i] }));
   if (menu.plus) all.push({ ...menu.plus, pos: lay.plus }, { ...menu.minus, pos: lay.minus });
 
   const root = h("div", { class: "radial" + (o.drag ? " following" : ""), role: "menu", "aria-label": `${el.getAttribute("aria-label") || "Item"}: what to do` });
   const lift = h("div", { class: "radial-lift" });
   Object.assign(lift.style, { left: box.left + "px", top: box.top + "px", width: box.width + "px", height: box.height + "px" });
-  const label = h("button", { type: "button", class: "radial-label", role: "menuitem", onclick: () => choose("details") }, "Details");
+  // The middle: letting go there does nothing; it names the option under the finger.
+  const label = h("button", { type: "button", class: "radial-label", "aria-label": "Close the menu", onclick: () => close() }, "Close");
   label.style.left = cx + "px"; label.style.top = cy + "px";
   const trail = h("div", { class: "radial-trail" });
   const btns = all.map(op => {
@@ -155,32 +181,29 @@ function openRadial(el, menu, details, o = {}) {
   function hot(op) {
     current = op;
     for (const x of all) x.el.classList.toggle("hot", x === op);
-    label.textContent = op === "details" ? (o.drag ? "Let go here: details" : "Details") : op ? op.label : o.drag ? "Let go outside: nothing" : "Details";
-    label.classList.toggle("hot", op === "details");
-    if (op && op !== "details") {
+    label.textContent = op ? op.label : o.drag ? "Let go here: cancel" : "Close";
+    if (op) {
       const [x, y] = op.pos, len = Math.hypot(x - cx, y - cy) - 30;
       Object.assign(trail.style, { left: cx + "px", top: cy + "px", width: Math.max(0, len) + "px", transform: `rotate(${Math.atan2(y - cy, x - cx)}rad)`, display: "block" });
     } else trail.style.display = "none";
   }
-  hot(o.drag ? "details" : null);
+  hot(null);
   // Following a finger: the option nearest it (within reach), the middle, or nothing (outside).
   function track(x, y) {
     const d = Math.hypot(x - cx, y - cy);
-    if (d < 30) return hot("details");
-    if (d > lay.r + 60) return hot(null);
+    if (d < 34 || Math.hypot(x - px, y - py) < 34 || d > lay.r + 60) return hot(null); // the middle (or the press), or outside: nothing
     let best = null, bd = Infinity;
     for (const op of all) { const dd = Math.hypot(x - op.pos[0], y - op.pos[1]); if (dd < bd) { bd = dd; best = op; } }
-    hot(bd < 52 || d > lay.r * 0.55 ? best : "details");
+    hot(bd < 52 || d > lay.r * 0.55 ? best : null);
   }
   function release(x, y) { track(x, y); choose(current); }
   function choose(op) {
     close();
-    if (op === "details") details();
-    else op?.run?.();
+    op?.run?.();
   }
   const onKey = ev => {
     if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); close(); el.focus?.(); return; }
-    // Arrows go round the ring (the middle, Details, is Tab-reachable too).
+    // Arrows go round the ring (and the middle, Close).
     if (["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp"].includes(ev.key)) {
       ev.preventDefault();
       const list = [label, ...btns], i = list.indexOf(document.activeElement);
