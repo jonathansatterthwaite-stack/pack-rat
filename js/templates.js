@@ -56,7 +56,9 @@ const CORE_FEATURES = [
     { key: "body", label: "Picture", kind: "picture" },
   ] },
   { key: "equippable", label: "Equippable", hint: "Can be equipped, or worn.", fields: [] },
-  { key: "stacks", label: "Stacks", hint: "Identical copies share one row with a count (5 rations), rather than a row each.", fields: [] },
+  { key: "stacks", label: "Stacks", hint: "Identical copies share one row with a count (5 rations), rather than a row each.", fields: [
+    { key: "countInPlay", label: "Counts up and down in Play mode (ammunition, rations, potions…)", kind: "checkbox" },
+  ] },
   { key: "charges", label: "Charges", hint: "Has charges that get used up and recharge.", fields: [
     { key: "maxCharges", label: "Max charges", kind: "number" },
     { key: "recharge", label: "Recharge", kind: "text", placeholder: "1d6+1 at dawn" },

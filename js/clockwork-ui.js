@@ -91,30 +91,27 @@ function valuesView() {
   const title = v => [h("code", null, v.name), v.label && h("span", { class: "muted" }, " " + v.label),
     v.legacy && h("span", { class: "tag", title: "An older drawing's gm_ name: items use their own, their character's, else the Global" }, "gm_")];
 
+  // A card grid (docs/ui-patterns.md): the Global values together, then a card per Local value.
   const globals = vals.filter(v => v.scope === "global");
-  const globalSection = h("section", { class: "gm-values" },
-    h("h3", null, "Global values"),
-    h("p", { class: "muted small" }, "One value for the whole campaign: every item sees the same, like the weather or a doom clock. Drawn icons read them as ",
-      h("code", null, "global_name"), "."),
-    globals.length ? h("div", { class: "group" }, globals.map(v => h("div", { class: "row gm-level" },
+  const globalCard = h("div", { class: "group gm-var gm-globals" },
+    h("div", { class: "group-head" }, h("h3", null, "Global values"), h("span", { class: "muted small" }, "One for the whole campaign")),
+    globals.length ? globals.map(v => h("div", { class: "row gm-level" },
       h("div", { class: "row-main static" }, h("div", { class: "row-title" }, title(v)),
         h("div", { class: "row-sub" }, usedBy(users.get(`global:${v.name}`)))),
-      valueControl(v, globalValue(v.name), v.value, set("party", "", v.name)), moveControl(v, "party", "", v.name))))
+      valueControl(v, globalValue(v.name), v.value, set("party", "", v.name)), moveControl(v, "party", "", v.name)))
       : h("p", { class: "muted pad" }, "No Global values yet. In the icon editor's Variables tab, add one with + Global value (a name starting ",
         h("code", null, "global_"), ") and bind layers to it, or set one with a board's pin for Everyone."));
 
   const locals = vals.filter(v => v.scope === "local");
-  const localSection = h("section", { class: "gm-values" },
-    h("h3", null, "Local values"),
-    h("p", { class: "muted small" }, "Each character's own, and each item's own: an item uses its own, else its character's. Drawn icons read them as ",
-      h("code", null, "local_name"), "."),
-    !locals.length ? h("p", { class: "muted pad" }, "No Local values yet. In the icon editor's Variables tab, add one with + Local value (a name starting ",
-      h("code", null, "local_"), ")."
-    ) : locals.map(v => {
+  const localCards = !locals.length ? [h("div", { class: "group gm-var" },
+      h("div", { class: "group-head" }, h("h3", null, "Local values")),
+      h("p", { class: "muted pad" }, "No Local values yet. In the icon editor's Variables tab, add one with + Local value (a name starting ",
+        h("code", null, "local_"), ")."))]
+    : locals.map(v => {
       const [closed, toggle] = foldToggle(`val:local:${v.name}`);
       const using = users.get(`local:${v.name}`) || [];
       return h("div", { class: "group gm-var" },
-        h("div", { class: "group-head" }, toggle, h("h3", null, title(v)), h("span", { class: "muted small" }, usedBy(using))),
+        h("div", { class: "group-head" }, toggle, h("h3", null, title(v), " ", h("span", { class: "tag" }, "Local")), h("span", { class: "muted small" }, usedBy(using))),
         !closed && chars.map(c => {
           const mine = charLocal(c.id, v.name);
           const items = c.items.filter(e => using.some(u => u.e === e) || itemLocal(c.id, e.uid, v.name) !== undefined);
@@ -132,11 +129,14 @@ function valuesView() {
                 valueControl(v, own, mine ?? v.value, set("item", `${c.id}/${e.uid}`, v.name)), moveControl(v, "item", `${c.id}/${e.uid}`, v.name));
             }));
         }));
-    }));
+    });
 
   return [
     !party.active && h("p", { class: "muted small pad" }, `Starting values for ${store.campaign().name}, ready for the next session: they go to the party when you load this campaign into it. Your own icons show them meanwhile.`),
-    globalSection, localSection,
+    h("p", { class: "muted small gm-values-intro" }, h("b", null, "Global values"), " are one for the whole campaign: every item sees the same, like the weather or a doom clock (drawn icons read them as ",
+      h("code", null, "global_name"), "). ", h("b", null, "Local values"), " are each character's own, and each item's own: an item uses its own, else its character's (",
+      h("code", null, "local_name"), ")."),
+    cardGrid([globalCard, ...localCards], { cls: "gm-values" }),
     h("p", { class: "muted small pad" }, "Panels and boards for setting these in play are on the Panels tab."),
   ];
 }
@@ -198,20 +198,20 @@ function clockworkView() {
       h("p", { class: "muted small" }, "What makes items react: their rules and layers, the values their icons read, and what changes them. Items with a cog beside their name (only you see it) are here."),
       groups.length ? groups.map(([c, list]) => h("div", { class: "cw-char" },
         h("h3", { class: "cw-char-name" }, c.name, c.mine && h("span", { class: "tag" }, "yours")),
-        list.map(e => clockworkItemCard(c, e))))
-        : h("div", { class: "empty" }, h("p", null, "Nothing is connected yet. Items with rules, layers, or a drawn icon that reads values show up here."))),
+        cardGrid(list.map(e => clockworkItemCard(c, e)))))
+        : emptyState("link", "Nothing is connected yet. Items with rules, layers, or a drawn icon that reads values show up here.")),
     globals.length > 0 && h("section", { class: "cw" },
       h("h3", null, "What each Global value reaches"),
       h("p", { class: "muted small" }, "Moving one changes all of these."),
-      h("div", { class: "group" }, globals.map(v => {
+      cardGrid(globals.map(v => {
         const using = users.get(`global:${v.name}`) || [], pins = pinsFor(v.name), shops = shopValueReaders().filter(r => r.name === v.name);
-        return h("div", { class: "row gm-level" }, h("div", { class: "row-main static" },
+        return h("div", { class: "group" }, h("div", { class: "row gm-level" }, h("div", { class: "row-main static" },
           h("div", { class: "row-title" }, h("code", null, v.name), h("span", { class: "muted" }, ` = ${showValue(v, globalValue(v.name) ?? v.value)}`)),
           h("div", { class: "row-sub" }, [using.length ? "Read by " + using.map(u => `${u.char.name}'s ${entryName(u.e)}`).join(", ") : !shops.length && "Nothing reads it",
             ...shops.map(r => r.what === "opens" ? `opens ${r.shop.name}` : r.what === "prices" ? `sets ${r.shop.name}'s prices`
               : `puts ${r.item.name} on sale at ${r.shop.name}`),
-            pins.length && "set by " + pins.join(", ")].filter(Boolean).join(" · "))));
-      }))),
+            pins.length && "set by " + pins.join(", ")].filter(Boolean).join(" · ")))));
+      }), { min: 320 })),
   ];
 }
 
@@ -219,7 +219,7 @@ function clockworkView() {
 
 // Beside a connected item's name, for GMs: opens Controls → Connections at it. before: e.g. close a dialog.
 function clockworkCog(char, e, before) {
-  if (!char || !isGmDevice() || !usesClockwork(char, e)) return null;
+  if (!char || !isGmDevice() || !clockworkOn() || !usesClockwork(char, e)) return null;
   return iconBtn("cog", `Connections: what drives ${entryName(e)}`, () => {
     before?.();
     const root = document.getElementById("modal-root");

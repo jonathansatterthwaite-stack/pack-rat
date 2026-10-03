@@ -177,7 +177,7 @@ function campaignsView() {
     h("p", { class: "muted small" }, party.active
       ? "In a party, the campaign is the one the GM has loaded. Your other campaigns wait here until you leave."
       : `Each campaign has its own ${term("characters")}, shops and ${term("gm")} controls. Rule packages and drawings are shared: each campaign picks the packages it uses.`),
-    h("div", { class: "campaign-grid" }, [active, ...store.campaigns().filter(c => c !== active)].map(card)));
+    cardGrid([active, ...store.campaigns().filter(c => c !== active)].map(card), { cls: "campaign-grid", min: 300 }));
 }
 
 // A quick switcher (the campaign line in the header, or the character menu).
@@ -326,6 +326,8 @@ function filesView() {
     h("p", { class: "muted small" }, `Everything you've made, saved ${party.app?.localStore ? "on this " + (party.app.android ? "phone" : "PC") : "in this browser"}: ${fmtBytes(total)} of data, plus pictures. `
       + "Import takes any Pack Rat file: a whole backup, a campaign, a character, a rule package or a drawing."),
 
+    // Two columns on a wide page: the campaigns' own things, then what's made and shared.
+    pageColumns([
     filesSection("Campaigns", camps.map(c => fileRow(icon("book"), [c.name, c === store.campaign() && h("span", { class: "tag on" }, "current")],
       `${plural(c.characters.length, term("character"), term("characters"))} · ${plural(c.shops.length, "shop")} · ${plural(c.gmControls.length, "GM panel")}`, sizeOf(c), [
         fileBtn("edit", `Edit ${c.name}`, () => editCampaign(c)),
@@ -341,6 +343,17 @@ function filesView() {
         fileBtn("copy", `Copy ${char.name}`, () => duplicateCharacter(char, campaign)),
         fileBtn("trash", `Delete ${char.name}`, () => deleteCharacter(char, campaign), "danger-hover"),
       ]))),
+
+    filesSection("Shops", camps.flatMap(c => c.shops.map(sh => fileRow(icon("cart"), sh.name, `${c.name} · ${plural(sh.items.length, "item")}`, sizeOf(sh), [
+      fileBtn("trash", `Delete ${sh.name}`, () => confirmDialog(`Delete the shop “${sh.name}”?`, "Delete",
+        () => commit(() => { c.shops = c.shops.filter(x => x.id !== sh.id); }, `Deleted ${sh.name}`, true)), "danger-hover"),
+    ]))), null, party.active ? "The party's shops are kept by its host; these are your campaigns' own." : null),
+
+    filesSection("GM panels", camps.flatMap(c => c.gmControls.map(g => fileRow(icon("grid"), g.name, `${c.name} · ${plural(g.controls.length, "control")}`, sizeOf(g), [
+      fileBtn("trash", `Delete ${g.name}`, () => confirmDialog(`Delete the panel “${g.name}”?`, "Delete",
+        () => commit(() => { c.gmControls = c.gmControls.filter(x => x.id !== g.id); }, `Deleted ${g.name}`, true)), "danger-hover"),
+    ])))),
+    ], [
 
     filesSection("Rule packages", store.packages().map(p => fileRow(icon("package"), p.name,
       `${plural(p.customItems.length, "item")}, ${plural(p.templates.length, "template")} · ${usedPkg(p).length ? "used by " + usedPkg(p).join(", ") : "not used by any campaign"}`, sizeOf(p), [
@@ -371,17 +384,8 @@ function filesView() {
           () => commit(s => { s.iconLibrary = s.iconLibrary.filter(x => x.id !== d.id); for (const it of drawingUsers(d.id)) delete it.iconLib; }, `Deleted “${d.name}”`, true)), "danger-hover"),
       ])), null, "Icons drawn in the icon editor (SVG). Catalog → Drawings edits them."),
 
-    filesSection("Shops", camps.flatMap(c => c.shops.map(sh => fileRow(icon("cart"), sh.name, `${c.name} · ${plural(sh.items.length, "item")}`, sizeOf(sh), [
-      fileBtn("trash", `Delete ${sh.name}`, () => confirmDialog(`Delete the shop “${sh.name}”?`, "Delete",
-        () => commit(() => { c.shops = c.shops.filter(x => x.id !== sh.id); }, `Deleted ${sh.name}`, true)), "danger-hover"),
-    ]))), null, party.active ? "The party's shops are kept by its host; these are your campaigns' own." : null),
-
-    filesSection("GM panels", camps.flatMap(c => c.gmControls.map(g => fileRow(icon("grid"), g.name, `${c.name} · ${plural(g.controls.length, "control")}`, sizeOf(g), [
-      fileBtn("trash", `Delete ${g.name}`, () => confirmDialog(`Delete the panel “${g.name}”?`, "Delete",
-        () => commit(() => { c.gmControls = c.gmControls.filter(x => x.id !== g.id); }, `Deleted ${g.name}`, true)), "danger-hover"),
-    ])))),
-
-    filesSection("Pictures", [picturesBox], null, "Pictures in documents, item images, set pieces and GM control backgrounds.", null));
+    filesSection("Pictures", [picturesBox], null, "Pictures in documents, item images, set pieces and GM control backgrounds.", null),
+    ]));
 }
 
 // Pictures: every one saved on this device, which are used, and clearing the unused ones.

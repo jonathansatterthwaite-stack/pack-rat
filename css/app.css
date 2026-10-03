@@ -26,10 +26,17 @@
   --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
   color-scheme: light;
+  /* The sliding switch (slideSwitch): its inset track and raised thumb. */
+  --slide-track: color-mix(in srgb, var(--text) 9%, var(--surface-2));
+  --slide-thumb: var(--surface);
+  --slide-thumb-shine: rgb(255 255 255 / .5);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
+    --slide-track: color-mix(in srgb, #000 35%, var(--surface-2));
+    --slide-thumb: color-mix(in srgb, var(--text) 16%, var(--surface-2));
+    --slide-thumb-shine: rgb(255 255 255 / .08);
     --bg: #1b1814;
     --surface: #252019;
     --surface-2: #2f2920;
@@ -207,12 +214,34 @@ input:invalid { border-color: var(--bad); }
 .carried-mini { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; font-size: .85rem; color: var(--muted); white-space: nowrap; }
 .carried-mini .icon { width: 14px; height: 14px; }
 
-/* On/off switch (a styled checkbox). */
+/* ------------------------------------------------------------ page layouts (docs/ui-patterns.md)
+   Page columns (pageColumns): two stacks side by side once the page is 900px wide, else one after
+   the other. A card grid (cardGrid): like things, as many across as fit, each at least --card-min
+   wide (or the whole width, on a phone); cards keep their own height. */
+.page-cols { container-type: inline-size; }
+.page-cols > .cols { display: grid; grid-template-columns: minmax(0, 1fr); column-gap: 24px; align-items: start; }
+.page-cols > .cols > .col { min-width: 0; }
+@container (min-width: 900px) { .page-cols > .cols { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.card-grid { --card-min: 420px; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--card-min)), 1fr));
+  gap: 12px; align-items: start; margin-bottom: 18px; }
+.card-grid > * { margin: 0; min-width: 0; }
+
+/* A setting row (see docs/ui-patterns.md): what it is, a <span> with a <b> title and a muted line,
+   then its control: a switch, a segmented choice (.seg-field) or a button. It lays itself out by its
+   own width, not the screen's, so it works in a modal too. Wide enough, the control sits beside the
+   text; narrow, a segmented choice moves under the text and spans the row (its options sharing the
+   width) rather than squeezing the text into a tall column. A switch always stays beside it. */
 .switch-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; cursor: pointer;
+  container-type: inline-size;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; padding: 14px 16px; cursor: pointer;
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
 }
-.switch-row > span { display: flex; flex-direction: column; gap: 2px; }
+.switch-row > span { display: flex; flex-direction: column; gap: 2px; flex: 1 1 0; min-width: min(100%, 12rem); }
+.switch-row > :not(span) { flex: none; }
+@container (max-width: 560px) {
+  .switch-row > .seg { flex: 1 1 100%; display: flex; width: 100%; }
+  .switch-row > .seg button { flex: 1 1 0; min-width: 0; padding: 0 6px; }
+}
 input.switch {
   appearance: none; -webkit-appearance: none; flex: none; position: relative; width: 46px; height: 26px; min-height: 0; margin: 0; padding: 0;
   border-radius: 99px; background: var(--surface-2); border: 1px solid var(--border); cursor: pointer; transition: background .15s;
@@ -264,6 +293,17 @@ svg.drawn-icon { overflow: visible; }
 .gm-var .group-head h3 { flex: 1; text-align: left; }
 .gm-values .gm-level .row-main, .cw .gm-level .row-main { flex: 1 1 160px; min-width: 0; }
 .gm-values { margin-bottom: 18px; }
+/* A value's row in a card (the Values tab's card grid): narrow, its name and line take the first
+   line, and its controls (slider, number, clear, clock) a line of their own. */
+.gm-values > .gm-var { container-type: inline-size; }
+@container (max-width: 640px) {
+  .gm-var .gm-level > .row-main { flex-basis: 100%; }
+  .gm-var .gm-level:has(> .row-icon) > .row-main { flex-basis: calc(100% - 50px); }
+  .gm-var .gm-level > .gm-control { flex: 1 1 180px; max-width: none; min-width: 0; }
+  .gm-var .gm-control input[type=range] { width: 0; min-width: 60px; }
+  .gm-var > .group-head { flex-wrap: wrap; }
+  .gm-var > .group-head .muted { white-space: normal; }
+}
 .gm-control select { flex: 1; min-width: 0; }
 /* Control panels (js/control-panels.js): the GM's grid of controls */
 .cp-wrap { overflow-x: auto; padding: 10px; container-type: inline-size; width: 100%; box-sizing: border-box; }
@@ -303,6 +343,11 @@ svg.drawn-icon { overflow: visible; }
 .cp-expand { position: absolute; top: 4px; right: 4px; width: 30px; height: 30px; background: var(--surface); z-index: 3; }
 /* Tabs on a panel's grid: page tabs (text) and section tabs (icons) */
 .cp-type-tabs { padding: 0; border-left-width: 1px; background: none; border-style: dashed; }
+/* A control's colour: its edge, a tint of its background (a Tabs control's track, a button's face). */
+.cp-cell.coloured { background: color-mix(in srgb, var(--cp) 16%, var(--surface-2)); }
+.cp-type-tabs.coloured { background: none; }
+.cp-type-tabs.coloured .seg-slide { background: color-mix(in srgb, var(--cp) 24%, var(--slide-track)); }
+.cp-cell.coloured .cp-btn { background: color-mix(in srgb, var(--cp) 20%, var(--surface)); }
 .cp-type-tabs:not(.arranging) { border-color: transparent; }
 .cp-tabs { display: flex; align-items: stretch; gap: 4px; width: 100%; height: 100%; padding: 4px; box-sizing: border-box; }
 .cp-tabs.down { flex-direction: column; }
@@ -312,6 +357,25 @@ svg.drawn-icon { overflow: visible; }
 .cp-tabs button:hover { color: var(--text); }
 .cp-tabs button.active { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 .cp-tab-icon { width: 24px; height: 24px; max-height: 100%; fill: currentColor; flex: none; }
+/* A Tabs control's levels: a row of tabs each, stacked (wider than tall) or side by side; each level
+   below the first a little smaller. Its editor: the tree of tabs, indented by level. */
+.cp-tab-levels { display: flex; flex-direction: column; gap: 2px; width: 100%; height: 100%; min-width: 0; min-height: 0; }
+.cp-tab-levels.down { flex-direction: row; }
+.cp-tab-levels > .cp-tabs { flex: 1 1 0; width: auto; height: auto; min-width: 0; min-height: 0; }
+.cp-tab-levels > .cp-tabs + .cp-tabs button { font-size: .86em; }
+.cp-tab-levels.from-right { flex-direction: row-reverse; } /* (vertical on the right: the first level outermost) */
+/* Each level a sliding switch, filling its share; the chosen tab in the control's colour. Turned
+   labels: on the left read upwards, on the right downwards. */
+.cp-tabs.seg-slide { display: flex; gap: 0; padding: 3px; box-sizing: border-box; }
+.cp-tabs.seg-slide.down { flex-direction: column; }
+.cp-cell .cp-tabs.seg-slide > button { /* (over .seg.seg-slide button's height) */  width: auto; height: auto; min-height: 0; min-width: 0; padding: 2px 6px; font-size: inherit; }
+.cp-cell .cp-tabs.seg-slide > button.active { color: var(--cp, var(--text)); }
+.cp-tabs.turned > button { flex-direction: column; padding: 6px 2px; }
+.cp-tabs.turned > button span { writing-mode: vertical-rl; max-height: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-tabs.turned.left > button span { transform: rotate(180deg); }
+.cp-tabs.turned.left > button { flex-direction: column-reverse; }
+.cp-tab-tree { display: grid; gap: 6px; }
+.cp-tab-node { display: grid; gap: 6px; }
 .cp-tab-letter { font-size: 1.05rem; }
 .cp-handle.cp-handle-corner { inset: auto; top: 2px; left: 2px; width: 26px; height: 26px; z-index: 2; background: var(--surface);
   border: 1px solid var(--border); display: grid; place-items: center; color: var(--muted); }
@@ -378,8 +442,50 @@ svg.drawn-icon { overflow: visible; }
 input.trade-n { width: 64px; flex: none; }
 .tile-wrap { display: grid; gap: 4px; }
 .view-gm .gm-values h3, .view-gm .cw h3 { margin: 14px 0 6px; }
-.toolbar .layout-end { margin-left: auto; display: flex; gap: 6px; }
-.tile-toggles.off { visibility: hidden; }
+.view-gm .card-grid .group-head h3 { margin: 0; } /* cards (Values, Connections): headings sit in their heads */
+.gm-values-intro { margin: 0 0 12px; }
+/* The view menu (itemManager): filters, sort and display options in a panel over the list, from
+   the button beside the search. The button shows a dot while a filter is on; the filters in use
+   also show under the search, to take off. */
+.toolbar { position: relative; }
+.view-btn { flex: none; }
+.view-btn.filtered { border-color: var(--accent); color: var(--accent); }
+.view-btn.filtered::after { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.view-menu {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; width: min(460px, 100%); max-height: min(72vh, 620px); overflow: auto;
+  display: flex; flex-direction: column; gap: 14px; padding: 14px 16px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 10px 32px rgb(0 0 0 / .2);
+}
+.view-menu > section { margin: 0; }
+.view-menu h4 { margin: 0 0 8px; font-family: var(--font); font-size: .75rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.view-menu .chips { flex-wrap: wrap; overflow: visible; padding: 0; margin: 0 0 6px; }
+.view-menu .sort { display: flex; }
+.view-menu .sort-select { flex: 1; }
+.view-menu .sort-select select { width: 100%; }
+.search-tips { display: flex; flex-direction: column; gap: 4px; }
+.search-tips p { margin: 6px 0 0; }
+.search-tip { display: flex; align-items: baseline; gap: 10px; padding: 6px 8px; border: 0; border-radius: 8px; background: none; text-align: left; color: var(--text); }
+.search-tip:hover { background: var(--surface-2); }
+.search-tip code { flex: none; min-width: 7.5em; color: var(--accent); font-weight: 600; }
+.view-menu-foot { display: flex; justify-content: flex-end; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); position: sticky; bottom: -14px; background: var(--surface); }
+.active-filters { margin-top: -4px; }
+/* A count that can't be changed here (Play mode: see playMode). */
+.static-value { display: flex; align-items: center; min-height: 38px; font-weight: 600; }
+.campaign-clockwork { margin-bottom: 14px; }
+/* Search suggestions (itemManager): under the search box, as you type. */
+.search-wrap { position: relative; flex: 1; min-width: 180px; display: flex; }
+.search-wrap > .search { flex: 1; min-width: 0; }
+.search-suggest {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 45; margin: 0; padding: 4px; list-style: none; max-height: 320px; overflow: auto;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 28px rgb(0 0 0 / .18);
+}
+.search-suggest[hidden] { display: none; }
+.suggestion { display: flex; align-items: baseline; gap: 10px; padding: 7px 10px; border-radius: 7px; cursor: pointer; }
+.suggestion code { color: var(--accent); font-weight: 600; flex: none; }
+.suggestion .muted { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.suggestion .chip-count { flex: none; }
+.suggestion:hover, .suggestion[aria-selected="true"] { background: var(--accent-soft); }
+.active-filters .chip-btn .icon { width: 14px; height: 14px; }
 .tile-extras { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; font-size: .85rem; }
 .hoard-items .group { margin-bottom: 8px; }
 .hoard-coins { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
@@ -424,7 +530,7 @@ input.settle-n { width: 70px; flex: none; }
 /* Arranging */
 .cp-empty { border: 1px dashed var(--border); border-radius: 10px; background: none; color: var(--muted); display: grid; place-items: center; cursor: pointer; }
 .cp-empty:hover { border-color: var(--accent); color: var(--accent); }
-.cp-cell.arranging { outline: 1px dashed var(--accent); outline-offset: -1px; z-index: 1; padding-right: 34px; }
+.cp-cell.arranging { outline: 1px dashed var(--accent); outline-offset: -1px; z-index: 1; }
 .cp-cell.dragging { opacity: .85; box-shadow: 0 6px 18px color-mix(in srgb, #000 25%, transparent); z-index: 2; }
 .cp-cell.clash { outline: 2px solid var(--bad); }
 .cp-inert { pointer-events: none; display: contents; }
@@ -432,7 +538,9 @@ input.settle-n { width: 70px; flex: none; }
 .cp-handle:focus-visible { outline: 2px solid var(--accent); }
 .cp-grip { position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; touch-action: none;
   background: linear-gradient(135deg, transparent 50%, var(--accent) 50%); border-bottom-right-radius: 10px; }
-.cp-edit { position: absolute; top: 2px; right: 2px; width: 28px; height: 28px; background: var(--surface); }
+/* The pencil floats over the control (it takes no room from it, tabs included). */
+.cp-edit { position: absolute; z-index: 3; top: 4px; right: 4px; width: 28px; height: 28px; border-radius: 50%;
+  background: var(--surface); box-shadow: 0 1px 4px rgb(0 0 0 / .3); }
 
 /* Clockwork (js/clockwork-ui.js): the GM's cog beside connected items, and the Clockwork tab. */
 .icon-btn.cw-cog { color: var(--muted); flex: none; }
@@ -752,8 +860,27 @@ button.tile:hover, .tile:has(.tile-hit:hover) { border-color: var(--muted); bord
 .tile-top .tile-mini { position: static; flex: 0 1 auto; min-width: 0; max-width: none; }
 .tile-top .tile-wt { margin-left: auto; }
 .tile-bottom { bottom: -7px; left: 50%; transform: translateX(-50%); max-width: 94%; }
-.hide-worth .tile-worth, .hide-weight .tile-wt { display: none; }
-.tile-toggles button { width: 38px; }
+/* What tiles and rows show (the view menu's Show). Details and tags along a tile's foot (the name
+   moves up to make room); no card: no background, border or fill, just the picture and words; no
+   type colour: icons and tiles in a quiet grey. */
+.detail-minimal .tile-foot { position: absolute; left: 3px; right: 3px; bottom: 8px; display: flex; flex-direction: column; align-items: center; gap: 2px; pointer-events: none; }
+.tile-details { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .66rem; color: var(--muted); line-height: 1.2;
+  text-shadow: 0 0 3px var(--surface), 0 0 3px var(--surface); }
+.tile-tags { display: flex; flex-wrap: wrap; justify-content: center; gap: 2px; max-height: 2.4em; overflow: hidden; }
+.tile-tags .tag { font-size: .56rem; padding: 0 5px; line-height: 1.5; margin: 0; }
+.detail-minimal .tile.has-details .tile-name, .detail-minimal .tile.has-tags .tile-name { inset: 8px 6px 26px; }
+.detail-minimal .tile.has-details.has-tags .tile-name { inset: 8px 6px 40px; }
+.detail-minimal .tile-foot { bottom: 10px; left: 5px; right: 5px; }
+.detail-minimal .tile.no-image .tile-name { font-size: .9rem; }
+.tile.plain, .detail-minimal .tile.plain, .detail-minimal .tile.plain.equipped { background: none; border-color: transparent; box-shadow: none; }
+.tile.plain::before { display: none; }
+.detail-minimal .tile.plain .tile-icon { opacity: .9; }
+.detail-minimal .tile.plain .tile-name { text-shadow: 0 0 3px var(--bg), 0 0 3px var(--bg), 0 0 6px var(--bg); }
+.row.plain, .row.plain.equipped { background: none; }
+.no-colour { --type: var(--muted); }
+.no-colour .item-icon { color: var(--muted) !important; }
+.show-parts .chip-btn .icon { width: 14px; height: 14px; }
+.view-menu-sect > .link { margin-top: 2px; }
 .tile-name.tight { overflow-wrap: anywhere; }
 
 /* ------------------------------------------------------------ picture documents */
@@ -878,8 +1005,37 @@ a.btn { text-decoration: none; }
 .strapped .row:first-of-type { border-top: 1px solid var(--border); }
 .strapped > .tiles:not(.detail-minimal) { padding-top: 0; }
 
-.seg-field { width: fit-content; }
-.seg-field button { width: auto; padding: 0 16px; font-weight: 600; }
+/* A sliding switch (slideSwitch): an inset, darker track; the chosen option on a raised thumb (an
+   element sized to it) that slides to the option picked; the others quieter, in the track. Until the
+   thumb is placed, the chosen option looks raised itself. even: options share the width equally. */
+.seg.seg-slide {
+  --pad: 3px; position: relative; display: inline-flex; padding: var(--pad); gap: 0;
+  background: var(--slide-track); border: 1px solid color-mix(in srgb, var(--text) 12%, var(--border));
+  box-shadow: inset 0 2px 4px rgb(0 0 0 / .14), inset 0 1px 1px rgb(0 0 0 / .08);
+}
+.seg-thumb {
+  position: absolute; z-index: 0; left: 0; top: var(--pad); width: 0; height: 0; pointer-events: none;
+  background: var(--slide-thumb); border-radius: 7px; border: 1px solid color-mix(in srgb, var(--text) 10%, var(--border));
+  box-shadow: 0 1px 2px rgb(0 0 0 / .18), 0 2px 6px rgb(0 0 0 / .12), inset 0 1px 0 var(--slide-thumb-shine);
+  transition: left .17s ease, width .17s ease, top .17s ease;
+}
+.seg.seg-slide:not(.placed) .seg-thumb { display: none; }
+.seg.seg-slide button { position: relative; z-index: 1; height: 34px; border: 0 !important; background: none !important; box-shadow: none !important;
+  color: var(--muted); font-weight: 600; border-radius: 7px; transition: color .17s; }
+.seg.seg-slide:not(.placed) button.active { background: var(--slide-thumb) !important; box-shadow: 0 1px 3px rgb(0 0 0 / .2) !important; }
+.seg.seg-slide button:hover:not(:disabled):not(.active) { color: var(--text); }
+.seg.seg-slide button.active { color: var(--text); }
+.seg.seg-slide button:disabled { cursor: not-allowed; }
+.seg.seg-slide:has(button:disabled) { opacity: .65; }
+.seg.seg-slide button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.seg.seg-slide.even > button { flex: 1 1 0; min-width: 0; }
+.seg.seg-slide.sub-tabs { display: flex; width: fit-content; max-width: 100%; } /* (a row of its own, as tabs were) */
+.seg.seg-slide.sub-tabs button { height: 36px; }
+@media (prefers-reduced-motion: reduce) { .seg-thumb, .seg.seg-slide button { transition: none; } }
+
+/* A segmented choice in a form or setting: never wider than its space (many options scroll). */
+.seg-field { width: fit-content; max-width: 100%; overflow-x: auto; }
+.seg-field button { width: auto; padding: 0 16px; font-weight: 600; flex: none; white-space: nowrap; }
 
 /* ------------------------------------------------------------ party */
 [hidden] { display: none !important; }
@@ -1000,7 +1156,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
 .md-preview { border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; background: var(--paper); min-height: 280px; max-height: 60vh; overflow-y: auto; font-family: var(--display); line-height: 1.65; color: var(--ink); }
 
 /* ------------------------------------------------------------ shops */
-.shop-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+/* (The shops are a card grid: cardGrid(…, { cls: "shop-grid", min: 380 }).) */
 .shop-card { display: flex; align-items: center; gap: 12px; padding: 14px; text-align: left; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
 .shop-card:hover { border-color: var(--accent); }
 .shop-card.closed { opacity: .65; }
@@ -1128,16 +1284,16 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
   .stat { padding: 10px 12px; }
   .stat-value { font-size: 1.6rem; }
   .hide-sm { display: none; }
-  .toolbar .search { flex-basis: 100%; }
-  .toolbar .btn { flex: 1; }
-  .toolbar .sort { flex: 1 1 200px; }
-  .toolbar .sort-select { flex: 1; }
-  .toolbar .sort-select select { width: 100%; }
+  .toolbar { flex-wrap: nowrap; }
+  .toolbar .search-wrap { flex: 1 1 0; min-width: 0; }
+  .toolbar .btn { flex: none; }
+  .view-menu { left: 0; width: auto; }
   .tiles { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 6px; padding: 8px; }
   .cat-tiles { padding: 0; }
   .tile { min-height: 88px; padding: 8px 8px 6px; }
   .row { flex-wrap: wrap; padding-left: 10px; }
-  .row-main { flex: 1 1 calc(100% - 30px); }
+  /* The icon and the name share the first line; the weight and controls take the second. */
+  .row-main { flex: 1 1 calc(100% - 40px); }
   .row:has(> .cw-cog) .row-main { flex-basis: calc(100% - 86px); }
   .row .type-dot, .row .row-icon { align-self: flex-start; margin-top: 8px; }
   .inv-list .row-weight { margin-left: 18px; text-align: left; width: auto; flex: 1; }
@@ -1171,7 +1327,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
 }
 
 /* Settings → Campaigns */
-.campaign-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+/* (Campaign cards are a card grid: cardGrid(…, { cls: "campaign-grid", min: 300 }).) */
 .campaign-card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 14px; display: flex; flex-direction: column; gap: 8px; }
 .campaign-card.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 /* "Playing as": the campaign's character, inset in its card */

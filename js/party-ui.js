@@ -320,7 +320,7 @@ function renderParty() {
     h("section", null,
       h("h2", null, "Party members"),
       others.length ? others.map(memberCard)
-        : h("div", { class: "empty" }, h("p", null, "Nobody else has joined yet. Share the address above."))),
+        : emptyState("users", "Nobody else has joined yet. Share the address above.")),
     (!party.isGm() || party.linked().length > 0) && h("section", null,
       h("div", { class: "section-head" }, h("h2", null, "Playing in this party"),
         h("button", { class: "btn", onclick: openJoinModal }, icon("plus"), "Bring a character")),
@@ -379,7 +379,7 @@ function gmPlayersView() {
       h("input", { type: "search", placeholder: "Find an item on anyone: rope, potion, map…", value: ui.gmSearch || "",
         oninput: e => { ui.gmSearch = e.target.value; render(); document.querySelector(".gm-players input[type=search]")?.focus(); } })),
     chars.length ? (cards.length ? cards : h("p", { class: "muted pad" }, "Nobody carries anything like that.")) :
-      h("div", { class: "empty" }, h("p", null, "Nobody has joined yet. Players join from the address on the Party tab.")));
+      emptyState("users", "Nobody has joined yet. Players join from the address on the Party tab."));
 }
 
 // Host: remove a player's character who isn't connected. Offers a backup file first.

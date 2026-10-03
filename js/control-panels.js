@@ -3,10 +3,10 @@
 // Global or Local value, or is just an icon or text.
 //
 // Kept with the boards in store.state.gmControls (the GM's device):
-//   { id, kind: "panel", name, cols, rows, controls: [ctl], tabs?: [tab bar] }
+//   { id, kind: "panel", name, cols, rows, controls: [ctl] }
 //   ctl: { id, type, x, y, w, h,           its place on the grid (square cells, from 0 at the top left)
 //          label?, color?, icon?,
-//          page?, section?                 where it shows (see pages and sections below); none: every
+//          tab?                            the tab it shows on (see Tabs controls below); none: always
 //          reverse?                        slider and switch: more (on) is left or down, not right
 //                                          or up (taller than wide, they stand upright)
 //          scope, target, name,            the value it sets: scope "party" (a Global), "character"
@@ -19,10 +19,13 @@
 //          off, on                         switch (default 0 and 1)
 //          action: "set" | "add", amount   button
 //          options: [{ label, value }]     dropdown (default: the value's choices, else Off and On)
-//          board: { image?, pins } }       board: a picture with pins (see gmBoard, js/gm-controls.js)
+//          board: { image?, pins }         board: a picture with pins (see gmBoard, js/gm-controls.js)
+//          levels, items: [tab]            tabs: a tree of tabs, levels deep (see Tabs controls below) }
 
 const CONTROL_TYPES = [["slider", "Slider"], ["range", "Range slider"], ["toggle", "Switch"], ["button", "Button"], ["dropdown", "Dropdown"],
-  ["polygon", "Polygon"], ["board", "Board"], ["icon", "Icon"], ["text", "Text"]];
+  ["polygon", "Polygon"], ["board", "Board"], ["tabs", "Tabs"], ["icon", "Icon"], ["text", "Text"]];
+// The kinds offered when making one: a range slider is a slider with two handles (Handles).
+const CONTROL_KINDS = CONTROL_TYPES.filter(([k]) => k !== "range");
 const SETS_VALUE = new Set(["slider", "toggle", "button", "dropdown"]); // one value, `name`
 const isPanel = ctl => ctl?.kind === "panel";
 const isUpright = ctl => ctl.h > ctl.w;
@@ -317,52 +320,104 @@ function controlLive(ctl, specs, panel) {
   }
 }
 
-// ------------------------------------------------------------------ pages and sections
-// Tab bars are grid items like controls (panel.tabs): page tabs (text) choose the page, section
-// tabs (icons) choose a section within it.
-//   { id, kind: "page" | "section", page?, x, y, w, h, items: [{ id, label, icon? }] }
-// Page tab bars show on every page; a section tab bar shows on its page (`page`; none: every page).
-// A tab bar wider than it's tall lays its tabs along a row, else down a column.
-// A control shows on its page and section (`page`, `section`; none: every page, every section).
-// Only items that can show together can't overlap, so pages can use the same cells.
+// ------------------------------------------------------------------ Tabs controls
+// A Tabs control (type "tabs") is a tree of tabs, `levels` deep (1 to 4): a row of tabs for each
+// level, each row the tabs under the one chosen in the row before. Wider than it's tall, the rows
+// are stacked; taller, they stand side by side.
+//   { type: "tabs", levels, style?, turn?, items: [{ id, label, icon?, items?: [tab] }] }
+// style: "horizontal" (rows of tabs), "vertical" (columns), or none (as its shape: rows when wider
+// than tall, else columns). turn: in columns, the labels turned (on the panel's left half reading
+// up, on its right half reading down, the first level outermost). Each level is a sliding
+// switch (slideSwitch), the chosen tab in the control's colour.
+// Any control, another Tabs control too, shows on one tab (`tab`: its id) or always (none). On a
+// tab, it shows while that tab is chosen, and while any tab under it is. Tabs controls that show on
+// a tab nest (a page's own tabs down the side). Controls that can't show together (under different
+// tabs) can use the same cells. The tabs chosen are this device's: ui.panelTabs["panelId/tabsId"].
 
-const panelItems = panel => [...(panel.tabs || []), ...panel.controls];
-const isTabBar = item => item.kind === "page" || item.kind === "section";
-const canShowTogether = (a, b) => (a.page == null || b.page == null || a.page === b.page)
-  && (a.section == null || b.section == null || a.section === b.section);
+const MAX_TAB_LEVELS = 4;
+const isTabs = c => c?.type === "tabs";
+const panelItems = panel => panel.controls;
 const overlaps = (a, r) => a.x < r.x + r.w && r.x < a.x + a.w && a.y < r.y + r.h && r.y < a.y + a.h;
+const prefixOf = (a, b) => a.length <= b.length && a.every((x, i) => b[i] === x);
 
-// The pages and sections there are, and which are showing (chosen on this device, by tab).
-function panelView(panel) {
-  const tabs = panel.tabs || [];
-  const pages = tabs.filter(b => b.kind === "page").flatMap(b => b.items);
-  const page = pages.find(t => t.id === ui.panelPage[panel.id])?.id ?? pages[0]?.id ?? null;
-  const sections = tabs.filter(b => b.kind === "section" && (b.page == null || b.page === page)).flatMap(b => b.items);
-  const section = sections.find(t => t.id === ui.panelSection[`${panel.id}/${page}`])?.id ?? sections[0]?.id ?? null;
-  return { pages, page, sections, section };
+// Every tab: id -> { tab, owner (its Tabs control), path (ids from the top level), depth }.
+function tabIndex(panel) {
+  const out = new Map();
+  for (const t of panel.controls.filter(isTabs)) {
+    const walk = (items, path) => {
+      if (path.length >= (t.levels || 1)) return;
+      for (const it of items || []) { const p = [...path, it.id]; out.set(it.id, { tab: it, owner: t, path: p }); walk(it.items, p); }
+    };
+    walk(t.items, []);
+  }
+  return out;
 }
-const showing = (item, view) => (item.page == null || item.page === view.page) && (item.section == null || item.section === view.section);
+// The tabs an item is under, outermost first: [{ owner (id), path }].
+function tabChain(panel, item, index = tabIndex(panel), seen = new Set()) {
+  const at = item?.tab && index.get(item.tab);
+  if (!at || seen.has(at.owner.id)) return [];
+  seen.add(at.owner.id);
+  return [...tabChain(panel, at.owner, index, seen), { owner: at.owner.id, path: at.path }];
+}
+// Can two items be on screen at once? Not if they're under different tabs of one Tabs control.
+function canShowTogether(panel, a, b, index = tabIndex(panel)) {
+  const ca = tabChain(panel, a, index), cb = tabChain(panel, b, index);
+  return ca.every(x => { const y = cb.find(c => c.owner === x.owner); return !y || prefixOf(x.path, y.path) || prefixOf(y.path, x.path); });
+}
+// The tabs chosen in a Tabs control (an id per level), on this device: as chosen, else the first.
+function chosenTabs(panel, t) {
+  const saved = ui.panelTabs[`${panel.id}/${t.id}`] || [], out = [];
+  let items = t.items || [];
+  for (let l = 0; l < (t.levels || 1) && items.length; l++) {
+    const it = items.find(x => x.id === saved[l]) || items[0];
+    out.push(it.id);
+    items = it.items || [];
+  }
+  return out;
+}
+// Is an item showing: are the tabs it's under (and theirs) chosen?
+function showing(panel, item, index = tabIndex(panel)) {
+  return tabChain(panel, item, index).every(x => { const t = panel.controls.find(c => c.id === x.owner); return t && prefixOf(x.path, chosenTabs(panel, t)); });
+}
+// The tab a new control goes on: the innermost tab chosen on screen (none without tabs).
+function tabHere(panel, index = tabIndex(panel)) {
+  const shown = panel.controls.filter(c => isTabs(c) && showing(panel, c, index) && chosenTabs(panel, c).length);
+  const deepest = shown.sort((a, b) => tabChain(panel, b, index).length - tabChain(panel, a, index).length)[0];
+  return deepest ? chosenTabs(panel, deepest).at(-1) : undefined;
+}
+// "Weather › Rain", what's chosen on screen (for the arrange bar).
+function tabsHereWords(panel, index = tabIndex(panel)) {
+  const t = tabHere(panel, index);
+  if (!t) return "";
+  const at = index.get(t);
+  return [...tabChain(panel, at.owner, index).flatMap(x => x.path), ...at.path].map(id => index.get(id)?.tab.label || "?").join(" › ");
+}
 
-// A tab bar, working: its tabs, the chosen one marked.
-function tabBarLive(panel, bar, view) {
-  const pageTabs = bar.kind === "page", active = pageTabs ? view.page : view.section;
-  const pick = t => () => {
-    if (pageTabs) ui.panelPage[panel.id] = t.id; else ui.panelSection[`${panel.id}/${view.page}`] = t.id;
-    render();
-  };
-  return h("div", { class: `cp-tabs ${pageTabs ? "pages" : "sections"} ${bar.w >= bar.h ? "across" : "down"}`, role: "tablist",
-    "aria-label": pageTabs ? "Pages" : "Sections" },
-    bar.items.map((t, i) => h("button", { type: "button", role: "tab", class: t.id === active ? "active" : "", "aria-selected": String(t.id === active),
-      title: t.label || `${pageTabs ? "Page" : "Section"} ${i + 1}`, onclick: pick(t) },
-      pageTabs ? h("span", null, t.label || `Page ${i + 1}`)
-        : t.icon ? iconSvg(t.icon, "cp-tab-icon") : h("span", { class: "cp-tab-letter" }, (t.label || "?").slice(0, 1).toUpperCase()))));
+// Are a Tabs control's labels turned when it's in columns? (Set, else as its Vertical style first had them.)
+const tabsTurned = t => t.turn ?? t.style === "vertical";
+
+// A Tabs control, working: a sliding switch of tabs per level, the chosen ones on its thumb.
+function tabsLive(panel, t) {
+  const chosen = chosenTabs(panel, t), rows = [];
+  const down = t.style === "vertical" || (t.style !== "horizontal" && t.w < t.h), turned = down && tabsTurned(t);
+  const side = t.x + t.w / 2 <= panel.cols / 2 ? "left" : "right"; // which way turned labels read
+  let items = t.items || [];
+  for (let l = 0; l < (t.levels || 1) && items.length; l++) {
+    const level = l, here = items;
+    rows.push(slideSwitch(`${t.label || "Tabs"}, level ${l + 1}`,
+      here.map((it, i) => [it.id, [it.icon && iconSvg(it.icon, "cp-tab-icon"), h("span", null, it.label || `Tab ${i + 1}`)], it.label || `Tab ${i + 1}`]),
+      chosen[level], id => { ui.panelTabs[`${panel.id}/${t.id}`] = [...chosen.slice(0, level), id]; render(); },
+      { tabs: true, even: true, cls: ["cp-tabs", down ? "down" : "across", turned && `turned ${side}`].filter(Boolean).join(" ") }));
+    items = here.find(x => x.id === chosen[l])?.items || [];
+  }
+  return h("div", { class: ["cp-tab-levels", down ? "down" : "across", turned && side === "right" && "from-right"].filter(Boolean).join(" ") }, rows);
 }
 
 // ------------------------------------------------------------------ the grid
 
 const placeCell = (el, r) => { el.style.gridColumn = `${r.x + 1} / span ${r.w}`; el.style.gridRow = `${r.y + 1} / span ${r.h}`; };
 // Would `item` at r overlap something it can show with?
-const clashes = (panel, item, r) => panelItems(panel).some(o => o.id !== item.id && canShowTogether(o, item) && overlaps(o, r));
+const clashes = (panel, item, r) => { const index = tabIndex(panel); return panelItems(panel).some(o => o.id !== item.id && canShowTogether(panel, o, item, index) && overlaps(o, r)); };
 const fitsPanel = (panel, r) => r.x >= 0 && r.y >= 0 && r.x + r.w <= panel.cols && r.y + r.h <= panel.rows;
 
 // Change one of this campaign's panels (found again by id: the data may have been replaced).
@@ -372,35 +427,35 @@ function updatePanel(panelId, fn, msg) {
 const findItem = (p, id) => panelItems(p).find(c => c.id === id);
 
 function panelGrid(panel, editing) {
-  const specs = knownValues(), view = panelView(panel);
+  const specs = knownValues(), index = tabIndex(panel);
   const grid = h("div", { class: "cp-grid" + (editing ? " editing" : "") });
   grid.style.setProperty("--cols", panel.cols);
   grid.style.setProperty("--rows", panel.rows);
   if (editing) {
-    // What's being arranged: the page and section showing.
-    const here = { id: null, page: view.page, section: view.section };
+    // What's being arranged: the tabs chosen on screen.
+    const tab = tabHere(panel, index), here = { id: null, tab };
     for (let y = 0; y < panel.rows; y++) for (let x = 0; x < panel.cols; x++) {
       if (clashes(panel, here, { x, y, w: 1, h: 1 })) continue;
       const cell = h("button", { type: "button", class: "cp-empty", title: "Add a control here", "aria-label": `Add a control at column ${x + 1}, row ${y + 1}`,
-        onclick: () => editPanelControl(panel, null, { x, y, page: view.page, section: view.section }) }, icon("plus"));
+        onclick: () => editPanelControl(panel, null, { x, y, tab }) }, icon("plus"));
       placeCell(cell, { x, y, w: 1, h: 1 });
       grid.append(cell);
     }
   }
-  for (const item of panelItems(panel)) if (showing(item, view)) grid.append(controlCell(panel, item, specs, editing, grid, view));
+  for (const item of panelItems(panel)) if (showing(panel, item, index)) grid.append(controlCell(panel, item, specs, editing, grid));
   return h("div", { class: "cp-wrap" }, grid);
 }
 
-function controlCell(panel, ctl, specs, editing, grid, view) {
-  const tabs = isTabBar(ctl);
-  const el = h("div", { class: tabs ? "cp-cell cp-type-tabs" : `cp-cell cp-type-${ctl.type}` });
+function controlCell(panel, ctl, specs, editing, grid) {
+  const tabs = isTabs(ctl);
+  const el = h("div", { class: `cp-cell cp-type-${ctl.type}` + (ctl.color ? " coloured" : "") });
   placeCell(el, ctl);
   if (ctl.color) el.style.setProperty("--cp", ctl.color);
-  const live = () => tabs ? tabBarLive(panel, ctl, view) : controlLive(ctl, specs, panel);
+  const live = () => tabs ? tabsLive(panel, ctl) : controlLive(ctl, specs, panel);
   if (!editing) { el.append(...[live()].flat().filter(Boolean)); return el; }
 
   // Arranging: drag it to move, drag its corner to resize (or arrow keys; Shift+arrows resize).
-  // A tab bar's tabs still work, to arrange each page and section in turn.
+  // A Tabs control's tabs still work, to arrange each tab in turn.
   const body = tabs ? live() : h("div", { class: "cp-inert", inert: true }, live());
   let draft = { x: ctl.x, y: ctl.y, w: ctl.w, h: ctl.h }, mode = null, start = null;
   const cellAt = ev => {
@@ -416,7 +471,7 @@ function controlCell(panel, ctl, specs, editing, grid, view) {
     holdRender(false);
     if (ok && moved) updatePanel(panel.id, p => { const c = findItem(p, ctl.id); if (c) Object.assign(c, draft); });
   };
-  const name = tabs ? (ctl.kind === "page" ? "Page tabs" : "Section tabs") : ctl.label || CONTROL_TYPES.find(t => t[0] === ctl.type)[1];
+  const name = ctl.label || CONTROL_TYPES.find(t => t[0] === ctl.type)[1];
   const handle = h("button", { type: "button", class: "cp-handle" + (tabs ? " cp-handle-corner" : ""), "aria-label": `${name}: drag to move, or arrow keys (Shift to resize)`,
     title: tabs ? "Drag to move the tabs" : "",
     onkeydown: ev => {
@@ -455,7 +510,7 @@ function controlCell(panel, ctl, specs, editing, grid, view) {
   el.classList.add("arranging");
   el.classList.toggle("clash", bad(ctl)); // e.g. moved here when a tab was removed
   el.append(body, handle, grip,
-    iconBtn("edit", tabs ? "Edit these tabs" : "Edit this control", () => tabs ? editTabBar(panel, ctl) : editPanelControl(panel, ctl), "cp-edit"));
+    iconBtn("edit", tabs ? "Edit these tabs" : "Edit this control", () => editPanelControl(panel, ctl), "cp-edit"));
   return el;
 }
 
@@ -464,115 +519,22 @@ function controlCell(panel, ctl, specs, editing, grid, view) {
 function controlPanelCard(panel) {
   const key = "gmc:" + panel.id, closed = ui.collapsed.has(key), editing = ui.panelEdit === panel.id;
   const toggle = () => { closed ? ui.collapsed.delete(key) : ui.collapsed.add(key); render(); };
-  const view = panelView(panel);
-  const where = [view.pages.find(t => t.id === view.page)?.label, view.sections.find(t => t.id === view.section)?.label].filter(Boolean).join(" › ");
+  const where = tabsHereWords(panel);
   return h("div", { class: "group gm-control-card cp-card" },
     h("div", { class: "group-head" },
       h("button", { class: "collapse" + (closed ? " closed" : ""), "aria-expanded": String(!closed), onclick: toggle }, icon("chevron"), h("h3", null, panel.name)),
       h("span", { class: "muted small" }, plural(panel.controls.length, "control")),
-      !closed && h("button", { class: "btn" + (editing ? " primary" : ""), onclick: () => { ui.panelEdit = editing ? null : panel.id; render(); } },
+      !closed && (editing || canEditNow()) && h("button", { class: "btn" + (editing ? " primary" : ""), onclick: () => { ui.panelEdit = editing ? null : panel.id; render(); } },
         icon(editing ? "check" : "grid"), editing ? "Done" : "Arrange"),
-      iconBtn("edit", `Edit ${panel.name}`, () => editControlPanel(panel)),
+      canEditNow() && iconBtn("edit", `Edit ${panel.name}`, () => editControlPanel(panel)),
       iconBtn("trash", `Delete ${panel.name}`, () => confirmDialog(`Delete the panel “${panel.name}”? The values it set keep their values.`, "Delete",
         () => commit(s => { s.gmControls = s.gmControls.filter(c => c.id !== panel.id); }, `Deleted ${panel.name}`, true)), "danger-hover")),
     !closed && [
       editing && h("div", { class: "cp-arrange-bar" },
-        h("p", { class: "muted small" }, "Click + to add a control. Drag a control to move it, or its corner to resize it; or select it and use the arrow keys (Shift to resize). The pencil edits it.",
-          where && [" Arranging ", h("b", null, where), ": choose another tab to arrange it."]),
-        h("div", { class: "inline wrap" },
-          h("button", { class: "btn", onclick: () => addTabBar(panel, "page", view) }, icon("plus"), "Page tabs"),
-          h("button", { class: "btn", onclick: () => addTabBar(panel, "section", view) }, icon("plus"), "Section tabs"))),
+        h("p", { class: "muted small" }, "Click + to add a control (Tabs splits the panel into tabs). Drag a control to move it, or its corner to resize it; or select it and use the arrow keys (Shift to resize). The pencil edits it.",
+          where && [" Arranging ", h("b", null, where), ": choose another tab to arrange it."])),
       !panelItems(panel).length && !editing ? h("p", { class: "muted pad" }, "No controls yet: Arrange to add some.") : panelGrid(panel, editing),
     ]);
-}
-
-// ------------------------------------------------------------------ tab bars: adding and editing
-
-// A new tab bar where there's room: page tabs along a top or bottom row, section tabs down a side.
-function addTabBar(panel, kind, view) {
-  const pageTabs = kind === "page";
-  const bar = { id: "t" + uid(), kind, ...(pageTabs ? {} : { page: view.page }) };
-  const pagesSoFar = view.pages.length, sectionsSoFar = view.sections.length;
-  bar.items = pageTabs
-    ? (pagesSoFar ? [{ id: "pg" + uid(), label: `Page ${pagesSoFar + 1}` }] : [{ id: "pg" + uid(), label: "Page 1" }, { id: "pg" + uid(), label: "Page 2" }])
-    : (sectionsSoFar ? [{ id: "sc" + uid(), label: `Section ${sectionsSoFar + 1}` }] : [{ id: "sc" + uid(), label: "Section 1" }, { id: "sc" + uid(), label: "Section 2" }]);
-  // Edges first: page tabs the top row then the bottom one; section tabs the left column then the right.
-  const sizes = pageTabs ? [Math.min(panel.cols, 3), 2, 1].map(w => ({ w, h: 1 })) : [Math.min(panel.rows, 3), 2, 1].map(h => ({ w: 1, h }));
-  const lines = (n, first, last) => [first, last, ...Array.from({ length: n }, (_, i) => i).filter(i => i !== first && i !== last)];
-  for (const s of sizes) {
-    const spots = pageTabs
-      ? lines(panel.rows - s.h + 1, 0, panel.rows - s.h).flatMap(y => Array.from({ length: panel.cols - s.w + 1 }, (_, x) => ({ x, y })))
-      : lines(panel.cols - s.w + 1, 0, panel.cols - s.w).flatMap(x => Array.from({ length: panel.rows - s.h + 1 }, (_, y) => ({ x, y })));
-    const spot = spots.find(p => fitsPanel(panel, { ...p, ...s }) && !clashes(panel, bar, { ...p, ...s }));
-    if (spot) {
-      Object.assign(bar, spot, s);
-      return updatePanel(panel.id, p => { p.tabs = [...(p.tabs || []), bar]; }, pageTabs ? "Added page tabs" : "Added section tabs");
-    }
-  }
-  toast("There's no room for them: make some space on the grid first");
-}
-
-// A tab bar's tabs: rename, choose icons (sections), reorder, add and remove. A removed tab's
-// controls are removed, or moved to another tab (or to every page or section).
-function editTabBar(panel, bar) {
-  const pageTabs = bar.kind === "page";
-  const word = pageTabs ? "page" : "section";
-  const rows = bar.items.map(t => ({ ...t, keep: true, to: "" })); // to: "" removes its controls, "*" every, else a tab id
-  const others = pageTabs ? panelView(panel).pages.filter(t => !bar.items.some(x => x.id === t.id))
-    : (panel.tabs || []).filter(b => b.kind === "section" && b.id !== bar.id && b.page === bar.page).flatMap(b => b.items);
-  const onIt = id => panel.controls.filter(c => (pageTabs ? c.page : c.section) === id).length;
-  let close;
-  const box = h("div", { class: "cp-tab-rows" });
-  const draw = () => setChildren(box, rows.map((r, i) => {
-    const n = onIt(r.id);
-    const iconBox = !pageTabs && h("button", { type: "button", class: "btn cp-tab-pick", title: "Choose its icon",
-      onclick: () => openIconPicker(r.icon, id => { r.icon = id || undefined; draw(); }) },
-      r.icon ? iconSvg(r.icon, "cp-tab-icon") : h("span", { class: "cp-tab-letter" }, (r.label || "?").slice(0, 1).toUpperCase()));
-    return h("div", { class: "cp-tab-row" + (r.keep ? "" : " removed") },
-      iconBox,
-      h("input", { type: "text", value: r.label || "", maxlength: 30, placeholder: `${pageTabs ? "Page" : "Section"} ${i + 1}`, disabled: !r.keep,
-        "aria-label": `${pageTabs ? "Page" : "Section"} ${i + 1}: name`, oninput: e => { r.label = e.target.value; } }),
-      iconBtn("up", "Earlier", () => { if (i > 0) { [rows[i - 1], rows[i]] = [rows[i], rows[i - 1]]; draw(); } }),
-      iconBtn("down", "Later", () => { if (i < rows.length - 1) { [rows[i + 1], rows[i]] = [rows[i], rows[i + 1]]; draw(); } }),
-      r.keep ? iconBtn("trash", `Remove this ${word}`, () => { r.keep = false; draw(); }, "danger-hover")
-        : iconBtn("undo", "Keep it", () => { r.keep = true; draw(); }),
-      !r.keep && n > 0 && h("label", { class: "cp-tab-moveto small" }, `Its ${plural(n, "control")}: `,
-        h("select", { onchange: e => { r.to = e.target.value; } },
-          h("option", { value: "", selected: r.to === "" }, "Remove them"),
-          h("option", { value: "*", selected: r.to === "*" }, `Show them on every ${word}`),
-          [...others, ...rows.filter(x => x.keep && x !== r)].map(t => h("option", { value: t.id, selected: r.to === t.id }, `Move them to ${t.label || "an unnamed " + word}`)))));
-  }));
-  draw();
-  const add = () => { rows.push({ id: (pageTabs ? "pg" : "sc") + uid(), label: `${pageTabs ? "Page" : "Section"} ${rows.length + 1}`, keep: true, to: "" }); draw(); };
-  const save = () => {
-    close();
-    updatePanel(panel.id, p => {
-      const b = (p.tabs || []).find(x => x.id === bar.id);
-      if (!b) return;
-      const key = pageTabs ? "page" : "section";
-      for (const r of rows.filter(r => !r.keep)) {
-        for (const c of p.controls.filter(c => c[key] === r.id)) {
-          if (r.to === "") p.controls = p.controls.filter(x => x !== c);
-          else if (r.to === "*") { delete c[key]; if (pageTabs) delete c.section; }
-          else { c[key] = r.to; if (pageTabs) delete c.section; } // a page's sections don't go with it
-        }
-        // A removed page's section tabs go too (their controls were the page's).
-        if (pageTabs) p.tabs = p.tabs.filter(x => !(x.kind === "section" && x.page === r.id));
-      }
-      b.items = rows.filter(r => r.keep).map(({ id, label, icon }) => ({ id, label: (label || "").trim().slice(0, 30), ...(icon ? { icon } : {}) }));
-      if (!b.items.length) p.tabs = p.tabs.filter(x => x.id !== b.id);
-    }, rows.some(r => r.keep) ? "Saved the tabs" : "Removed the tabs");
-  };
-  close = openModal(pageTabs ? "Page tabs" : "Section tabs", h("div", { class: "form" },
-    h("p", { class: "muted small" }, pageTabs ? "Each page has its own controls; these tabs choose the page. They show on every page."
-      : "Each section is part of a page with controls of its own; these tabs choose it. They show by their icon, with the name as a tooltip."),
-    box,
-    h("button", { type: "button", class: "btn", onclick: add }, icon("plus"), `Add a ${word}`)),
-  { footer: [
-    h("button", { class: "btn danger", onclick: () => { rows.forEach(r => { r.keep = false; }); draw(); } }, icon("trash"), "Remove all"),
-    h("button", { class: "btn", onclick: () => close() }, "Cancel"),
-    h("button", { class: "btn primary", onclick: save }, icon("check"), "Save"),
-  ] });
 }
 
 // ------------------------------------------------------------------ making and editing
@@ -630,11 +592,25 @@ function choicesFromRows(rows) {
   return { list: used.map(([r, i]) => { const value = choiceValue(r, i); return { label: (r.label.trim() || String(value)).slice(0, 40), value }; }) };
 }
 
+// After tabs are removed (or a Tabs control): controls on a tab that's gone go to the nearest tab
+// above it that's still there, else to where its Tabs control showed (or every tab).
+function rehomeControls(panel, before) {
+  const now = tabIndex(panel);
+  for (const c of panel.controls) {
+    if (!c.tab || now.has(c.tab)) continue;
+    const was = before.get(c.tab);
+    const up = was && [...was.path].reverse().find(id => now.has(id));
+    if (up) c.tab = up;
+    else if (was?.owner.tab && now.has(was.owner.tab)) c.tab = was.owner.tab;
+    else delete c.tab;
+  }
+}
+
 // Add (at: the empty cell clicked) or edit one control.
 function editPanelControl(panel, ctl, at) {
   const isNew = !ctl;
   const draft = ctl ? clone(ctl) : { id: "c" + uid(), type: "slider", x: at.x, y: at.y, w: 1, h: 1, scope: "party", target: "", name: "",
-    ...(at.page ? { page: at.page } : {}), ...(at.section ? { section: at.section } : {}) };
+    ...(at.tab ? { tab: at.tab } : {}) };
   // The dropdown's choices as typed: [{ label, value }] of strings (see choicesFromRows).
   const rows = (draft.options?.length ? draft.options : [{ label: "", value: "" }, { label: "", value: "" }])
     .map(o => ({ label: String(o.label ?? ""), value: String(o.value ?? "") }));
@@ -682,25 +658,65 @@ function editPanelControl(panel, ctl, at) {
     draw();
     return h("div", { class: "field" }, h("span", null, "Corners"), box);
   };
-  // Which page and section it shows on (when the panel has tabs).
-  const view = panelView(panel);
+  // Which tab it shows on (when the panel has Tabs controls): any tab of any of them, or always.
+  // Not one of its own tabs, nor a tab of a Tabs control shown on its own (a Tabs control can't be
+  // inside itself).
+  const index = tabIndex(panel);
   const whereFields = () => {
-    if (!view.pages.length && !(panel.tabs || []).some(b => b.kind === "section")) return null;
-    const sectionsOf = page => (panel.tabs || []).filter(b => b.kind === "section" && (b.page == null || b.page === page)).flatMap(b => b.items);
-    const secSel = h("select", { onchange: e => { if (e.target.value) draft.section = e.target.value; else delete draft.section; } });
-    const fillSections = () => setChildren(secSel, h("option", { value: "" }, "Every section"),
-      sectionsOf(draft.page ?? null).map(t => h("option", { value: t.id, selected: draft.section === t.id }, t.label || "Unnamed section")));
-    fillSections();
-    return h("div", { class: "form grid" },
-      view.pages.length > 0 && h("label", { class: "field" }, h("span", null, "Page"),
-        h("select", { onchange: e => { if (e.target.value) draft.page = e.target.value; else delete draft.page; delete draft.section; fillSections(); } },
-          h("option", { value: "", selected: draft.page == null }, "Every page"),
-          view.pages.map(t => h("option", { value: t.id, selected: draft.page === t.id }, t.label || "Unnamed page")))),
-      h("label", { class: "field" }, h("span", null, "Section"), secSel));
+    const inside = id => { for (let at = index.get(id); at; at = at.owner.tab && index.get(at.owner.tab)) if (at.owner.id === draft.id) return true; return false; };
+    const tabs = [...index.entries()].filter(([id]) => !inside(id));
+    if (!tabs.length) return null;
+    const many = new Set(tabs.map(([, at]) => at.owner.id)).size > 1;
+    return h("label", { class: "field" }, h("span", null, "Shows on"),
+      h("select", { onchange: e => { if (e.target.value) draft.tab = e.target.value; else delete draft.tab; } },
+        h("option", { value: "", selected: !draft.tab }, "Always (every tab)"),
+        tabs.map(([id, at]) => h("option", { value: id, selected: draft.tab === id },
+          (many ? `${at.owner.label || "Tabs"}: ` : "") + "\u2003".repeat(at.path.length - 1) + (at.tab.label || "Unnamed tab")))),
+      h("small", { class: "muted" }, "On a tab, it shows while that tab is chosen, and any tab under it."));
+  };
+  // A Tabs control's tabs: a tree, levels deep (rename, icon, reorder, add under, remove).
+  const tabsEditor = () => {
+    draft.levels = Math.max(1, Math.min(MAX_TAB_LEVELS, draft.levels || 1));
+    draft.items ||= [{ id: "tb" + uid(), label: "Tab 1" }, { id: "tb" + uid(), label: "Tab 2" }];
+    const box = h("div", { class: "cp-tab-tree" });
+    const node = (list, it, i, depth) => h("div", { class: "cp-tab-node" },
+      h("div", { class: "cp-tab-row", style: { paddingLeft: depth * 22 + "px" } },
+        h("button", { type: "button", class: "btn cp-tab-pick", title: "Choose its icon (optional)",
+          onclick: () => openIconPicker(it.icon, id => { if (id) it.icon = id; else delete it.icon; draw(); }) },
+          it.icon ? iconSvg(it.icon, "cp-tab-icon") : icon("image")),
+        h("input", { type: "text", value: it.label || "", maxlength: 30, placeholder: `Tab ${i + 1}`, "aria-label": `Level ${depth + 1}, tab ${i + 1}: name`,
+          oninput: e => { it.label = e.target.value; } }),
+        iconBtn("up", "Earlier", () => { if (i > 0) { [list[i - 1], list[i]] = [list[i], list[i - 1]]; draw(); } }),
+        iconBtn("down", "Later", () => { if (i < list.length - 1) { [list[i + 1], list[i]] = [list[i], list[i + 1]]; draw(); } }),
+        depth + 1 < draft.levels && iconBtn("plus", `Add a tab under ${it.label || "this one"}`, () => { (it.items ||= []).push({ id: "tb" + uid(), label: `Tab ${it.items.length + 1}` }); draw(); }),
+        iconBtn("trash", "Remove this tab (and the tabs under it)", () => { list.splice(i, 1); draw(); }, "danger-hover")),
+      depth + 1 < draft.levels && (it.items || []).map((k, j) => node(it.items, k, j, depth + 1)));
+    const draw = () => setChildren(box, draft.items.map((it, i) => node(draft.items, it, i, 0)),
+      h("button", { type: "button", class: "btn", onclick: () => { draft.items.push({ id: "tb" + uid(), label: `Tab ${draft.items.length + 1}` }); draw(); } },
+        icon("plus"), "Add a tab"));
+    draw();
+    return [
+      h("label", { class: "field" }, h("span", null, "Style"),
+        h("select", { onchange: e => { if (e.target.value) draft.style = e.target.value; else delete draft.style; drawFields(); } },
+          h("option", { value: "", selected: !draft.style }, "As its shape: rows if it's wide, columns if it's tall"),
+          h("option", { value: "horizontal", selected: draft.style === "horizontal" }, "Horizontal: rows of tabs"),
+          h("option", { value: "vertical", selected: draft.style === "vertical" }, "Vertical: columns of tabs"))),
+      draft.style !== "horizontal" && h("label", { class: "check field" },
+        h("input", { type: "checkbox", checked: tabsTurned(draft), onchange: e => { draft.turn = e.target.checked; } }),
+        " Turn the labels in columns: reading upwards on the panel's left side, downwards on its right"),
+      h("label", { class: "field" }, h("span", null, "Levels"),
+        h("select", { onchange: e => { draft.levels = +e.target.value; drawFields(); } },
+          Array.from({ length: MAX_TAB_LEVELS }, (_, i) => i + 1).map(n => h("option", { value: n, selected: draft.levels === n }, n === 1 ? "1: one row of tabs" : `${n}: tabs under tabs, ${n} rows`))),
+        h("small", { class: "muted" }, "Each level is a row of tabs: the tabs under the one chosen in the row before. Controls show on a tab at any level.")),
+      h("div", { class: "field" }, h("span", null, "Tabs"), box,
+        h("small", { class: "muted" }, "Removing a tab moves its controls to the tab above it (or to every tab).")),
+    ];
   };
   const drawFields = () => setChildren(fields,
-    h("div", { class: "field" }, h("span", null, "Kind"), h("div", { class: "seg seg-field" }, CONTROL_TYPES.map(([k, label]) =>
-      h("button", { type: "button", class: draft.type === k ? "active" : "", onclick: () => { draft.type = k; drawFields(); } }, label)))),
+    h("label", { class: "field" }, h("span", null, "Kind"), h("select", { onchange: e => { draft.type = e.target.value; drawFields(); } },
+      CONTROL_KINDS.map(([k, label]) => h("option", { value: k, selected: (draft.type === "range" ? "slider" : draft.type) === k }, label)))),
+    (draft.type === "slider" || draft.type === "range") && h("div", { class: "field" }, h("span", null, "Handles"),
+      slideSwitch("Handles", [["slider", "One: a value"], ["range", "Two: a lower and an upper value"]], draft.type, v => { draft.type = v; drawFields(); }, { even: true, cls: "seg-field" })),
     text("label", draft.type === "text" ? "Text" : "Label", draft.type === "icon" ? "Optional" : ""),
     (SETS_VALUE.has(draft.type) || draft.type === "text") && valueFields(),
     draft.type === "range" && [nameField("name", "Sets the lower value"), nameField("name2", "Sets the upper value"), forField()],
@@ -724,8 +740,9 @@ function editPanelControl(panel, ctl, at) {
         h("button", { type: "button", class: "btn", onclick: () => editBoard(draft.board || { pins: [] }, b => { draft.board = b; drawFields(); }, draft.label || "") },
           icon("edit"), "Edit board…"))),
     (draft.type === "icon" || draft.type === "button") && iconPick(),
+    draft.type === "tabs" && tabsEditor(),
     whereFields(),
-    h("label", { class: "field" }, h("span", null, "Colour"), h("div", { class: "inline" },
+    h("label", { class: "field" }, h("span", null, "Colour (its edge, background and highlights)"), h("div", { class: "inline" },
       h("input", { type: "color", value: draft.color || "#888888", onchange: e => { draft.color = e.target.value; } }),
       draft.color && h("button", { type: "button", class: "btn", onclick: () => { delete draft.color; drawFields(); } }, "Default"))));
   drawFields();
@@ -749,21 +766,39 @@ function editPanelControl(panel, ctl, at) {
     if (!SETS_VALUE.has(draft.type) && draft.type !== "text" && draft.type !== "range") delete draft.name;
     if (draft.type !== "range") delete draft.name2;
     if (draft.type !== "polygon") { delete draft.vertices; delete draft.at; }
+    if (draft.type === "tabs") {
+      // Tabs as saved: named, at most `levels` deep.
+      const tidy = (items, depth) => (items || []).map(it => ({ id: it.id, label: (it.label || "").trim().slice(0, 30), ...(it.icon ? { icon: it.icon } : {}),
+        ...(depth + 1 < draft.levels && it.items?.length ? { items: tidy(it.items, depth + 1) } : {}) }));
+      draft.items = tidy(draft.items, 0);
+      if (!draft.items.length) return toast("Tabs need at least one tab");
+      if (draft.style === "horizontal") delete draft.turn;
+    } else { delete draft.levels; delete draft.items; delete draft.style; delete draft.turn; }
     if (isNew) {
       // As wide as suits it (a slider likes two cells), where there's room.
       const big = draft.type === "board" || draft.type === "polygon";
-      const want = big ? 3 : draft.type === "slider" || draft.type === "range" ? 2 : 1, tall = big ? 3 : 1;
+      const want = big ? 3 : draft.type === "tabs" ? Math.min(panel.cols, 4) : draft.type === "slider" || draft.type === "range" ? 2 : 1;
+      const tall = big ? 3 : draft.type === "tabs" ? draft.levels : 1;
       const room = (w, ht) => fitsPanel(panel, { ...draft, w, h: ht }) && !clashes(panel, draft, { ...draft, w, h: ht });
       outer: for (let ht = tall; ht >= 1; ht--) for (let w = want; w >= 1; w--) if (room(w, ht)) { draft.w = w; draft.h = ht; break outer; }
     }
-    if (clashes(panel, draft, draft)) return toast("It would overlap another control where it shows: choose another page or section, or move it first");
+    if (clashes(panel, draft, draft)) return toast("It would overlap another control where it shows: choose another tab, or move it first");
     close();
     updatePanel(panel.id, p => {
+      const before = tabIndex(p);
       const i = p.controls.findIndex(c => c.id === draft.id);
       if (i >= 0) p.controls[i] = draft; else p.controls.push(draft);
+      if (isTabs(draft) || isTabs(ctl)) rehomeControls(p, before);
     });
   };
-  const remove = () => { close(); updatePanel(panel.id, p => { p.controls = p.controls.filter(c => c.id !== draft.id); }, "Removed the control"); };
+  const remove = () => {
+    close();
+    updatePanel(panel.id, p => {
+      const before = tabIndex(p);
+      p.controls = p.controls.filter(c => c.id !== draft.id);
+      if (isTabs(ctl)) rehomeControls(p, before);
+    }, "Removed the control");
+  };
   close = openModal(isNew ? "New control" : "Edit control", fields, { footer: [
     !isNew && h("button", { class: "btn danger", onclick: remove }, icon("trash"), "Remove"),
     h("button", { class: "btn", onclick: () => close() }, "Cancel"),

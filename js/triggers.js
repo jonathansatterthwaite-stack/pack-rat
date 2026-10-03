@@ -251,6 +251,7 @@ function runCharTriggers(char) {
       const isNew = !e.seen;
       e.seen = next;
       if (!fire.length && !isNew) break;
+      if (!clockworkOn()) break; // switched off: kept up to date, but nothing fires
       for (const r of fire) messages.push(...fireRule(char, e, r));
       fired += fire.length;
       if (!fire.length) break;
@@ -286,7 +287,7 @@ function runTriggers() {
 // time away (asleep, hidden) one that's due runs once.
 const whileLast = new Map(); // "charId/uid/key" -> when it last ran (ms)
 function hasWhileRules() {
-  return store.state.characters.some(c => c.items.some(e => rulesOf(e.item).some(r => r.when === "while")));
+  return clockworkOn() && store.state.characters.some(c => c.items.some(e => rulesOf(e.item).some(r => r.when === "while")));
 }
 function runWhileRules(now = Date.now()) {
   const messages = [];

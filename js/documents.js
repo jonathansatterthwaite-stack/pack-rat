@@ -511,11 +511,8 @@ function markdownField(f, draft) {
       toast(e.message);
     }
   });
-  const tabs = h("div", { class: "seg md-tabs", role: "tablist" },
-    h("button", { type: "button", class: "active", onclick: ev => show(false, ev.currentTarget) }, "Write"),
-    h("button", { type: "button", onclick: ev => show(true, ev.currentTarget) }, "Preview"));
-  const show = (previewing, btn) => {
-    for (const b of tabs.children) b.classList.toggle("active", b === btn);
+  const tabs = slideSwitch("Write or preview", [["write", "Write"], ["preview", "Preview"]], "write", v => show(v === "preview"), { tabs: true, even: true, cls: "md-tabs" });
+  const show = previewing => {
     ta.hidden = previewing;
     toolbar.hidden = previewing;
     preview.hidden = !previewing;

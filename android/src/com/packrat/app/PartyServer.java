@@ -753,8 +753,11 @@ public class PartyServer {
         return v != null ? v : dflt; // (boxed: dflt may be null)
     }
 
+    /** The campaign's rules, values and controls (see clockwork_on in server.py). */
+    private boolean clockworkOn() { return campaign == null || campaign.optBoolean("clockwork", true); }
+
     private boolean condHolds(JSONObject c) {
-        if (c == null) return true;
+        if (c == null || !clockworkOn()) return true;
         double v = globalValue(c.optString("name"), 0.0), to = c.optDouble("to");
         switch (c.optString("op")) {
             case "=": return v == to;
@@ -769,13 +772,13 @@ public class PartyServer {
     /** Open by its condition if it has one, else as the GM set it. */
     private boolean shopOpen(JSONObject shop) {
         JSONObject c = shop.optJSONObject("openIf");
-        return c != null ? condHolds(c) : shop.optBoolean("open");
+        return c != null && clockworkOn() ? condHolds(c) : shop.optBoolean("open");
     }
 
     /** What the shop's prices are multiplied by: its price value (1 while unset), from 0 to 100. */
     private double priceFactor(JSONObject shop) {
         String name = shop.isNull("priceValue") ? "" : shop.optString("priceValue");
-        Double v = name.isEmpty() ? null : globalValue(name, null);
+        Double v = name.isEmpty() || !clockworkOn() ? null : globalValue(name, null);
         return v == null ? 1 : Math.max(0, Math.min(100, v));
     }
 
@@ -2398,6 +2401,8 @@ public class PartyServer {
                 if (k instanceof String && GM_NAME.matcher((String) k).matches()) gmOnly.put(k);
             }
             campaign.put("gmOnly", gmOnly);
+            // Rules, values and controls (Clockwork): off, shops don't follow values.
+            campaign.put("clockwork", !(body.opt("clockwork") instanceof Boolean) || body.optBoolean("clockwork", true));
             changed(false);
         }
         return new JSONObject().put("ok", true);

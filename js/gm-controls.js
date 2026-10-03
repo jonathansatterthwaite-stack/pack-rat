@@ -54,7 +54,8 @@ function pinValues(pin) {
 const GM_TABS = [["controls", "Controls"], ["players", "Players"], ["treasure", "Treasure"]];
 
 function renderGm() {
-  const tabs = party.active ? GM_TABS : GM_TABS.filter(([k]) => k !== "players");
+  // (Controls only while the campaign has rules, values and controls: clockworkOn.)
+  const tabs = GM_TABS.filter(([k]) => (party.active || k !== "players") && (clockworkOn() || k !== "controls"));
   const tab = tabs.some(([k]) => k === ui.gmTab) ? ui.gmTab : tabs[0][0];
   return h("div", { class: "view-gm view-party" },
     subTabs("GM", tabs, tab, k => { ui.gmTab = k; render(); }),
@@ -79,10 +80,11 @@ function gmControlsSection() {
   const list = gmControls();
   return h("section", { class: "gm-controls" },
     h("div", { class: "section-head" }, h("h2", null, "Panels"),
-      h("button", { class: "btn primary", onclick: () => editControlPanel(null) }, icon("plus"), "New panel")),
+      editing() && h("button", { class: "btn primary", onclick: () => editControlPanel(null) }, icon("plus"), "New panel")),
     h("p", { class: "muted small" }, "What you use to set values in play: panels, grids of sliders, switches, buttons, dropdowns, boards, icons and text, arranged as you like. Each sets a Global value, or a player's or an item's Locals, and players' icons follow. Kept on this device."),
     list.length ? list.map(controlPanelCard)
-      : h("div", { class: "empty" }, h("p", null, "No controls yet. Make a panel, then arrange controls on it.")));
+      : emptyState("sliders", "No panels yet. Make one, then arrange sliders, switches, buttons and boards on it.",
+        editing() && h("button", { class: "btn primary", onclick: () => editControlPanel(null) }, icon("plus"), "Make a panel")));
 }
 
 // ------------------------------------------------------------------ boards

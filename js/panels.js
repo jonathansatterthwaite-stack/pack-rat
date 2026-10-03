@@ -183,12 +183,14 @@ const PANEL_REQUESTS = {
   },
   changeQty(char, { uid, delta }) {
     const e = char.items.find(x => x.uid === uid);
+    if (e && !canCount(e)) return toast("In Play mode only things like ammunition, rations and potions are counted");
     if (e && Number.isInteger(delta) && Math.abs(delta) <= 10000) setEntryQty(e, e.qty + delta);
   },
   // An item's state, as the player would switch it (limits and locks apply).
   setState(char, { uid, key, on }) { if (typeof key === "string") playerSetState(uid, key, !!on); },
   // A Local value: the character's, or one item's own (uid). value null clears it.
   setValue(char, { name, uid, value }) {
+    if (!clockworkOn()) return;
     const entry = uid !== undefined ? char.items.find(x => x.uid === uid) : null;
     if (typeof name !== "string" || (uid !== undefined && !entry)) return;
     clockwork.change(entry ? { char, entry } : { char }, `${entry ? "local" : "char.local"}.${name}`, value, isGmDevice() ? "gm" : "player");
@@ -208,7 +210,9 @@ function makePanelHost(sys, p) {
   const frame = panelFrame(sys, p, "panel-frame");
   const head = h("div", { class: "group-head" });
   const body = h("div", { class: "panel-body-box" }, frame);
-  const host = { panel: p, frame, head, body, ready: false, sent: null, parts: [], open: readPref(panelOpenPref(sys, p), "1") === "1" };
+  // Open unless closed before; on a phone, closed until opened (so the items come first).
+  const host = { panel: p, frame, head, body, ready: false, sent: null, parts: [],
+    open: readPref(panelOpenPref(sys, p), matchMedia("(max-width: 720px)").matches ? "0" : "1") === "1" };
   host.section = h("section", { class: `group sys-panel panel-${p.id.replace(/[^\w-]/g, "")}` }, head, body);
   return host;
 }

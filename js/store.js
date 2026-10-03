@@ -206,6 +206,28 @@ function migrateV1(old, name = "My campaign", pkgName = "My homebrew") {
 }
 
 // Fill in anything missing (older saves, imports, hand edits), so the rest of the app can rely on it.
+// Panels from before Tabs controls had page and section tab bars (panel.tabs): each bar becomes a
+// Tabs control where it was (a section bar showing on its page), and a control's page and section
+// the tab it shows on (its section, whose bar shows on its page; else its page). A section bar for
+// every page keeps its controls' section only.
+function panelTabsToControls(panel) {
+  if (!Array.isArray(panel.tabs)) return;
+  for (const bar of panel.tabs) {
+    if (!bar?.id || !Array.isArray(bar.items) || !bar.items.length) continue;
+    panel.controls.push({ id: bar.id, type: "tabs", x: bar.x || 0, y: bar.y || 0, w: bar.w || 1, h: bar.h || 1, levels: 1,
+      label: bar.kind === "section" ? "Sections" : "Pages",
+      items: bar.items.map(t => ({ id: t.id, label: t.label || "", ...(t.icon ? { icon: t.icon } : {}) })),
+      ...(bar.kind === "section" && bar.page ? { tab: bar.page } : {}) });
+  }
+  for (const c of panel.controls) {
+    if (c.type === "tabs") continue;
+    if (c.section || c.page) c.tab = c.section || c.page;
+    delete c.page;
+    delete c.section;
+  }
+  delete panel.tabs;
+}
+
 function normalizeData(d) {
   d = d && typeof d === "object" ? d : {};
   d.version = 2;
@@ -238,6 +260,7 @@ function normalizeData(d) {
     c.gmControls = c.gmControls.map(ctl => ctl.kind === "panel" ? ctl : { id: ctl.id, kind: "panel", name: ctl.name || "Board", cols: 6, rows: 6,
       controls: [{ id: "c" + ctl.id, type: "board", x: 0, y: 0, w: 6, h: 6, board: { ...(ctl.image ? { image: ctl.image } : {}), pins: ctl.pins || [] } }] });
     for (const ctl of c.gmControls) if (!Array.isArray(ctl.controls)) ctl.controls = [];
+    for (const ctl of c.gmControls) panelTabsToControls(ctl);
     // Pins named GM values (gm_shipX); now values are named without it (shipX).
     for (const ctl of c.gmControls) for (const k of ctl.controls) for (const p of k.board?.pins || []) {
       for (const v of ["xVar", "yVar"]) if (/^gm_./.test(p[v] || "")) p[v] = p[v].slice(3);

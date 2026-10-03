@@ -86,6 +86,56 @@ function iconBtn(name, label, onclick, cls = "") {
   return h("button", { class: "icon-btn " + cls, type: "button", title: label, "aria-label": label, onclick }, icon(name));
 }
 
+// Page layouts (docs/ui-patterns.md). Page columns: a screen's sections as two stacks side by side
+// when there's room, else the first stack then the second (so the first holds what's wanted most).
+// A card grid: like things (one per card), as many across as fit, each at least `min` wide.
+function pageColumns(...stacks) {
+  return h("div", { class: "page-cols" }, h("div", { class: "cols" }, stacks.map(s => h("div", { class: "col" }, s))));
+}
+function cardGrid(cards, { cls = "", min = null } = {}) {
+  const grid = h("div", { class: "card-grid " + cls }, cards);
+  if (min) grid.style.setProperty("--card-min", min + "px"); // (a custom property: not settable through style's keys)
+  return grid;
+}
+
+// An empty state (docs/ui-patterns.md): an icon, what isn't there yet, and the button that makes
+// one (if there's one to make). extra: anything more, under it.
+function emptyState(iconName, text, action = null, extra = null) {
+  return h("div", { class: "empty" }, iconName && icon(iconName, "big"), h("p", null, text), action, extra);
+}
+
+// A sliding switch (docs/ui-patterns.md): every choice of a few options, and the screens' tabs, as
+// an inset track with the chosen one on a raised thumb that slides to the option picked (sized to
+// it, so options can differ in width). options: [[value, content, title?]] (title: for an icon);
+// onPick(value) runs once the thumb has moved (it usually redraws the screen).
+//   tabs: true — tabs (a tablist) rather than a choice (a radio group); even: equal widths
+function slideSwitch(label, options, current, onPick, { disabled = false, tabs = false, even = false, cls = "" } = {}) {
+  let at = Math.max(0, options.findIndex(([v]) => v === current));
+  const sel = tabs ? "aria-selected" : "aria-checked";
+  const thumb = h("span", { class: "seg-thumb", "aria-hidden": "true" });
+  const buttons = options.map(([v, content, title], i) => h("button", { type: "button", role: tabs ? "tab" : "radio", class: i === at ? "active" : "", [sel]: String(i === at),
+    title: title || null, "aria-label": title || null, disabled,
+    onclick: () => {
+      if (i === at) return;
+      at = i;
+      buttons.forEach((b, j) => { b.classList.toggle("active", j === i); b.setAttribute(sel, String(j === i)); });
+      place(true);
+      setTimeout(() => onPick(v), matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 170);
+    } }, content));
+  const box = h("div", { class: ["seg", "seg-slide", even && "even", cls].filter(Boolean).join(" "), role: tabs ? "tablist" : "radiogroup", "aria-label": label }, thumb, buttons);
+  // The thumb under the chosen option: placed once it's laid out, and again when it's resized.
+  function place(animate) {
+    const b = buttons[at];
+    if (!b?.offsetWidth) return;
+    thumb.style.transition = animate ? "" : "none";
+    Object.assign(thumb.style, { left: b.offsetLeft + "px", width: b.offsetWidth + "px", top: b.offsetTop + "px", height: b.offsetHeight + "px" });
+    box.classList.add("placed");
+  }
+  setTimeout(() => place(false));
+  if (window.ResizeObserver) new ResizeObserver(() => place(false)).observe(box);
+  return box;
+}
+
 function templateBadge(tpl) {
   return h("span", { class: "type-dot", style: { background: templateColor(tpl) }, title: tpl.name });
 }
@@ -172,22 +222,61 @@ const ui = {
   gmControlsTab: "panels", // Controls' own tabs: "panels", "values" or "connections"
   cwFocus: null, // the item the Clockwork tab shows first ("charId/uid", from its cog)
   panelEdit: null, // the control panel being arranged (its id)
-  panelPage: {}, // the page each control panel shows (panel id -> page id)
-  panelSection: {}, // the section each panel's page shows ("panelId/pageId" -> section id)
+  panelTabs: {}, // the tabs chosen in each Tabs control ("panelId/tabsId" -> [tab id per level])
   settingsTab: "settings", // Settings · Campaigns · Files
   catTab: "items", // Catalog: Items · My items · Drawings · Templates
   role: readPref("packrat-role", "player"), // "gm" to prepare GM things outside a party (see isGmDevice)
-  playerMode: readPref("packrat-player-mode", "") === "1",
+  mode: readMode(), // "play" or "edit" (see playMode)
 };
 
-// Display options are per tab (list or tiles, the tiles' labels): the inventory's don't change the
-// catalog's. The old shared settings are the starting point for both.
+// Display options are per tab (list or tiles, and what each shows): the inventory's don't change
+// the catalog's. The old shared settings are the starting point for both.
 function loadViewPrefs() {
   return Object.fromEntries(PREF_VIEWS.map(v => [v, {
     layout: readPref(`packrat-layout-${v}`, readPref("packrat-layout", "list")),
-    tileWorth: readPref(`packrat-tile-worth-${v}`, readPref("packrat-tile-worth", "1")) === "1",
-    tileWeight: readPref(`packrat-tile-weight-${v}`, readPref("packrat-tile-weight", "1")) === "1",
+    show: loadShowPrefs(v, readPref(`packrat-tile-worth-${v}`, readPref("packrat-tile-worth", "1")), readPref(`packrat-tile-weight-${v}`, readPref("packrat-tile-weight", "1"))),
   }]));
+}
+
+// What rows and tiles show (the view menu's Show): each part on or off, per list and layout.
+// Saved are only the ones changed from their default (default(st, layout), else on).
+//   tiles: false — off on tiles to start with
+const DISPLAY_PARTS = [
+  { key: "image", label: "Picture" },
+  { key: "name", label: "Name" },
+  { key: "colour", label: "Type colour", hint: "Icons and tiles in their type's colour" },
+  { key: "details", label: "Details", hint: "What it is (“Simple melee · 1d6 piercing”), a container's load, notes", tiles: false },
+  { key: "tags", label: "Tags", hint: "Equipped, attuned and other states, charges, where it is", tiles: false },
+  { key: "worth", label: "Worth", default: (st, layout) => layout === "tiles" || !!st.showWorth },
+  { key: "weight", label: "Weight" },
+  { key: "count", label: "Quantity", hint: "How many (and, on tiles, how full a container is)" },
+  // (On tiles too, as before, except where a list keeps them to its rows: catalogs' tileExtras: false.)
+  { key: "buttons", label: "Buttons", hint: "Equip, write in, and the list's own", default: (st, layout) => layout === "list" || st.tileExtras !== false },
+  { key: "card", label: "Card", hint: "The border and background, and the colour showing how full a container is" },
+];
+function loadShowPrefs(key, oldWorth = "1", oldWeight = "1") {
+  const read = layout => { try { return JSON.parse(readPref(`packrat-show-${key}-${layout}`, "null")) || {}; } catch { return {}; } };
+  const tiles = read("tiles");
+  // From before: the tiles' worth and weight labels could be hidden.
+  if (!("worth" in tiles) && oldWorth === "0") tiles.worth = false;
+  if (!("weight" in tiles) && oldWeight === "0") tiles.weight = false;
+  return { list: read("list"), tiles };
+}
+// Does this list's layout show this part?
+function displayShows(st, layout, part) {
+  const saved = st.prefs?.show?.[layout]?.[part];
+  if (typeof saved === "boolean") return saved;
+  const p = DISPLAY_PARTS.find(x => x.key === part);
+  return p.default ? p.default(st, layout) : !(layout === "tiles" && p.tiles === false);
+}
+function setDisplayPart(prefs, key, layout, part, on) {
+  prefs.show ||= { list: {}, tiles: {} };
+  prefs.show[layout] = { ...prefs.show[layout], [part]: on };
+  writePref(`packrat-show-${key}-${layout}`, JSON.stringify(prefs.show[layout]));
+}
+function resetDisplayParts(prefs, key, layout) {
+  prefs.show[layout] = {};
+  writePref(`packrat-show-${key}-${layout}`, "{}");
 }
 const viewPrefs = () => ui.views[PREF_VIEWS.includes(ui.view) ? ui.view : "inventory"];
 
@@ -207,7 +296,7 @@ function applyPrefs() {
     st.sort = readPref(`packrat-sort-${k}`, st.sort);
     st.reverse = readPref(`packrat-sort-rev-${k}`, st.reverse ? "1" : "") === "1";
   }
-  ui.playerMode = readPref("packrat-player-mode", "") === "1";
+  ui.mode = readMode();
   ui.role = readPref("packrat-role", "player");
 }
 
@@ -231,29 +320,27 @@ function layoutToggle(prefs = viewPrefs(), key = ui.view, onChange = render) {
     writePref(`packrat-layout-${key}`, v);
     onChange();
   };
-  return h("div", { class: "seg", role: "group", "aria-label": "Layout" },
-    [["list", "list", "List view"], ["tiles", "grid", "Tile view"]].map(([v, ic, label]) =>
-      h("button", { type: "button", class: prefs.layout === v ? "active" : "", title: label, "aria-label": label,
-        "aria-pressed": String(prefs.layout === v), onclick: () => set(v) }, icon(ic))));
+  return slideSwitch("Layout", [["list", icon("list"), "List view"], ["tiles", icon("grid"), "Tile view"]], prefs.layout === "tiles" ? "tiles" : "list", set, { even: true });
 }
 
-// Tile view: show or hide the worth and weight labels in the tiles' top corners.
-// In list view they keep their place, hidden, so nothing else in the toolbar moves when switching.
-function tileLabelToggles(prefs = viewPrefs(), key = ui.view, onChange = render) {
-  const off = prefs.layout !== "tiles";
-  const toggle = (prop, pref, label, ic) => h("button", {
-    type: "button", class: prefs[prop] ? "active" : "", disabled: off, tabindex: off ? "-1" : null, title: `${prefs[prop] ? "Hide" : "Show"} ${label.toLowerCase()} on tiles`,
-    "aria-label": `${label} on tiles`, "aria-pressed": String(prefs[prop]),
-    onclick: () => { prefs[prop] = !prefs[prop]; writePref(`${pref}-${key}`, prefs[prop] ? "1" : "0"); onChange(); },
-  }, icon(ic));
-  return h("div", { class: "seg tile-toggles" + (off ? " off" : ""), role: "group", "aria-label": "Tile labels", "aria-hidden": off ? "true" : null },
-    toggle("tileWorth", "packrat-tile-worth", "Worth", "coins"),
-    toggle("tileWeight", "packrat-tile-weight", "Weight", "weight"));
+// The view menu's Show: a toggle for each part of a row (or tile), for the layout showing.
+function displayToggles(st, prefs, key, onChange) {
+  const layout = prefs.layout === "tiles" ? "tiles" : "list";
+  const changed = Object.keys(prefs.show?.[layout] || {}).length > 0;
+  return [
+    h("div", { class: "chips show-parts", role: "group", "aria-label": `Show on ${layout === "tiles" ? "tiles" : "rows"}` },
+      DISPLAY_PARTS.map(p => {
+        const on = displayShows(st, layout, p.key);
+        return h("button", { type: "button", class: "chip-btn" + (on ? " active" : ""), "aria-pressed": String(on), title: p.hint || "",
+          onclick: () => { setDisplayPart(prefs, key, layout, p.key, !on); onChange(); } }, on && icon("check"), p.label);
+      })),
+    changed && h("button", { type: "button", class: "link small", onclick: () => { resetDisplayParts(prefs, key, layout); onChange(); } }, "Back to how they were"),
+  ];
 }
 
-// A grid of tiles; names shrink to fit (the worth / weight labels can be hidden).
+// A grid of tiles; names shrink to fit.
 function tilesBox(extraClass = "", prefs = viewPrefs()) {
-  const cls = ["tiles", "detail-minimal", !prefs.tileWorth && "hide-worth", !prefs.tileWeight && "hide-weight", extraClass];
+  const cls = ["tiles", "detail-minimal", extraClass];
   const box = h("div", { class: cls.filter(Boolean).join(" ") });
   tileResizer()?.observe(box);
   return box;
@@ -280,16 +367,17 @@ function tileResizer() {
 
 // One tile size for the whole view, set by its widest grid, so tiles in narrower grids (strapped
 // outside, nested containers) are the same size, just fewer to a row. Then names are refitted.
-const TILE_MIN = 66, TILE_GAP = 6;
+const TILE_MIN = 66, TILE_MIN_ROOMY = 104, TILE_GAP = 6;
 function syncTileSize(root = document.getElementById("view")) {
   if (!root) return;
   const boxes = [...root.querySelectorAll(".tiles")].filter(b => b.offsetParent);
+  const min = boxes.some(b => b.classList.contains("roomy")) ? TILE_MIN_ROOMY : TILE_MIN;
   const width = Math.max(0, ...boxes.map(b => {
     const cs = getComputedStyle(b);
     return b.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
   }));
   if (width > 0) {
-    const n = Math.max(1, Math.floor((width + TILE_GAP) / (TILE_MIN + TILE_GAP)));
+    const n = Math.max(1, Math.floor((width + TILE_GAP) / (min + TILE_GAP)));
     root.style.setProperty("--tile-size", Math.floor((width - (n - 1) * TILE_GAP) / n * 100) / 100 + "px");
   }
   boxes.forEach(fitTileNames);
@@ -328,8 +416,31 @@ const VIEWS = {
 // The campaign rules settings the system uses (D&D 5e: encumbrance, size), shown in Settings → Rules.
 const usesSetting = (key, sys = activeSystem()) => (sys.campaignSettings || []).includes(key);
 
-// Player mode (Settings) hides making and editing items; a GM always has them.
-const playerOnly = () => ui.playerMode && !isGmDevice();
+// ------------------------------------------------------------------ modes
+// Two settings on this device, separate from each other:
+//   the role, Player or GM (who you are at the table; in a party the host decides), and
+//   the mode, Play or Edit: in Play you use your things; in Edit you also make and change them.
+//   Play hides the catalog, making and editing items, a GM's shop, panel and table editing, and
+//   counting stacks up and down, except for what counts in play (ammunition, rations, potions…:
+//   the Stacks feature's countInPlay, else its type's default).
+// Older devices' "Player mode" is Play.
+function readMode() {
+  const old = kv.get("packrat-player-mode") === "1" ? "play" : "edit";
+  return (kv.get("packrat-mode") || old) === "play" ? "play" : "edit";
+}
+const playMode = () => ui.mode === "play";
+const editing = () => !playMode();
+// (The same, for code with its own `editing`, like a panel being arranged.)
+const canEditNow = editing;
+// Does this item count up and down in Play mode?
+function countsInPlay(item, srcId) {
+  if (!stacks(item, srcId)) return false;
+  if (typeof item.countInPlay === "boolean") return item.countInPlay;
+  const tpl = itemTemplate(item);
+  return !!(tpl?.defaults?.countInPlay ?? rootTemplate(tpl)?.defaults?.countInPlay);
+}
+// May this entry's count be changed here and now?
+const canCount = e => editing() || countsInPlay(currentItem(e), e.srcId);
 
 // Does this GM play characters too? If not, the Inventory tab would only ever be empty.
 const gmHasCharacters = () => party.active ? party.linked().length > 0 : store.state.characters.some(c => !isBlankCharacter(c));
@@ -340,7 +451,7 @@ const viewLabel = key => key === "gm" ? term("gm") : VIEWS[key].label;
 function viewVisible(key) {
   const v = VIEWS[key];
   if (v.partyOnly && !party.active) return false;
-  if (v.builder && playerOnly()) return false;
+  if (v.builder && playMode()) return false;
   if (v.gmOnly && !isGmDevice()) return false;
   if (key === "inventory" && (isGmDevice() || party.isHost()) && !gmHasCharacters()) return false;
   return true;
@@ -530,15 +641,117 @@ function sortControl(state, key, sorts, onChange) {
 //     rowClass(e)  more for the row's (or tile's) class, e.g. "contested"
 //     tags(e)      tags after the name ("custom")
 //     showWorth    a worth column (catalogs);  noCog: no Clockwork cog (catalogs: not an inventory's)
-//     tileExtras   false: extras only on rows, not under tiles
+//     tileExtras   false: extras start hidden under tiles (the view menu's Buttons shows them)
 // itemManager (below) gives a storage its list's search, filters, sort and display options.
 //     search, type, typeSub   filters (the inventory's search box and type chips)
 //     keep(e)      shown whatever the search (a trade's picked items)
 //     empty()      what shows when it holds nothing }
 
 const foldKey = (st, uid) => st.id ? `${st.id}:${uid}` : uid;
-// Does a search find this entry (the item as it is now, its notes, its own name)?
-const entryMatches = (char, e, q) => matchesSearch(currentItem(e, char), q) || [e.notes, e.customName].some(t => (t || "").toLowerCase().includes(q.toLowerCase()));
+
+// ------------------------------------------------------------------ searching
+// The search box takes words, and more (the view menu's Search tips list them):
+//   words, "a phrase"      the item as it is now (name, category, description, properties…), its
+//                          notes and its own name; every word must be found
+//   t:armor  t:"gear & tools"   its type: the group, the template or the item's category
+//   c:backpack             inside a container whose name has it (at any depth)
+//   s:equipped  s:attuned  s:custom  s:container   equipped, in a state, custom, holds things
+//   -word  -t:weapons      not
+// The keys are single letters; the whole words work too (type:, container:, state:).
+// They're a registry: SEARCH_KEYS.<key> = { label, hint, example, test(char, e, value), values(char) }.
+const SEARCH_KEYS = {
+  t: { label: "type", hint: "Of a type: its group, template or category", example: "t:armor",
+    test: (char, e, v) => { const it = currentItem(e, char), g = groupOfItem(it);
+      return [g?.name, g?.id, itemTemplate(it)?.name, it.category].some(x => x && String(x).toLowerCase().includes(v)); } },
+  c: { label: "container", hint: "Inside a container whose name has it", example: "c:backpack",
+    test: (char, e, v) => {
+      const seen = new Set();
+      for (let p = e.parent && char.items.find(x => x.uid === e.parent); p && !seen.has(p.uid); p = p.parent && char.items.find(x => x.uid === p.parent)) {
+        seen.add(p.uid);
+        if (entryName(p).toLowerCase().includes(v)) return true;
+      }
+      return false;
+    } },
+  s: { label: "state", hint: "Equipped, custom, a container, or in a state (attuned, cursed…)", example: "s:equipped",
+    test: (char, e, v) => {
+      if (/^(equipped|worn|wielded)$/.test(v)) return !!e.equipped;
+      if (v === "custom") return !!e.srcId?.startsWith("custom-") || !!e.item?.id?.startsWith?.("custom-");
+      if (v === "container") return holdsItems(char, e);
+      const st = systemStates().find(s => s.key.toLowerCase() === v || s.label.toLowerCase().startsWith(v));
+      return !!st && stateOn(char, e, st.key);
+    } },
+};
+// The whole words, for those who'd rather (not suggested).
+const SEARCH_ALIASES = { type: "t", container: "c", state: "s" };
+const searchKey = k => { k = (k || "").toLowerCase(); return SEARCH_KEYS[k] ? k : SEARCH_ALIASES[k] || null; };
+// The values each key suggests, for a list's items (lower case; quoted when they have spaces).
+SEARCH_KEYS.t.values = char => [...new Set(listed(char).map(e => groupOfItem(currentItem(e, char))?.name).filter(Boolean))];
+SEARCH_KEYS.s.values = () => ["equipped", "custom", "container", ...systemStates().map(s => s.label)];
+SEARCH_KEYS.c.values = char => [...new Set(listed(char).filter(e => holdsItems(char, e)).map(e => entryName(e)))];
+
+// Suggestions for the word being typed (term: the text from its start to the cursor): keys to
+// start with, a key's values, or keys and values the word is part of. Only ones that find
+// something in this list (count), best first, at most 8.
+// [{ text (what goes in the search), label (shown), hint, count? }]
+const quoteValue = v => /\s/.test(v) ? `"${v}"` : v;
+function searchSuggestions(char, term) {
+  const neg = term.startsWith("-") ? "-" : "", t = term.slice(neg.length);
+  const keys = Object.entries(SEARCH_KEYS);
+  const count = text => listed(char).filter(e => entryMatches(char, e, text)).length;
+  const out = [];
+  const valueHits = (k, d, part) => (d.values?.(char) || []).map(v => ({ v, i: v.toLowerCase().indexOf(part) })).filter(x => x.i >= 0)
+    .sort((a, b) => (a.i === 0) - (b.i === 0) ? (b.i === 0) - (a.i === 0) : a.v.localeCompare(b.v))
+    .map(x => ({ text: `${neg}${k}:${quoteValue(x.v.toLowerCase())}`, label: `${neg}${k}:${quoteValue(x.v.toLowerCase())}`, hint: d.label }));
+  const m = /^([A-Za-z]+):"?([^"]*)"?$/.exec(t);
+  if (m && searchKey(m[1])) {
+    const k = searchKey(m[1]);
+    out.push(...valueHits(k, SEARCH_KEYS[k], m[2].toLowerCase()));
+  } else if (!t) {
+    out.push(...keys.map(([k, d]) => ({ text: `${neg}${k}:`, label: `${neg}${k}:`, hint: d.hint, key: true })));
+  } else {
+    const w = t.toLowerCase();
+    out.push(...keys.filter(([k, d]) => k.startsWith(w) || d.label.startsWith(w)).map(([k, d]) => ({ text: `${neg}${k}:`, label: `${neg}${k}:`, hint: d.hint, key: true })));
+    if (w.length >= 2) for (const [k, d] of keys) out.push(...valueHits(k, d, w));
+  }
+  const seen = new Set();
+  return out.filter(s => !seen.has(s.text) && seen.add(s.text))
+    .map(s => s.key ? s : { ...s, count: neg ? listed(char).length - count(s.text.slice(1)) : count(s.text) })
+    .filter(s => s.key || s.count > 0).slice(0, 8);
+}
+// The word the cursor is in: [start, end] in the search text (quotes keep a phrase together).
+function searchTermAt(q, pos) {
+  let start = 0, quoted = false;
+  for (let i = 0; i < pos; i++) {
+    if (q[i] === '"') quoted = !quoted;
+    else if (q[i] === " " && !quoted) start = i + 1;
+  }
+  return [start, pos];
+}
+
+// A search as terms: [{ neg, key (or null for words), value }]. Remembered per text.
+const queryCache = new Map();
+function parseQuery(q) {
+  let terms = queryCache.get(q);
+  if (terms) return terms;
+  terms = [];
+  for (const m of q.matchAll(/(-?)(?:([A-Za-z]+):)?(?:"([^"]*)"?|(\S+))/g)) {
+    const key = m[2] && searchKey(m[2]), value = (m[3] ?? m[4] ?? "").trim();
+    if (!m[2] && /^-?[A-Za-z]+:$/.test(value) && searchKey(value.replace(/^-|:$/g, ""))) continue; // a key still being typed
+    if (m[2] && !key) terms.push({ neg: !!m[1], key: null, value: `${m[2]}:${value}` }); // not a key: just words
+    else if (value) terms.push({ neg: !!m[1], key: key || null, value: value.toLowerCase() });
+  }
+  if (queryCache.size > 200) queryCache.clear();
+  queryCache.set(q, terms);
+  return terms;
+}
+// Does a search find this entry?
+function entryMatches(char, e, q) {
+  return parseQuery(q).every(t => {
+    const hit = t.key ? SEARCH_KEYS[t.key].test(char, e, t.value)
+      : matchesSearch(currentItem(e, char), t.value) || [e.notes, e.customName].some(x => (x || "").toLowerCase().includes(t.value));
+    return t.neg ? !hit : hit;
+  });
+}
 
 // An item's details from a storage other than this device's inventory (which has its own, with
 // much more: openEntry): the item as it is now, with the storage's controls above it.
@@ -573,12 +786,11 @@ function listState(key, o = {}) {
 }
 const resetList = key => { delete listStates[key]; };
 
-// A list's display options (list or tiles, the tiles' labels), saved on this device.
+// A list's display options (list or tiles, and what each shows), saved on this device.
 function listPrefs(key) {
   return ui.views[key] ||= {
     layout: readPref(`packrat-layout-${key}`, "list"),
-    tileWorth: readPref(`packrat-tile-worth-${key}`, "1") === "1",
-    tileWeight: readPref(`packrat-tile-weight-${key}`, "1") === "1",
+    show: loadShowPrefs(key, readPref(`packrat-tile-worth-${key}`, "1"), readPref(`packrat-tile-weight-${key}`, "1")),
   };
 }
 
@@ -634,23 +846,129 @@ function itemManager(o) {
     st.typeSub = state.sub && items.some(e => invTypeMatches(e, state.type, state.sub)) ? state.sub : null;
     return Object.assign(st, { sort: state.sort, reverse: state.reverse, prefs, flat: st.flat ?? o.flat });
   };
-  // The chips and the items (typing in the search redraws only these, keeping the cursor).
+  // The view menu: the filters (type chips), sort and display options, in a panel over the list,
+  // opened by the button beside the search. More display options go here as they come.
+  const hasMenu = parts.chips || parts.sort || parts.layout;
+  const filtered = () => state.type !== "all";
+  let menuOpen = false, menuEl = null, viewBtn = null, searchInput = null;
+  const refresh = () => { state.limit = o.limit || Infinity; drawList(); drawMenu(); };
+  const clearFilters = () => { state.type = "all"; state.sub = null; refresh(); };
+  const onOutside = ev => { if (!menuEl?.contains(ev.target) && !viewBtn?.contains(ev.target)) closeMenu(); };
+  const onKey = ev => { if (ev.key === "Escape") { ev.stopPropagation(); closeMenu(); viewBtn?.focus(); } };
+  function closeMenu() {
+    if (!menuOpen) return;
+    menuOpen = false;
+    document.removeEventListener("pointerdown", onOutside, true);
+    document.removeEventListener("keydown", onKey, true);
+    menuEl?.remove();
+    viewBtn?.setAttribute("aria-expanded", "false");
+  }
+  function openMenu() {
+    menuOpen = true;
+    menuEl = h("div", { class: "view-menu", role: "dialog", "aria-label": "View: filters, sort and layout" });
+    viewBtn.after(menuEl);
+    viewBtn.setAttribute("aria-expanded", "true");
+    drawMenu();
+    document.addEventListener("pointerdown", onOutside, true);
+    document.addEventListener("keydown", onKey, true);
+    menuEl.querySelector("button, select")?.focus();
+  }
+  function drawMenu() {
+    if (!menuOpen || !menuEl) return;
+    const st = storage();
+    const chips = parts.chips && typeChips(st, state, o, refresh);
+    const sect = (title, ...kids) => h("section", { class: "view-menu-sect" }, h("h4", null, title), kids);
+    // A search tip adds its example to the search.
+    const tip = (key, k) => h("button", { type: "button", class: "search-tip", title: k.hint, onclick: () => {
+      state.search = (state.search.trim() + " " + k.example).trim();
+      if (searchInput) searchInput.value = state.search;
+      refresh();
+    } }, h("code", null, k.example), h("span", { class: "muted small" }, k.hint));
+    setChildren(menuEl,
+      chips && sect("Filter", chips),
+      parts.sort && sect("Sort by", sortControl(state, prefsKey === o.key ? o.key : prefsKey, sorts, refresh)),
+      parts.layout && sect("Layout", layoutToggle(prefs, prefsKey, refresh)),
+      parts.layout && sect(prefs.layout === "tiles" ? "Show on tiles" : "Show on rows", displayToggles(st, prefs, prefsKey, refresh)),
+      parts.search && sect("Search tips",
+        h("div", { class: "search-tips" }, Object.entries(SEARCH_KEYS).map(([k, d]) => tip(k, d)),
+          h("p", { class: "muted small" }, "Put a phrase in quotes (", h("code", null, 't:"gear & tools"'), "), and a minus before anything to leave it out (",
+            h("code", null, "-t:weapons"), ")."))),
+      h("div", { class: "view-menu-foot" },
+        filtered() && h("button", { type: "button", class: "btn", onclick: clearFilters }, "Show everything"),
+        h("button", { type: "button", class: "btn primary", onclick: () => { closeMenu(); viewBtn.focus(); } }, "Done")));
+  }
+  // The filters in use, under the search (so none is forgotten): each one, to take off.
+  const activeFilters = st => {
+    if (!filtered()) return null;
+    const label = groupById(state.type)?.name || { equipped: "Equipped", custom: "Custom" }[state.type] || state.type;
+    const sub = st.typeSub && subcategories(state.type).find(s => s.key === st.typeSub)?.label;
+    return h("div", { class: "chips active-filters", role: "group", "aria-label": "Filters in use" },
+      h("button", { type: "button", class: "chip-btn active", title: "Take this filter off", onclick: clearFilters },
+        sub ? `${label} · ${sub}` : label, icon("x")));
+  };
+  // The filters and the items (typing in the search redraws only these, keeping the cursor).
   const drawList = () => {
     const st = storage();
-    if (parts.chips) setChildren(chipsBox, typeChips(st, state, o, () => { state.limit = o.limit || Infinity; drawList(); }));
+    setChildren(chipsBox, parts.chips && activeFilters(st));
+    viewBtn?.classList.toggle("filtered", filtered());
     setChildren(body, st.flat ? flatList(st, state, o, drawList) : storageTree(st));
     setTimeout(() => { if (body.isConnected) syncTileSize(root.closest("#view, .modal") || undefined); });
   };
+  // Suggestions under the search as you type (searchSuggestions): arrows to move, Enter or Tab to
+  // take one, Escape to close; or tap one.
+  const sugId = "sug-" + uid();
+  let sugs = [], sugAt = -1, sugBox = null;
+  const closeSugs = () => { sugs = []; sugAt = -1; if (sugBox) { sugBox.hidden = true; sugBox.replaceChildren(); } searchInput?.setAttribute("aria-expanded", "false"); searchInput?.removeAttribute("aria-activedescendant"); };
+  const showSugs = () => {
+    if (!searchInput || document.activeElement !== searchInput) return closeSugs();
+    const [a, b] = searchTermAt(searchInput.value, searchInput.selectionStart ?? searchInput.value.length);
+    sugs = searchSuggestions(storage().char, searchInput.value.slice(a, b));
+    sugAt = -1;
+    if (!sugs.length) return closeSugs();
+    setChildren(sugBox, sugs.map((s, i) => h("li", { id: `${sugId}-${i}`, role: "option", class: "suggestion", "aria-selected": "false",
+      onpointerdown: ev => { ev.preventDefault(); takeSug(i); } },
+      h("code", null, s.label), h("span", { class: "muted small" }, s.hint), s.count != null && h("span", { class: "chip-count" }, s.count))));
+    sugBox.hidden = false;
+    searchInput.setAttribute("aria-expanded", "true");
+  };
+  const markSug = i => {
+    sugAt = (i + sugs.length) % sugs.length;
+    [...sugBox.children].forEach((li, j) => li.setAttribute("aria-selected", String(j === sugAt)));
+    searchInput.setAttribute("aria-activedescendant", `${sugId}-${sugAt}`);
+    sugBox.children[sugAt]?.scrollIntoView({ block: "nearest" });
+  };
+  const takeSug = i => {
+    const s = sugs[i], q = searchInput.value, [a, b] = searchTermAt(q, searchInput.selectionStart ?? q.length);
+    const rest = q.slice(b).replace(/^\S*/, ""), insert = s.text + (s.key ? "" : " ");
+    searchInput.value = state.search = (q.slice(0, a) + insert + rest.trimStart()).replace(/\s+$/, s.key ? "" : " ");
+    const pos = a + insert.length;
+    searchInput.setSelectionRange(pos, pos);
+    state.limit = o.limit || Infinity;
+    drawList();
+    showSugs(); // a key goes on to its values
+  };
+  const sugKeys = ev => {
+    if (!sugs.length || sugBox.hidden) { if (ev.key === "ArrowDown") { showSugs(); if (sugs.length) { markSug(0); ev.preventDefault(); } } return; }
+    if (ev.key === "ArrowDown" || ev.key === "ArrowUp") { ev.preventDefault(); markSug(sugAt + (ev.key === "ArrowDown" ? 1 : -1)); }
+    else if ((ev.key === "Enter" || ev.key === "Tab") && sugAt >= 0) { ev.preventDefault(); takeSug(sugAt); }
+    else if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); closeSugs(); }
+  };
   const draw = () => {
+    closeMenu();
+    searchInput = parts.search && h("input", { type: "search", placeholder: o.placeholder || "Search items", value: state.search, "aria-label": "Search",
+      role: "combobox", "aria-autocomplete": "list", "aria-controls": sugId, "aria-expanded": "false", autocomplete: "off",
+      oninput: e => { state.search = e.target.value; state.limit = o.limit || Infinity; drawList(); showSugs(); },
+      onfocus: showSugs, onblur: () => setTimeout(closeSugs, 0), onkeydown: sugKeys,
+      onclick: showSugs });
+    sugBox = h("ul", { class: "search-suggest", id: sugId, role: "listbox", "aria-label": "Suggestions", hidden: true });
+    viewBtn = hasMenu && h("button", { type: "button", class: "btn view-btn" + (filtered() ? " filtered" : ""), "aria-haspopup": "dialog", "aria-expanded": "false",
+      title: "View: filters, sort and layout", "aria-label": "View: filters, sort and layout", onclick: () => menuOpen ? closeMenu() : openMenu() },
+      icon("sliders"), h("span", { class: "hide-sm" }, "View"));
     setChildren(root,
       h("div", { class: "toolbar" },
-        parts.search && h("label", { class: "search" }, icon("search"),
-          h("input", { type: "search", placeholder: o.placeholder || "Search items", value: state.search, "aria-label": "Search",
-            oninput: e => { state.search = e.target.value; state.limit = o.limit || Infinity; drawList(); } })),
-        parts.sort && sortControl(state, prefsKey === o.key ? o.key : prefsKey, sorts, draw),
-        o.buttons,
-        // List / Tiles last, so it stays put when the tiles' label toggles come and go.
-        parts.layout && h("span", { class: "layout-end" }, tileLabelToggles(prefs, prefsKey, draw), layoutToggle(prefs, prefsKey, draw))),
+        parts.search && h("div", { class: "search-wrap" }, h("label", { class: "search" }, icon("search"), searchInput), sugBox),
+        viewBtn,
+        o.buttons),
       chipsBox, body);
     drawList();
   };
@@ -676,15 +994,13 @@ function catalogStorage(items, o = {}) {
 function charStorage(char) {
   return {
     char, id: "", rootLabel: "On person",
-    open: e => openEntry(e.uid), setQty: setEntryQty, move: moveEntry,
+    open: e => openEntry(e.uid), setQty: setEntryQty, canCount, move: moveEntry,
     reorder: ids => commit((s, c) => { c.containerOrder = [...ids, ...(c.containerOrder || []).filter(id => !ids.includes(id) && c.items.some(e => e.uid === id))]; }),
     extras: e => [writingButton(e),
       isEquipable(e) && iconBtn(equipKind(e) === "wielded" ? "sword" : "shield", e.equipped ? "Unequip" : "Equip",
         () => toggleEquip(e.uid), "equip" + (e.equipped ? " on" : ""))],
-    empty: () => h("div", { class: "empty" },
-      icon("bag", "big"),
-      h("p", null, "Your pack is empty."),
-      !playerOnly() && h("button", { class: "btn primary", onclick: () => go("catalog") }, "Browse the catalog"),
+    empty: () => emptyState("bag", "Your pack is empty.",
+      editing() && h("button", { class: "btn primary", onclick: () => go("catalog") }, icon("book"), "Browse the catalog"),
       !party.active && isFreshData() && h("p", { class: "muted small" }, "Moving from another device? ",
         h("button", { class: "link", onclick: pickBackup }, "Import a backup"), " exported from Pack Rat's Settings.")),
   };
@@ -904,52 +1220,71 @@ function entryList(st, entries, showPath = false) {
   if (!entries.length) return null;
   const prefs = st.prefs || viewPrefs();
   if (prefs.layout !== "tiles") return entries.map(e => entryRow(st, e, showPath));
-  const box = tilesBox("", prefs);
+  // Tiles showing details or tags are made larger, to have room for them.
+  const box = tilesBox(displayShows(st, "tiles", "details") || displayShows(st, "tiles", "tags") ? "roomy" : "", prefs);
   box.append(...entries.map(e => entryTile(st, e, showPath)));
   return box;
 }
 
+// An entry's tags: equipped, states, charges, where it is (when listed away from it), the list's own.
+function entryTags(st, e, it, path) {
+  return [e.equipped && h("span", { class: "tag on" }, equipWord(e)),
+    statesOnFor(st.char, e).map(s => h("span", { class: "tag attuned" }, s.label.toLowerCase())),
+    e.charges != null && h("span", { class: "tag" }, `${e.charges}/${it.maxCharges} charges`),
+    path && h("span", { class: "tag" }, path), st.tags?.(e)];
+}
+
+// A tile shows the parts its list's tiles show (displayShows): the picture with the name over it,
+// details and tags along its foot, worth and weight on its top edge, the count on its bottom edge,
+// and the buttons under it. Without its card, it's just the picture and the words.
 function entryTile(st, e, showPath) {
   const char = st.char, it = currentItem(e, char); // as it is now (its active layers)
   const path = showPath ? locationLabel(char, e) : null;
-  const el = h("button", { class: "tile" + (e.equipped ? " equipped" : "") + (st.rowClass?.(e) ? " " + st.rowClass(e) : ""), ...dragFrom(st, e),
+  const show = part => displayShows(st, "tiles", part);
+  const details = show("details") && [liquidLabel(e) || containerLoad(char, e) || itemSummary(it), e.notes, st.sub?.(e)].filter(Boolean).join(" — ");
+  const tags = show("tags") ? entryTags(st, e, it, path).flat().filter(Boolean) : [];
+  const el = h("button", { class: ["tile", e.equipped && "equipped", st.rowClass?.(e), !show("card") && "plain", !show("colour") && "no-colour",
+      details && "has-details", tags.length > 0 && "has-tags", !show("image") && "no-image"].filter(Boolean).join(" "), ...dragFrom(st, e),
     title: [entryName(e), liquidLabel(e) || containerLoad(char, e) || itemSummary(it), e.equipped && equipWord(e),
       ...statesOnFor(char, e).map(st => st.label.toLowerCase()), e.charges != null && `${e.charges}/${it.maxCharges} charges`, path, st.sub?.(e),
       st.tags?.(e)?.textContent].filter(Boolean).join(" · "),
-    onclick: () => st.open(e) },
-    itemIcon(it, "tile-icon", () => entryIconVars(char, e)),
-    h("span", { class: "tile-name" }, entryName(e)),
-    minimalCorners(entryTotalValue(char, e), entryTotalWeight(char, e), containerCapacity(char, e) || (e.qty !== 1 ? "×" + e.qty.toLocaleString() : null)));
+    "aria-label": entryName(e), onclick: () => st.open(e) },
+    show("image") && itemIcon(it, "tile-icon", () => entryIconVars(char, e)),
+    show("name") && h("span", { class: "tile-name" }, entryName(e)),
+    (details || tags.length > 0) && h("span", { class: "tile-foot" }, details && h("span", { class: "tile-details" }, details), tags.length > 0 && h("span", { class: "tile-tags" }, tags)),
+    minimalCorners(show("worth") ? entryTotalValue(char, e) : 0, show("weight") ? entryTotalWeight(char, e) : 0,
+      show("count") ? containerCapacity(char, e) || (e.qty !== 1 ? "×" + e.qty.toLocaleString() : null) : null));
   el.style.setProperty("--type", itemColor(it));
-  const tile = withFill(el, fillLevel(char, e));
-  // A storage's own controls (a pick…) sit under the tile.
-  const more = st.tileExtras === false ? [] : [st.extras?.(e)].flat().filter(Boolean);
+  const tile = show("card") ? withFill(el, fillLevel(char, e)) : el;
+  // The buttons (equip, write, a pick…) sit under the tile.
+  const more = !show("buttons") ? [] : [st.extras?.(e)].flat().filter(Boolean);
   return more.length ? h("div", { class: "tile-wrap" }, tile, h("div", { class: "tile-extras" }, more)) : tile;
 }
 
+// A row shows the parts its list's rows show (displayShows); without its card, no background or fill.
 function entryRow(st, e, showPath = false) {
   const char = st.char, it = currentItem(e, char); // as it is now (its active layers)
   const path = showPath ? locationLabel(char, e) : null;
   const setQty = n => st.setQty(e, n);
-  return withFill(h("div", { class: "row" + (e.equipped ? " equipped" : "") + (st.rowClass?.(e) ? " " + st.rowClass(e) : ""), ...dragFrom(st, e) },
-    itemIcon(it, "row-icon", () => entryIconVars(char, e)),
-    h("button", { class: "row-main", onclick: () => st.open(e) },
-      h("div", { class: "row-title" }, entryName(e),
-        !st.setQty && e.qty > 1 && h("span", { class: "muted" }, ` ×${e.qty.toLocaleString()}`),
-        e.equipped && h("span", { class: "tag on" }, equipWord(e)),
-        statesOnFor(char, e).map(st => h("span", { class: "tag attuned" }, st.label.toLowerCase())),
-        e.charges != null && h("span", { class: "tag" }, `${e.charges}/${it.maxCharges} charges`),
-        path && h("span", { class: "tag" }, path), st.tags?.(e)),
-      h("div", { class: "row-sub" }, [liquidLabel(e) || containerLoad(char, e) || itemSummary(it), e.notes, st.sub?.(e)].filter(Boolean).join(" — "))),
+  const show = part => displayShows(st, "list", part);
+  const details = show("details") && [liquidLabel(e) || containerLoad(char, e) || itemSummary(it), e.notes, st.sub?.(e)].filter(Boolean).join(" — ");
+  const row = h("div", { class: ["row", e.equipped && "equipped", st.rowClass?.(e), !show("card") && "plain", !show("colour") && "no-colour"].filter(Boolean).join(" "), ...dragFrom(st, e) },
+    show("image") && itemIcon(it, "row-icon", () => entryIconVars(char, e)),
+    h("button", { class: "row-main", "aria-label": show("name") ? null : entryName(e), onclick: () => st.open(e) },
+      h("div", { class: "row-title" }, show("name") && entryName(e),
+        show("count") && !(st.setQty && (st.canCount?.(e) ?? true)) && e.qty > 1 && h("span", { class: "muted" }, ` ×${e.qty.toLocaleString()}`),
+        show("tags") && entryTags(st, e, it, path)),
+      details && h("div", { class: "row-sub" }, details)),
     !st.noCog && clockworkCog(char, e),
-    st.showWorth && h("div", { class: "row-cost muted" }, fmtCost(entryTotalValue(char, e))),
-    h("div", { class: "row-weight muted" }, fmtWeight(entryOwnWeight(e))),
-    st.extras?.(e),
-    st.setQty && h("div", { class: "qty" },
+    show("worth") && h("div", { class: "row-cost muted" }, fmtCost(entryTotalValue(char, e))),
+    show("weight") && h("div", { class: "row-weight muted" }, fmtWeight(entryOwnWeight(e))),
+    show("buttons") && st.extras?.(e),
+    show("count") && st.setQty && (st.canCount?.(e) ?? true) && h("div", { class: "qty" },
       iconBtn("minus", "Decrease", () => setQty(e.qty - 1)),
       h("input", { type: "number", inputmode: "numeric", value: e.qty, min: 0, "aria-label": "Quantity",
         onchange: ev => setQty(Math.floor(+ev.target.value || 0)) }),
-      iconBtn("plus", "Increase", () => setQty(e.qty + 1)))), fillLevel(char, e));
+      iconBtn("plus", "Increase", () => setQty(e.qty + 1))));
+  return show("card") ? withFill(row, fillLevel(char, e)) : row;
 }
 
 // Open an inventory document (or written-in paper, a book…) in the reader; it can be written in from there.
@@ -1343,8 +1678,9 @@ function openEntry(entryUid) {
         }) })),
     h("label", { class: "field" }, h("span", null, "Location"), moveSel),
     h("label", { class: "field" }, h("span", null, "Quantity"),
-      h("input", { type: "number", min: 0, value: e.qty, inputmode: "numeric",
-        onchange: ev => { const n = Math.floor(+ev.target.value || 0); if (!n) close(); setEntryQty(e, n); } })),
+      canCount(e) ? h("input", { type: "number", min: 0, value: e.qty, inputmode: "numeric",
+        onchange: ev => { const n = Math.floor(+ev.target.value || 0); if (!n) close(); setEntryQty(e, n); } })
+        : h("span", { class: "static-value", title: "In Play mode, only things like ammunition, rations and potions are counted here" }, e.qty.toLocaleString())),
     (e.qty > 1 || sameStacks(char, e).length > 0) && h("div", { class: "field stack-actions" }, h("span", null, "Stack"),
       h("div", { class: "inline" },
         e.qty > 1 && h("button", { class: "btn", type: "button", onclick: () => { close(); openSplit(e.uid); } }, icon("copy"), "Split stack"),
@@ -1387,8 +1723,8 @@ function openEntry(entryUid) {
     planner && h("button", { class: "btn primary", onclick: unpack }, icon("package"), "Unpack"),
     h("button", { class: "btn", onclick: () => { close(); openSell(e.uid); } }, icon("coins"), "Sell"),
     // Player mode: no editing items (a copy can still be renamed with its display name).
-    !playerOnly() && h("button", { class: "btn", onclick: () => { close(); openItemForm(base, { entryUid: e.uid }); } }, icon("edit"), "Edit"),
-    !playerOnly() && h("button", { class: "btn", title: "Save a copy of this item as a reusable custom item", onclick: () => {
+    editing() && h("button", { class: "btn", onclick: () => { close(); openItemForm(base, { entryUid: e.uid }); } }, icon("edit"), "Edit"),
+    editing() && h("button", { class: "btn", title: "Save a copy of this item as a reusable custom item", onclick: () => {
       commit(s => s.customItems.unshift({ ...clone(base), id: "custom-" + uid(), source: base.source || "Homebrew" }), `Saved “${base.name}” to custom items`);
     } }, icon("copy"), "Save as custom"),
     party.active && party.others().length > 0 &&
@@ -1642,9 +1978,7 @@ function renderCatalog() {
 
 // A row of sub-tabs at the top of a screen.
 function subTabs(label, tabs, active, onPick) {
-  return h("div", { class: "seg sub-tabs", role: "tablist", "aria-label": label },
-    tabs.map(([k, text]) => h("button", { type: "button", role: "tab", class: active === k ? "active" : "", "aria-selected": String(active === k),
-      onclick: () => onPick(k) }, text)));
+  return slideSwitch(label, tabs, active, onPick, { tabs: true, cls: "sub-tabs" });
 }
 
 function catalogItemsView() {
@@ -2048,7 +2382,7 @@ function openItemForm(item, opts = {}) {
     const missing = systemStates().filter(st => !draft.layers[st.key]);
     if (tab !== "basic" && tab !== "triggers" && !draft.layers[tab]) tab = "basic";
     setChildren(tabsBox, (present.length || missing.length) && h("div", { class: "inline wrap layer-tabs" },
-      subTabs("Item states", [["basic", "Basic"], ...present.map(st => [st.key, st.label]), ["triggers", "Rules"]], tab, k => { tab = k; drawTabs(); }),
+      subTabs("Item states", [["basic", "Basic"], ...present.map(st => [st.key, st.label]), clockworkOn() && ["triggers", "Rules"]].filter(Boolean), tab, k => { tab = k; drawTabs(); }),
       missing.length > 0 && h("select", { class: "add-state", "aria-label": "Add a state", onchange: e => {
         if (!e.target.value) return;
         draft.layers[e.target.value] = {};
@@ -2197,7 +2531,7 @@ async function openIconDrawer(opts, onSave) {
         { id: "packrat-local", label: "Local value",
           title: "Add a Local value: each item's own, else its character's, set by the GM (GM tab → Values) and later by rules. Rename it, keeping the local_ at the start (e.g. local_heat); its slider is the default and range.",
           variable: { name: "local_value", value: 0, min: 0, max: 1, step: 0.01 } },
-      ],
+      ].filter(() => clockworkOn()), // (none while the campaign's values are switched off)
       // The editor's side panels keep the widths you drag them to (on this device).
       panelWidths: (() => { try { return JSON.parse(readPref("packrat-icon-editor-panels", "null")) || undefined; } catch { return undefined; } })(),
     });
@@ -2660,22 +2994,16 @@ function fieldInput(f, draft) {
     case "number":
       return h("label", { class: cls }, label, h("input", { type: "number", step: f.step || 1, min: f.min, inputmode: "decimal",
         value: draft[f.key] ?? "", oninput: e => set(e.target.value === "" ? undefined : +e.target.value) }));
-    case "checkbox":
-      return h("label", { class: "check field" }, h("input", { type: "checkbox", checked: !!draft[f.key], onchange: e => set(e.target.checked) }), " ", f.label);
+    case "checkbox": {
+      // (Not set: as its type has it, e.g. a consumable counting in Play mode.)
+      const tpl = itemTemplate(draft), dflt = tpl?.defaults?.[f.key] ?? rootTemplate(tpl)?.defaults?.[f.key];
+      return h("label", { class: "check field" }, h("input", { type: "checkbox", checked: !!(draft[f.key] ?? dflt), onchange: e => set(e.target.checked) }), " ", f.label);
+    }
     case "select": {
       if (draft[f.key] === undefined && f.options[0] !== "") draft[f.key] = f.options[0];
       const opts = [...f.options];
       if (draft[f.key] && !opts.includes(draft[f.key])) opts.push(draft[f.key]);
-      if (f.segmented) {
-        const group = h("div", { class: "seg seg-field", role: "radiogroup", "aria-label": f.label },
-          opts.map(o => h("button", { type: "button", role: "radio", class: draft[f.key] === o ? "active" : "",
-            "aria-checked": String(draft[f.key] === o),
-            onclick: ev => {
-              set(o);
-              for (const b of group.children) { b.classList.toggle("active", b === ev.currentTarget); b.setAttribute("aria-checked", String(b === ev.currentTarget)); }
-            } }, f.labels?.[o] || o)));
-        return h("div", { class: cls }, label, group);
-      }
+      if (f.segmented) return h("div", { class: cls }, label, slideSwitch(f.label, opts.map(o => [o, f.labels?.[o] || o]), draft[f.key], o => set(o), { cls: "seg-field" }));
       return h("label", { class: cls }, label, h("select", { onchange: e => set(e.target.value) },
         opts.map(o => h("option", { value: o, selected: draft[f.key] === o }, f.labels?.[o] || o || "—"))));
     }
@@ -3045,7 +3373,7 @@ function openTemplateEditor(tpl, copy = false) {
           if (e.target.checked) draft.layers[st.key] = draft.layers[st.key] || {}; else delete draft.layers[st.key];
           if (!Object.keys(draft.layers).length) delete draft.layers;
         } }), " " + st.label)))],
-    [h("h4", null, "Rules"),
+    clockworkOn() && [h("h4", null, "Rules"),
       h("p", { class: "muted small" }, "Its items start with these (each item can change them)."), tplTriggers],
     h("h4", null, "Features"),
     h("p", { class: "muted small" }, "What its items can do to begin with. “Yes” can be changed for each item; “Always” can't, and puts the feature's fields with the template's own."),
@@ -3174,13 +3502,19 @@ function renderSettings() {
   const setSetting = (k, v) => commit(st => { st.settings[k] = v; });
   const fileInput = h("input", { type: "file", accept: "application/json,.json", hidden: true,
     onchange: e => { if (e.target.files[0]) importFile(e.target.files[0]); e.target.value = ""; } });
-  // Player mode: just play. The catalog and custom items are hidden, and items can't be edited
-  // (a copy can still get its own display name). Per device.
-  const setPlayerMode = on => {
-    ui.playerMode = on;
-    writePref("packrat-player-mode", on ? "1" : "");
+  // Rules, values and controls (clockworkOn) for this campaign; in a party, sent to the host.
+  const setClockwork = async on => {
+    commit(() => { store.campaign().clockwork = on; }, on ? "Rules, values and controls are on" : "Rules, values and controls are off for this campaign");
+    if (party.active && party.isGm() && party.campaign?.id === store.campaign().id) {
+      try { await party.loadCampaign(store.campaign()); } catch (e) { toast(e.message); }
+    }
+  };
+  // The mode (see playMode): Play or Edit, for players and GMs alike. Per device.
+  const setMode = mode => {
+    ui.mode = mode;
+    writePref("packrat-mode", mode);
     render();
-    toast(on ? "Player mode on: the catalog and custom items are hidden" : "Player mode off");
+    toast(mode === "play" ? "Play mode: the catalog and editing are put away" : "Edit mode: make and change things");
   };
   // Role: a GM prepares campaigns' shops, values and controls without hosting (and gets the GM
   // tab); in a party, the host decides who's GM. Per device.
@@ -3196,35 +3530,35 @@ function renderSettings() {
         h("span", { class: "muted small" }, party.active
           ? (party.isGm() ? "You're a GM in this party." : "In a party, the host decides who's a GM.")
           : `As ${term("gm")}, prepare each campaign's shops, values and controls without hosting a party. In a party, the host chooses the ${term("gm")}.`)),
-      h("div", { class: "seg seg-field", role: "radiogroup", "aria-label": "Role" },
-        [["player", "Player"], ["gm", term("gm")]].map(([k, label]) => h("button", { type: "button", role: "radio", class: ui.role === k ? "active" : "",
-          "aria-checked": String(ui.role === k), disabled: party.active, onclick: () => setRole(k) }, label)))),
+      slideSwitch("Role", [["player", "Player"], ["gm", term("gm")]], ui.role, setRole, { disabled: party.active, even: true, cls: "seg-field" })),
     h("p", { class: "muted small device-line" }, "In parties this device is called ", h("b", null, deviceName()), ". ",
       h("button", { class: "link", onclick: renameDevice }, "Rename")));
-  return h("div", { class: "view-settings" },
+  // Two columns on a wide page: this device's settings, then the campaign's and the data.
+  return h("div", { class: "view-settings" }, pageColumns([
     roleBox,
     h("section", { class: "help-link" },
       icon("book"),
       h("div", null, h("b", null, "User guide"),
         h("p", { class: "muted small" }, "How everything works, with pictures: containers, sets, drawn icons, parties, shops and values.")),
       h("a", { class: "btn", href: GUIDE_URL, target: "_blank", rel: "noopener" }, "Open the guide")),
-    ui.role !== "gm" && h("section", null,
-      h("label", { class: "switch-row" },
-        h("span", null, h("b", null, "Player mode"),
-          h("span", { class: "muted small" }, `Hides the Catalog tab and item editing, for players whose gear comes from the ${term("gm")}, shops and trades. Items can still be renamed (Display name) and written in.`)),
-        h("input", { type: "checkbox", role: "switch", class: "switch", checked: ui.playerMode, onchange: ev => setPlayerMode(ev.target.checked) }))),
+    h("section", null,
+      h("div", { class: "switch-row" },
+        h("span", null, h("b", null, "Mode"),
+          h("span", { class: "muted small" }, isGmDevice()
+            ? "Play puts the catalog and editing away while you run the game: shops still open and close, treasure is still given out, and panels still work. Edit is for preparing: making items, shops, panels and tables."
+            : `Play is for the table: your gear comes from the ${term("gm")}, shops, trades and treasure, and only things like ammunition, rations and potions count up and down. Items can still be renamed and written in. Edit lets you make and change items.`)),
+        slideSwitch("Mode", [["play", "Play"], ["edit", "Edit"]], ui.mode, setMode, { even: true, cls: "seg-field" }))),
     h("section", null,
       h("div", { class: "switch-row" },
         h("span", null, h("b", null, "Animations"),
           h("span", { class: "muted small" }, "How smoothly moving icons (clocks, and ones following a value as it changes) animate on this device. Pack Rat slows them down by itself when this device is busy; Off shows them still.")),
-        h("div", { class: "seg seg-field", role: "radiogroup", "aria-label": "Animations" },
-          ANIMATIONS.map(([k, label]) => h("button", { type: "button", role: "radio", class: animationsSetting() === k ? "active" : "",
-            "aria-checked": String(animationsSetting() === k), onclick: () => {
-              writePref("packrat-animations", k);
-              frameClock.rate = 0; // from the new cap
-              frameClock.start();
-              render();
-            } }, label))))),
+        slideSwitch("Animations", ANIMATIONS.map(([k, label]) => [k, label]), animationsSetting(), k => {
+          writePref("packrat-animations", k);
+          frameClock.rate = 0; // from the new cap
+          frameClock.start();
+          render();
+        }, { even: true, cls: "seg-field" }))),
+  ], [
     partySettings(),
     h("section", null,
       h("div", { class: "section-head" }, h("h2", null, termCap("characters")),
@@ -3243,6 +3577,11 @@ function renderSettings() {
           () => commit(st => { st.characters = st.characters.filter(x => x.id !== c.id); if (st.activeId === c.id) st.activeId = st.characters[0]?.id; }, `Deleted ${c.name}`, true)), "danger-hover"))))),
     h("section", null,
       h("h2", null, `Rules for ${store.campaign().name}`),
+      // Clockwork (js/clockwork.js), for the whole campaign: the GM's to switch.
+      isGmDevice() && h("label", { class: "switch-row campaign-clockwork" },
+        h("span", null, h("b", null, "Rules, values and controls"),
+          h("span", { class: "muted small" }, `Items' rules, Global and Local values, the ${term("gm")}'s control panels and connections, and shops that follow values. Off, they're put away for everyone in this campaign, for a simpler game. Item states and limits stay.`)),
+        h("input", { type: "checkbox", role: "switch", class: "switch", checked: clockworkOn(), onchange: ev => setClockwork(ev.target.checked) })),
       h("div", { class: "form grid" },
         h("label", { class: "field" }, h("span", null, "Game system"),
           h("button", { class: "btn", type: "button", onclick: () => editCampaign(store.campaign()) }, icon("book"), activeSystem().name)),
@@ -3270,6 +3609,7 @@ function renderSettings() {
         fileInput,
         !party.active && h("button", { class: "btn danger", onclick: () => confirmDialog("Erase all characters, custom items and templates?", "Erase everything",
           () => commit(() => store.reset(), "All data reset", true)) }, icon("trash"), "Reset"))),
+  ]),
     h("section", { class: "credits muted small" },
       h("p", null, "Includes material from the System Reference Document 5.1 by Wizards of the Coast LLC, licensed under ",
         h("a", { href: "https://creativecommons.org/licenses/by/4.0/legalcode", target: "_blank", rel: "noopener" }, "CC BY 4.0"), "."),
@@ -3429,7 +3769,8 @@ document.addEventListener("click", e => {
 });
 
 // Make unexpected errors visible instead of failing silently (e.g. an old phone browser).
-window.addEventListener("error", e => { if (e.message) toast("Something went wrong: " + e.message); });
+// (The browser's "ResizeObserver loop" notice is harmless: a resize waits for the next frame.)
+window.addEventListener("error", e => { if (e.message && !/ResizeObserver loop/.test(e.message)) toast("Something went wrong: " + e.message); });
 window.addEventListener("unhandledrejection", e => toast("Something went wrong: " + (e.reason?.message || e.reason)));
 
 async function boot() {

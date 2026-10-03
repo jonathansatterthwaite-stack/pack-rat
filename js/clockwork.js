@@ -25,6 +25,14 @@ const isValueName = n => typeof n === "string" && VALUE_NAME.test(n) && !RESERVE
 const valueKey = name => "gm_" + name;
 const keyName = key => key.replace(/^gm_/, "");
 
+// ------------------------------------------------------------------ on or off
+// Clockwork can be switched off for a campaign (Settings → Rules, by the GM; users see it as
+// "Rules, values and controls"): the GM's Controls tab, the cogs, items' Rules, Global and Local
+// values in drawings and shops following values are put away, and items' rules don't run (they
+// keep up with what happens, so switching it back on fires nothing from meanwhile). Item states,
+// layers and limits are the game's own, and stay. In a party the host keeps the GM's choice.
+const clockworkOn = () => (party.active ? party.campaign?.clockwork : store.campaign()?.clockwork) !== false;
+
 // ------------------------------------------------------------------ where values are kept
 
 // With what a control being dragged shows meanwhile (clockwork.preview) on top.
@@ -86,6 +94,7 @@ function valueAt(scope, target, key) {
 // The values a drawn icon on an item gets: global_<name>, local_<name> (its own, else its
 // character's) and the older gm_<name> (its own, its character's, else the Global).
 function iconValueVars(charId, entryUid) {
+  if (!clockworkOn()) return {}; // (off: drawings show their own defaults)
   const g = valueSet(), out = {}, now = clockNow();
   const put = (bucket, prefix) => { for (const [k, v] of Object.entries(bucket || {})) if (!k.startsWith("gm_state_")) out[prefix + keyName(k)] = valueNow(v, now); };
   put(g.party, "global_");

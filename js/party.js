@@ -310,7 +310,9 @@ const party = {
       // The servers work out shop payments in its money, and sale prices with its states' layers.
       currency: currencyRules(sysOf(camp)), states: systemStates(sysOf(camp)).map(st => st.key),
       // Values only a GM sets (states' limits); players set their other Locals (js/clockwork.js).
-      gmOnly: systemStates(sysOf(camp)).map(limitValueName).filter(Boolean).map(valueKey) });
+      gmOnly: systemStates(sysOf(camp)).map(limitValueName).filter(Boolean).map(valueKey),
+      // Rules, values and controls (js/clockwork.js): off for everyone when the GM says so.
+      clockwork: camp.clockwork !== false });
   },
 
   // The game system the GM's campaign plays (hosts from before systems don't say: keep ours).

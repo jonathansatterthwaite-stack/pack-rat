@@ -65,8 +65,7 @@ function treasureView() {
       h("button", { class: "btn primary", onclick: () => editHoard(null) }, icon("plus"), "New hoard")),
     h("p", { class: "muted small" }, "Loot to give out: items from the catalog and coins, packed into containers as you like (a chest holding a pouch of gems). Give a hoard to a character and it all arrives in their inventory. Kept on this device, with the campaign."),
     list.length ? list.map(hoardCard)
-      : h("div", { class: "empty" }, icon("coins", "big"), h("p", null, "No hoards yet."),
-        h("button", { class: "btn primary", onclick: () => editHoard(null) }, "Make a hoard")),
+      : emptyState("coins", "No hoards yet.", h("button", { class: "btn primary", onclick: () => editHoard(null) }, icon("plus"), "Make a hoard")),
     tablesSection());
 }
 
@@ -256,17 +255,17 @@ function tablesSection() {
   const list = treasureTables();
   return h("section", { class: "treasure-tables" },
     h("div", { class: "section-head" }, h("h2", null, "Treasure tables"),
-      h("button", { class: "btn", onclick: () => editTreasureTable(null) }, icon("plus"), "New table")),
+      editing() && h("button", { class: "btn", onclick: () => editTreasureTable(null) }, icon("plus"), "New table")),
     h("p", { class: "muted small" }, "Roll for loot: each row of a table covers some rolls of its die and gives items, coins, a roll on another table or a hoard's contents. A roll fills a hoard, to look over before giving it out."),
     list.length ? h("div", { class: "group" }, list.map(t => h("div", { class: "row treasure-table-row" },
       icon("dice"),
       h("div", { class: "row-main static" }, h("div", { class: "row-title" }, t.name, h("span", { class: "tag" }, t.die)),
         h("div", { class: "row-sub" }, plural(t.rows.length, "row"))),
       h("button", { class: "btn primary", onclick: () => openRollTreasure(t) }, icon("dice"), "Roll"),
-      iconBtn("edit", `Edit ${t.name}`, () => editTreasureTable(t)),
-      iconBtn("trash", `Delete ${t.name}`, () => confirmDialog(`Delete the table “${t.name}”?`, "Delete",
+      editing() && iconBtn("edit", `Edit ${t.name}`, () => editTreasureTable(t)),
+      editing() && iconBtn("trash", `Delete ${t.name}`, () => confirmDialog(`Delete the table “${t.name}”?`, "Delete",
         () => commit(s => { s.treasureTables = s.treasureTables.filter(x => x.id !== t.id); }, `Deleted ${t.name}`, true)), "danger-hover"))))
-      : h("p", { class: "muted pad" }, "No tables yet."));
+      : emptyState("dice", "No treasure tables yet.", editing() && h("button", { class: "btn", onclick: () => editTreasureTable(null) }, icon("plus"), "Make a table")));
 }
 
 // Roll: how many times, and into which hoard (a new one, or one there is); then what came up.

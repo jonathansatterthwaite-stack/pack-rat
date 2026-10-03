@@ -611,8 +611,13 @@ def global_value(name, default=0):
     return default if v is None else v
 
 
+def clockwork_on():
+    """The campaign's rules, values and controls (the GM can switch them off): shops follow values only while on."""
+    return (state.get("campaign") or {}).get("clockwork") is not False
+
+
 def cond_holds(c):
-    if not c:
+    if not c or not clockwork_on():
         return True
     v, to = global_value(c["name"]), c["to"]
     return {"=": v == to, "!=": v != to, "<": v < to, "<=": v <= to, ">": v > to, ">=": v >= to}[c["op"]]
@@ -620,13 +625,13 @@ def cond_holds(c):
 
 def shop_open(shop):
     """Open by its condition if it has one, else as the GM set it."""
-    return cond_holds(shop["openIf"]) if shop.get("openIf") else bool(shop.get("open"))
+    return cond_holds(shop["openIf"]) if shop.get("openIf") and clockwork_on() else bool(shop.get("open"))
 
 
 def price_factor(shop):
     """What the shop's prices are multiplied by: its price value (1 while unset), from 0 to 100."""
     name = shop.get("priceValue")
-    v = global_value(name, None) if name else None
+    v = global_value(name, None) if name and clockwork_on() else None
     return 1 if v is None else max(0, min(100, v))
 
 
@@ -1474,7 +1479,7 @@ class Handler(SimpleHTTPRequestHandler):
         raise ApiError(404, "Unknown endpoint")
 
     def campaign_api(self, method, token):
-        """POST /api/campaign {id, name, system, currency, states, gmOnly, shops, gmValues}: a GM loads one of their campaigns into
+        """POST /api/campaign {id, name, system, currency, states, gmOnly, clockwork, shops, gmValues}: a GM loads one of their campaigns into
         the party (see switch_campaign). Shops and GM values seed a campaign the party hasn't played
         yet; every device plays its game system (system: {id, name}, or null for none)."""
         if method != "POST":
@@ -1500,6 +1505,8 @@ class Handler(SimpleHTTPRequestHandler):
                             clean_currency(body.get("currency")), states)
             # Values only a GM sets (states' limits); players set their other Locals.
             state["campaign"]["gmOnly"] = [k for k in (body.get("gmOnly") or [])[:50] if isinstance(k, str) and GM_NAME.match(k)]
+            # Rules, values and controls (Clockwork): off, shops don't follow values.
+            state["campaign"]["clockwork"] = body.get("clockwork") is not False
             changed(persist=False)
         print(f"  * The GM loaded the campaign {name}")
         return {"ok": True}

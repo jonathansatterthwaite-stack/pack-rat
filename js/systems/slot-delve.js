@@ -114,9 +114,9 @@ const SLOT_DELVE_SYSTEM = {
     { id: "sd-armor", name: "Armor", plural: "Armor", group: "arms", icon: "armor-breastplate", features: { protection: "main", equippable: true, stacks: false } },
     { id: "sd-gear", name: "Gear", plural: "Gear", group: "kit", icon: "sack" },
     { id: "sd-light", name: "Light", plural: "Lights", group: "kit", icon: "torch",
-      fields: [{ key: "burns", label: "Burns for", kind: "text", placeholder: "1 hour" }] },
+      fields: [{ key: "burns", label: "Burns for", kind: "text", placeholder: "1 hour" }], defaults: { countInPlay: true } },
     { id: "sd-container", name: "Container", plural: "Containers", group: "kit", icon: "backpack", features: { holds: true, stacks: false } },
-    { id: "sd-provision", name: "Provision", plural: "Provisions", group: "food", icon: "potion", categories: ["Food", "Drink", "Medicine"] },
+    { id: "sd-provision", name: "Provision", plural: "Provisions", group: "food", icon: "potion", categories: ["Food", "Drink", "Medicine"], defaults: { countInPlay: true } },
     { id: "sd-loot", name: "Loot", plural: "Loot", group: "loot", icon: "gem", categories: ["Curio", "Gem", "Art"] },
   ],
   features: [
