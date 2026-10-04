@@ -2941,9 +2941,12 @@ function setItemDrawing(it, d) {
   else { delete it.iconDoc; delete it.iconSvg; delete it.iconLib; }
 }
 
-// Custom items (every rule package) and inventory copies (every campaign) that use a library drawing.
+// Custom items (every rule package), inventory copies and GM panels' pictures (every campaign)
+// that use a library drawing.
 function drawingUsers(id) {
-  return [...store.allCustomItems(), ...store.data.campaigns.flatMap(cp => cp.characters.flatMap(c => c.items.map(e => e.item)))]
+  const tabs = items => (items || []).flatMap(t => [t, ...tabs(t.items)]); // a Tabs control's tabs, every level
+  return [...store.allCustomItems(), ...store.data.campaigns.flatMap(cp => [...cp.characters.flatMap(c => c.items.map(e => e.item)),
+    ...(cp.gmControls || []).flatMap(p => (p.controls || []).flatMap(c => [c, ...(c.type === "tabs" ? tabs(c.items) : [])]))])]
     .filter(it => it.iconLib === id);
 }
 
@@ -2981,24 +2984,26 @@ function pickDrawing(title, onPick, starters = true) {
 
 // Edit an item's drawing (in a form: `it` is the draft). One used by other items too asks
 // whether to change it everywhere or make this a drawing of its own.
-function editItemDrawing(it, done) {
+// it: an item, or a panel control (opts: its name, and the stored control it's a copy of).
+function editItemDrawing(it, done, opts = {}) {
   const d = findDrawing(it.iconLib);
-  openIconDrawer({ doc: d?.doc || it.iconDoc, name: it.name, color: itemColor(it), vars: it._vars }, (doc, svg) => {
+  const name = opts.name ?? it.name, self = opts.self ?? it._self;
+  openIconDrawer({ doc: d?.doc || it.iconDoc, name, color: opts.name ? it.color : itemColor(it), vars: it._vars }, (doc, svg) => {
     if (!doc) { setItemDrawing(it, null); return done(); }
-    const others = d ? drawingUsers(d.id).filter(u => u !== it._self).length : 0;
-    const asNew = () => { setItemDrawing(it, addDrawing(it.name, doc, svg)); done(); };
+    const others = d ? drawingUsers(d.id).filter(u => u !== self).length : 0;
+    const asNew = () => { setItemDrawing(it, addDrawing(name, doc, svg)); done(); };
     const everywhere = () => {
       const n = updateDrawing(d.id, doc, svg);
       setItemDrawing(it, findDrawing(d.id));
-      if (n) toast(`Updated “${d.name}” on ${plural(n, "other item")}`);
+      if (n) toast(`Updated “${d.name}” in ${plural(n, "other place")}`);
       done();
     };
     if (!d) return asNew();
     if (!others) return everywhere();
     let close;
     close = openModal("Change the drawing everywhere?", h("p", null,
-      `“${d.name}” is also the icon of ${plural(others, "other item")}. Change it on all of them, or keep this as a new drawing just for this item?`), { footer: [
-      h("button", { class: "btn", onclick: () => { close(); asNew(); } }, "Just this item"),
+      `“${d.name}” is also used in ${plural(others, "other place")} (items' icons, panel pictures). Change it on all of them, or keep this as a new drawing just here?`), { footer: [
+      h("button", { class: "btn", onclick: () => { close(); asNew(); } }, "Just here"),
       h("button", { class: "btn primary", onclick: () => { close(); everywhere(); } }, "Change everywhere"),
     ] });
   });
@@ -3025,7 +3030,7 @@ function drawingsSection() {
   const edit = d => openIconDrawer({ doc: d.doc, title: `Edit “${d.name}”`, color: "var(--accent)", saveLabel: "Save" }, (doc, svg) => {
     if (!doc) return toast("A drawing needs at least one shape");
     const n = updateDrawing(d.id, doc, svg);
-    toast(n ? `Saved “${d.name}” and updated ${plural(n, "item")}` : `Saved “${d.name}”`);
+    toast(n ? `Saved “${d.name}” and updated it in ${plural(n, "place")}` : `Saved “${d.name}”`);
   });
   const copy = d => openIconDrawer({ doc: clone(d.doc), title: `New drawing from “${d.name}”`, color: "var(--accent)", saveLabel: "Save" }, (doc, svg) => {
     if (doc) { addDrawing(`${d.name} (copy)`, doc, svg); toast("Saved a new drawing"); }
@@ -3038,7 +3043,7 @@ function drawingsSection() {
       h("button", { class: "btn", onclick: () => close() }, "Cancel"), h("button", { class: "btn primary", onclick: ok }, "Rename")] });
     input.focus(); input.select();
   };
-  const remove = d => confirmDialog(`Delete the drawing “${d.name}”?${used(d.id) ? ` The ${plural(used(d.id), "item")} using it keep their icon.` : ""}`, "Delete",
+  const remove = d => confirmDialog(`Delete the drawing “${d.name}”?${used(d.id) ? ` The ${plural(used(d.id), "place")} using it keep their copy.` : ""}`, "Delete",
     () => commit(s => { s.iconLibrary = s.iconLibrary.filter(x => x.id !== d.id); for (const it of drawingUsers(d.id)) delete it.iconLib; }, `Deleted “${d.name}”`, true));
   const newOne = () => openIconDrawer({ title: "New drawing", color: "var(--accent)", templates: true, saveLabel: "Save" }, (doc, svg) => {
     if (doc) { addDrawing("", doc, svg); toast("Saved a new drawing"); }
@@ -3054,7 +3059,7 @@ function drawingsSection() {
           (live ? liveDrawnIcon(d.doc, d.svg, "drawing-svg", null) : drawnIcon(d.svg, "drawing-svg")) || icon("image")),
         live && h("span", { class: "tag" }, "live"),
         h("b", null, d.name),
-        h("small", { class: "muted" }, n ? `Used by ${plural(n, "item")}` : "Not used yet"),
+        h("small", { class: "muted" }, n ? `Used in ${plural(n, "place")}` : "Not used yet"),
         h("div", { class: "tpl-actions" },
           h("button", { class: "link", onclick: () => edit(d) }, "Edit"),
           h("button", { class: "link", onclick: () => copy(d) }, "Use as template"),

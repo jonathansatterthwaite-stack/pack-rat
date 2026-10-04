@@ -1,11 +1,14 @@
 // Control panels: the GM's own panels of controls, laid out on a grid (boards with pins are in
 // js/gm-controls.js; both are Clockwork controls, see js/clockwork.js). Each control sets a
-// Global or Local value, or is just an icon or text.
+// Global or Local value, or is just a picture or text.
 //
 // Kept with the boards in store.state.gmControls (the GM's device):
 //   { id, kind: "panel", name, cols, rows, controls: [ctl] }
 //   ctl: { id, type, x, y, w, h,           its place on the grid (square cells, from 0 at the top left)
-//          label?, color?, icon?,
+//          label?, color?, icon?,          icon: a built-in icon; or a drawing, kept as items keep
+//          iconDoc?, iconSvg?, iconLib?    theirs (a copy, and the library drawing it came from):
+//                                          the Picture control (type "icon") and buttons show it,
+//                                          live with the Global values it reads
 //          tab?                            the tab it shows on (see Tabs controls below); none: always
 //          reverse?                        slider and switch: more (on) is left or down, not right
 //                                          or up (taller than wide, they stand upright)
@@ -20,14 +23,23 @@
 //          action: "set" | "add", amount   button
 //          options: [{ label, value }]     dropdown (default: the value's choices, else Off and On)
 //          board: { image?, pins }         board: a picture with pins (see gmBoard, js/gm-controls.js)
-//          levels, items: [tab]            tabs: a tree of tabs, levels deep (see Tabs controls below) }
+//          levels, items: [tab]            tabs: a tree of tabs, levels deep (see Tabs controls below);
+//                                          a tab's picture: icon, or a drawing (iconDoc, iconSvg, iconLib) }
 
 const CONTROL_TYPES = [["slider", "Slider"], ["range", "Range slider"], ["toggle", "Switch"], ["button", "Button"], ["dropdown", "Dropdown"],
-  ["polygon", "Polygon"], ["board", "Board"], ["tabs", "Tabs"], ["icon", "Icon"], ["text", "Text"]];
+  ["polygon", "Polygon"], ["board", "Board"], ["tabs", "Tabs"], ["icon", "Picture"], ["text", "Text"]];
 // The kinds offered when making one: a range slider is a slider with two handles (Handles).
 const CONTROL_KINDS = CONTROL_TYPES.filter(([k]) => k !== "range");
 const SETS_VALUE = new Set(["slider", "toggle", "button", "dropdown"]); // one value, `name`
 const isUpright = ctl => ctl.h > ctl.w;
+// A control's picture: its drawing (live with the Global values it reads), else its built-in icon.
+function controlPicture(ctl, cls, fallback = null) {
+  if (ctl.iconSvg && ctl.iconDoc) return isLiveDrawing(ctl.iconDoc)
+    ? liveDrawnIcon(ctl.iconDoc, ctl.iconSvg, cls, () => iconValueVars("", ""))
+    : drawnIcon(ctl.iconSvg, cls) || iconSvg("image", cls);
+  const id = ctl.icon || fallback;
+  return id ? iconSvg(id, cls) : null;
+}
 // The pictures a panel's boards use (so exports carry them).
 const panelImages = panel => (panel.controls || []).map(c => c.board?.image).filter(Boolean);
 
@@ -305,12 +317,12 @@ function controlLive(ctl, specs, panel) {
     case "button":
       return h("button", { type: "button", class: "btn cp-btn", title: ctl.name ? `${ctl.action === "add" ? `Adds ${ctl.amount ?? 1} to` : `Sets`} ${ctl.name}${ctl.action === "add" ? "" : ` to ${ctl.amount ?? 1}`}` : "",
         onclick: () => sendControl(ctl, ctl.action === "add" ? Math.round((v + (ctl.amount ?? 1)) * 1000) / 1000 : ctl.amount ?? 1) },
-        ctl.icon && iconSvg(ctl.icon, "cp-btn-icon"), label);
+        controlPicture(ctl, "cp-btn-icon"), label);
     case "dropdown":
       return [caption, h("select", { class: "cp-select", "aria-label": label || "Value", onchange: ev => sendControl(ctl, +ev.target.value) },
         dropdownOptions(ctl, spec).map(o => h("option", { value: o.value, selected: o.value === v }, o.label)))];
     case "icon":
-      return [iconSvg(ctl.icon || "question", "cp-icon"), caption];
+      return [controlPicture(ctl, "cp-icon", "question"), caption];
     case "board":
       return [caption, gmBoard(ctl.board || { pins: [] }),
         iconBtn("expand", "Expand: zoom and scroll", () => openBoardZoom(ctl.board || { pins: [] }, ctl.label || "Board"), "cp-expand")];
@@ -323,7 +335,7 @@ function controlLive(ctl, specs, panel) {
 // A Tabs control (type "tabs") is a tree of tabs, `levels` deep (1 to 4): a row of tabs for each
 // level, each row the tabs under the one chosen in the row before. Wider than it's tall, the rows
 // are stacked; taller, they stand side by side.
-//   { type: "tabs", levels, style?, turn?, items: [{ id, label, icon?, items?: [tab] }] }
+//   { type: "tabs", levels, style?, turn?, items: [{ id, label, icon? | iconDoc?, iconSvg?, iconLib?, items?: [tab] }] }
 // style: "horizontal" (rows of tabs), "vertical" (columns), or none (as its shape: rows when wider
 // than tall, else columns). turn: in columns, the labels turned (on the panel's left half reading
 // up, on its right half reading down, the first level outermost). Each level is a sliding
@@ -404,7 +416,7 @@ function tabsLive(panel, t) {
   for (let l = 0; l < (t.levels || 1) && items.length; l++) {
     const level = l, here = items;
     rows.push(slideSwitch(`${t.label || "Tabs"}, level ${l + 1}`,
-      here.map((it, i) => [it.id, [it.icon && iconSvg(it.icon, "cp-tab-icon"), h("span", null, it.label || `Tab ${i + 1}`)], it.label || `Tab ${i + 1}`]),
+      here.map((it, i) => [it.id, [controlPicture(it, "cp-tab-icon"), h("span", null, it.label || `Tab ${i + 1}`)], it.label || `Tab ${i + 1}`]),
       chosen[level], id => { ui.panelTabs[`${panel.id}/${t.id}`] = [...chosen.slice(0, level), id]; render(); },
       { tabs: true, even: true, cls: ["cp-tabs", down ? "down" : "across", turned && `turned ${side}`].filter(Boolean).join(" ") }));
     items = here.find(x => x.id === chosen[l])?.items || [];
@@ -621,13 +633,31 @@ function editPanelControl(panel, ctl, at) {
     h("input", { type: "text", value: draft[key] || "", placeholder, maxlength: 60, oninput: e => { draft[key] = e.target.value; } }));
   const num = (key, label, placeholder) => h("label", { class: "field" }, h("span", null, label),
     h("input", { type: "number", step: "any", value: draft[key] ?? "", placeholder: placeholder ?? "", onchange: e => { draft[key] = e.target.value === "" ? undefined : +e.target.value; } }));
+  // A picture: one of your drawings (or a new one, drawn here), or a built-in icon.
   const iconPick = () => {
     const box = h("div", { class: "inline wrap" });
-    const drawBox = () => setChildren(box, draft.icon ? iconSvg(draft.icon, "cp-pick-icon") : h("span", { class: "muted small" }, "None"),
-      h("button", { type: "button", class: "btn", onclick: () => openIconPicker(draft.icon, id => { draft.icon = id || undefined; drawBox(); }) }, icon("image"), "Choose…"),
-      draft.icon && h("button", { type: "button", class: "btn", onclick: () => { delete draft.icon; drawBox(); } }, "No icon"));
+    const name = () => draft.label || (draft.type === "icon" ? "Picture" : "Button");
+    const drawBox = () => {
+      const has = draft.iconSvg || draft.icon;
+      setChildren(box, has ? controlPicture(draft, "cp-pick-icon") : h("span", { class: "muted small" }, "None"),
+        h("button", { type: "button", class: "btn", onclick: () => openIconPicker(draft.icon, id => {
+          if (id) draft.icon = id; else delete draft.icon;
+          setItemDrawing(draft, null); // an icon replaces a drawing
+          drawBox();
+        }, null, { drawings: drawingLibrary(), onDrawing: d => { setItemDrawing(draft, d); drawBox(); } }) }, icon("image"), "Choose…"),
+        h("button", { type: "button", class: "btn", onclick: () => {
+          if (draft.iconDoc) return editItemDrawing(draft, drawBox, { name: name(), self: ctl });
+          openIconDrawer({ name: name(), color: draft.color, templates: true }, (doc, svg) => {
+            if (doc) setItemDrawing(draft, addDrawing(name(), doc, svg));
+            drawBox();
+          });
+        } }, icon("edit"), draft.iconDoc ? "Edit drawing…" : "Draw…"),
+        has && h("button", { type: "button", class: "btn", onclick: () => { delete draft.icon; setItemDrawing(draft, null); drawBox(); } }, "None"),
+        draft.type === "icon" && h("small", { class: "muted", style: "flex-basis: 100%" },
+          "A drawing that reads Global values (global_…) moves with them: a weather vane, a tide gauge, a clock."));
+    };
     drawBox();
-    return h("div", { class: "field" }, h("span", null, "Icon"), box);
+    return h("div", { class: "field" }, h("span", null, draft.type === "icon" ? "Picture" : "Icon"), box);
   };
   const nameInput = (obj, key, aria, placeholder = "value name, e.g. storm") => h("input", { type: "text", list: listId, value: obj[key] || "", placeholder,
     spellcheck: "false", autocomplete: "off", "aria-label": aria, onchange: e => { obj[key] = e.target.value.trim(); } });
@@ -680,9 +710,10 @@ function editPanelControl(panel, ctl, at) {
     const box = h("div", { class: "cp-tab-tree" });
     const node = (list, it, i, depth) => h("div", { class: "cp-tab-node" },
       h("div", { class: "cp-tab-row", style: { paddingLeft: depth * 22 + "px" } },
-        h("button", { type: "button", class: "btn cp-tab-pick", title: "Choose its icon (optional)",
-          onclick: () => openIconPicker(it.icon, id => { if (id) it.icon = id; else delete it.icon; draw(); }) },
-          it.icon ? iconSvg(it.icon, "cp-tab-icon") : icon("image")),
+        h("button", { type: "button", class: "btn cp-tab-pick", title: "Choose its picture: one of your drawings or an icon (optional)",
+          onclick: () => openIconPicker(it.icon, id => { if (id) it.icon = id; else delete it.icon; setItemDrawing(it, null); draw(); }, null,
+            { drawings: drawingLibrary(), onDrawing: d => { setItemDrawing(it, d); delete it.icon; draw(); } }) },
+          controlPicture(it, "cp-tab-icon") || icon("image")),
         h("input", { type: "text", value: it.label || "", maxlength: 30, placeholder: `Tab ${i + 1}`, "aria-label": `Level ${depth + 1}, tab ${i + 1}: name`,
           oninput: e => { it.label = e.target.value; } }),
         iconBtn("up", "Earlier", () => { if (i > 0) { [list[i - 1], list[i]] = [list[i], list[i - 1]]; draw(); } }),
@@ -765,9 +796,11 @@ function editPanelControl(panel, ctl, at) {
     if (!SETS_VALUE.has(draft.type) && draft.type !== "text" && draft.type !== "range") delete draft.name;
     if (draft.type !== "range") delete draft.name2;
     if (draft.type !== "polygon") { delete draft.vertices; delete draft.at; }
+    if (draft.type !== "icon" && draft.type !== "button") { delete draft.icon; setItemDrawing(draft, null); }
     if (draft.type === "tabs") {
       // Tabs as saved: named, at most `levels` deep.
       const tidy = (items, depth) => (items || []).map(it => ({ id: it.id, label: (it.label || "").trim().slice(0, 30), ...(it.icon ? { icon: it.icon } : {}),
+        ...(it.iconSvg && it.iconDoc ? { iconDoc: it.iconDoc, iconSvg: it.iconSvg, ...(it.iconLib ? { iconLib: it.iconLib } : {}) } : {}),
         ...(depth + 1 < draft.levels && it.items?.length ? { items: tidy(it.items, depth + 1) } : {}) }));
       draft.items = tidy(draft.items, 0);
       if (!draft.items.length) return toast("Tabs need at least one tab");

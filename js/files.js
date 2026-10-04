@@ -381,7 +381,7 @@ function filesView() {
     ], null, "What a campaign plays: its templates, groups, features, catalog and panels. A campaign can also play none. Others come as files to import (Import a file).", systems().length),
 
     filesSection("Drawings", drawingLibrary().map(d => fileRow(h("span", { class: "file-thumb" }, drawnIcon(d.svg, "file-svg") || icon("image")), d.name,
-      `Used by ${plural(drawingUsers(d.id).length, "item")}${isLiveDrawing(d.doc) ? " · live" : ""}`, sizeOf(d), [
+      `Used in ${plural(drawingUsers(d.id).length, "place")}${isLiveDrawing(d.doc) ? " · live" : ""}`, sizeOf(d), [
         fileBtn("download", `Export ${d.name}`, () => download(`${safeName(d.name)}.drawing.json`, { kind: "drawing", drawing: d })),
         fileBtn("trash", `Delete ${d.name}`, () => confirmDialog(`Delete the drawing “${d.name}”? Items using it keep their icon.`, "Delete",
           () => commit(s => { s.iconLibrary = s.iconLibrary.filter(x => x.id !== d.id); for (const it of drawingUsers(d.id)) delete it.iconLib; }, `Deleted “${d.name}”`, true)), "danger-hover"),
