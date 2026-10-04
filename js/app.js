@@ -2692,7 +2692,7 @@ async function openIconDrawer(opts, onSave) {
       h("button", { class: "btn", onclick: close }, "Cancel"),
       h("button", { class: "btn primary", onclick: save }, icon("check"), opts.saveLabel || "Use this icon")),
     h("p", { class: "icon-drawer-hint muted small" },
-      "Build the icon from shapes on layers: add shapes from the library and pick a layer in the strip beside the canvas. Press and hold a shape to move it; drag its handles to resize or rotate it. Modifiers add outlines, effects and masks. Variables make it live: in the Variables tab, bind a layer to one of Pack Rat's item values (“fill” shows how full a container is) or to the time for a clock. Global and Local values (names starting global_ or local_, e.g. global_storm, local_heat) are set by the GM (GM tab → Values): add one with + Global value or + Local value in the Variables tab, where the Pack Rat item list explains them. It's drawn in one colour; the app colours it like its other icons."),
+      "Build the icon from shapes on layers: add shapes from the library, and pick a layer by tapping it on the canvas (again for the one under it) or in the strip beside it. Drag the ✥ handle (or press and hold the shape) to move it; drag its handles to resize or rotate it. The gear sets handle sizes and how the view moves. Modifiers add outlines, effects and masks. Variables make it live: in the Variables tab, bind a layer to one of Pack Rat's item values (“fill” shows how full a container is) or to the time for a clock. Global and Local values (names starting global_ or local_, e.g. global_storm, local_heat) are set by the GM (GM tab → Values): add one with + Global value or + Local value in the Variables tab, where the Pack Rat item list explains them. It's drawn in one colour; the app colours it like its other icons."),
     host);
   document.body.append(overlay);
   document.body.classList.add("modal-open");
@@ -2720,10 +2720,13 @@ async function openIconDrawer(opts, onSave) {
           title: "Add a Local value: each item's own, else its character's, set by the GM (GM tab → Values) and later by rules. Rename it, keeping the local_ at the start (e.g. local_heat); its slider is the default and range.",
           variable: { name: "local_value", value: 0, min: 0, max: 1, step: 0.01 } },
       ].filter(() => clockworkOn()), // (none while the campaign's values are switched off)
-      // The editor's side panels keep the widths you drag them to (on this device).
+      // The editor's side panels keep the widths you drag them to, and its Preferences (the gear:
+      // handles, what touching the canvas does, the view pad) are kept too (on this device).
       panelWidths: (() => { try { return JSON.parse(readPref("packrat-icon-editor-panels", "null")) || undefined; } catch { return undefined; } })(),
+      preferences: (() => { try { return JSON.parse(readPref("packrat-icon-editor-prefs", "null")) || undefined; } catch { return undefined; } })(),
     });
     editor.on("panelresize", widths => writePref("packrat-icon-editor-panels", JSON.stringify(widths)));
+    editor.on("preferenceschange", prefs => writePref("packrat-icon-editor-prefs", JSON.stringify(prefs)));
     stopSync = syncIconVariables(editor, host, opts.vars);
     // Fit the canvas once the window has its final size.
     requestAnimationFrame(() => requestAnimationFrame(() => editor?.fitToView()));
