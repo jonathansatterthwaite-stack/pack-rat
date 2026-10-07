@@ -119,6 +119,32 @@ button { cursor: pointer; }
 .nav-btn.active { color: var(--accent); background: var(--accent-soft); }
 
 main { max-width: 1100px; margin: 0 auto; padding: 16px max(16px, env(safe-area-inset-left)) 40px; }
+/* Wide screens (WIDE_MIN in js/app.js, Settings → This device → Wide screens): the view takes the
+   width, with a column beside it (the inventory's panels, the catalog's groups) and details docked
+   on the right. The columns follow what's in them. */
+.dock { display: none; }
+main.wide { max-width: 2000px; display: grid; gap: 0 18px; grid-template-columns: minmax(0, 1fr); grid-template-areas: "top" "view"; align-items: start; }
+main.wide > #view-top { grid-area: top; min-width: 0; }
+main.wide > #view { grid-area: view; min-width: 0; }
+main.wide > #panels, main.wide > #side { grid-area: side; position: sticky; top: 72px; max-height: calc(100vh - 88px); overflow-y: auto; overscroll-behavior: contain; margin-bottom: 0; }
+main.wide.has-side { --side-w: 370px; grid-template-columns: var(--side-w) minmax(0, 1fr); grid-template-areas: "top top" "side view"; }
+main.wide.has-dock { grid-template-columns: minmax(0, 1fr) 440px; grid-template-areas: "top top" "view dock"; }
+main.wide.has-side.has-dock { grid-template-columns: var(--side-w) minmax(0, 1fr) 440px; grid-template-areas: "top top top" "side view dock"; }
+main.wide[data-screen="catalog"] { --side-w: 250px; }
+main.wide.has-dock > .dock { display: block; grid-area: dock; position: sticky; top: 72px; }
+main.wide > #panels > *, main.wide > #side > * { flex-shrink: 0; } /* (the column scrolls; its panels keep their height) */
+.modal.docked { width: 100%; max-height: calc(100vh - 88px); animation: none; box-shadow: 0 2px 12px rgb(0 0 0 / .1); }
+main.wide .cp-panel-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(520px, 1fr)); gap: 14px; align-items: start; }
+main.wide .cp-panel-list > * { margin: 0; }
+/* The catalog's side list (wide screens) */
+.side-list { display: flex; flex-direction: column; padding-bottom: 8px; }
+.side-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 14px; border: 0; border-top: 1px solid var(--border); background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.side-row:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.side-row > span:not(.type-dot) { flex: 1; min-width: 0; }
+.side-row small { color: var(--muted); }
+.side-row.active { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); font-weight: 600; box-shadow: inset 3px 0 0 var(--accent); }
+.side-list .chips { padding: 8px 12px; flex-wrap: wrap; border-top: 1px solid var(--border); }
+.side-sep { height: 10px; border-top: 1px solid var(--border); }
 
 /* ------------------------------------------------------------ buttons & inputs */
 .btn {
@@ -267,8 +293,8 @@ input.switch:focus-visible { outline: 3px solid var(--accent-soft); outline-offs
 /* Drawn icons (svg-lay-tool): sized like the built-in ones; the icon editor fills the screen, in the app's colours. */
 svg.drawn-icon { overflow: visible; }
 .icon-drawer { background: var(--bg); }
-.icon-drawer-hint { margin: 0; padding: 6px 14px; border-bottom: 1px solid var(--border); }
-@media (max-width: 760px) { .icon-drawer-hint { display: none; } }
+.icon-drawer-hint { margin: 0; padding: 6px 14px; border-bottom: 1px solid var(--border); max-height: 30vh; overflow: auto; }
+.icon-drawer-hint[hidden] { display: none; }
 .icon-drawer-host {
   flex: 1; min-height: 0; position: relative;
   --slt-bg: var(--bg); --slt-panel: var(--surface); --slt-panel-2: var(--surface-2); --slt-border: var(--border);

@@ -81,8 +81,8 @@ function gmControlsSection() {
   return h("section", { class: "gm-controls" },
     h("div", { class: "section-head" }, h("h2", null, "Panels"),
       editing() && h("button", { class: "btn primary", onclick: () => editControlPanel(null) }, icon("plus"), "New panel")),
-    h("p", { class: "muted small" }, "What you use to set values in play: panels, grids of sliders, switches, buttons, dropdowns, boards, icons and text, arranged as you like. Each sets a Global value, or a player's or an item's Locals, and players' icons follow. Kept on this device."),
-    list.length ? list.map(controlPanelCard)
+    h("p", { class: "muted small" }, "What you use to set values in play: panels, grids of sliders, switches, buttons, dropdowns, boards, pictures and text, arranged as you like. Each sets a Global value, or a player's or an item's Locals, and players' icons follow. Kept on this device."),
+    list.length ? h("div", { class: "cp-panel-list" }, list.map(controlPanelCard))
       : emptyState("sliders", "No panels yet. Make one, then arrange sliders, switches, buttons and boards on it.",
         editing() && h("button", { class: "btn primary", onclick: () => editControlPanel(null) }, icon("plus"), "Make a panel")));
 }

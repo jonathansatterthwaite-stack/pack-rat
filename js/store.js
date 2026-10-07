@@ -126,9 +126,10 @@ const kv = {
   },
 };
 
-// A character nobody has touched (the blank "Adventurer" every new install starts with).
+// A character nobody has played (the "Adventurer" every new install starts with): nothing but its
+// showcase items (js/showcase.js), no coins or notes, its first name.
 function isBlankCharacter(c) {
-  return !(c.items || []).length && !coinTotalCp(c.coins || {}) && !c.notes && ["Adventurer", "New Character"].includes(c.name);
+  return (c.items || []).every(e => e.showcase) && !coinTotalCp(c.coins || {}) && !c.notes && ["Adventurer", "New Character"].includes(c.name);
 }
 
 // One-time move of this browser's saved data into the PC's shared file. Merges
@@ -213,8 +214,9 @@ function defaultData() {
   const pkg = newPackage();
   pkg.templates = clone(DND5E_SYSTEM.starterTemplates);
   const camp = newCampaign("My campaign", [pkg.id], DND5E_SYSTEM.id); // the system list is made below
+  // showcase: the Adventurer's example items are added at the first start (js/showcase.js).
   return { version: 2, activeCampaign: camp.id, campaigns: [camp], packages: [pkg], iconLibrary: [],
-    systems: DEFAULT_BUNDLED.map(x => ({ id: x.id, bundled: true })), systemsListed: true, triggersSeen: true };
+    systems: DEFAULT_BUNDLED.map(x => ({ id: x.id, bundled: true })), systemsListed: true, triggersSeen: true, showcase: "pending" };
 }
 
 // The old single bundle -> one campaign and one package (nothing dropped).

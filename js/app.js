@@ -29,6 +29,7 @@ function setChildren(el, ...kids) {
 
 const ICONS = {
   undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
+  help: '<circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
   bag: '<path d="M4 10a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/><path d="M8 21v-5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v5"/><path d="M8 10h8"/>',
   book: '<path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>',
   wand: '<path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72"/><path d="m14 7 3 3"/><path d="M5 6v4M19 14v4M10 2v2M7 8H3M21 16h-4M11 3H9"/>',
@@ -178,26 +179,72 @@ function commit(fn, msg, undoable = false) {
 
 // head: more controls beside the close button. backdrop: an element shown faintly behind the
 // dialog's content (an item's icon as a watermark; see iconFocusSwitch).
-function openModal(title, body, { wide = false, footer = null, head = null, backdrop = null } = {}) {
+// dock: details (an item's): on a wide screen (wideLayout) they open in the panel on the right
+// instead, replacing what's there; dock is then what pops them out as a window (⤢).
+// Returns close; close.panel is the dialog.
+function openModal(title, body, { wide = false, footer = null, head = null, backdrop = null, dock = null } = {}) {
   const root = document.getElementById("modal-root");
-  const close = () => { overlay.remove(); document.body.classList.toggle("modal-open", root.children.length > 0); };
-  const panel = h("div", { class: "modal" + (wide ? " wide" : "") + (backdrop ? " has-backdrop" : ""), role: "dialog", "aria-modal": "true", "aria-label": title },
+  const docked = !!dock && wideLayout();
+  let overlay = null;
+  const close = () => {
+    if (docked) {
+      panel.remove();
+      if (dockClose === close) dockClose = null;
+      syncDock();
+    } else {
+      overlay.remove();
+      document.body.classList.toggle("modal-open", root.children.length > 0);
+    }
+  };
+  const panel = h("div", { class: "modal" + (wide ? " wide" : "") + (backdrop ? " has-backdrop" : "") + (docked ? " docked" : ""), role: "dialog",
+    "aria-modal": docked ? "false" : "true", "aria-label": title },
     backdrop && h("div", { class: "modal-backdrop", "aria-hidden": "true" }, backdrop),
-    h("div", { class: "modal-head" }, h("h2", null, title), head, iconBtn("x", "Close", () => close())),
+    h("div", { class: "modal-head" }, h("h2", null, title), head,
+      docked && typeof dock === "function" && iconBtn("expand", "Open as a window", () => dock()),
+      iconBtn("x", "Close", () => close())),
     h("div", { class: "modal-body" }, body),
     footer && h("div", { class: "modal-foot" }, footer));
-  const overlay = h("div", { class: "overlay", onmousedown: e => { if (e.target === overlay) close(); } }, panel);
-  root.append(overlay);
-  document.body.classList.add("modal-open");
+  close.panel = panel;
+  if (docked) {
+    dockClose?.(); // one at a time: the new details replace the old
+    dockClose = close;
+    document.getElementById("dock").replaceChildren(panel);
+    syncDock();
+  } else {
+    overlay = h("div", { class: "overlay", onmousedown: e => { if (e.target === overlay) close(); } }, panel);
+    root.append(overlay);
+    document.body.classList.add("modal-open");
+  }
   const first = panel.querySelector(".modal-body input:not([type=checkbox]), .modal-body select, .modal-body textarea");
-  if (first && window.matchMedia("(pointer: fine)").matches) setTimeout(() => first.focus(), 30);
+  if (first && !docked && window.matchMedia("(pointer: fine)").matches) setTimeout(() => first.focus(), 30);
   return close;
 }
+
+// ------------------------------------------------------------------ wide screens
+// "Use the room" (Settings → This device → Wide screens; on unless set to "One column"): on a screen
+// wider than WIDE_MIN, the view takes the width, with a column beside it (the inventory's panels,
+// the catalog's groups: #panels or #side) and details docked on the right (#dock, see openModal).
+const WIDE_MIN = 1300;
+let dockClose = null; // closes what's docked
+const wideLayout = () => readPref("packrat-wide", "room") === "room" && window.innerWidth >= WIDE_MIN;
+
+// The main area's columns follow what's in them.
+function syncDock() {
+  const main = document.querySelector("main"), dock = document.getElementById("dock");
+  if (!wideLayout() && dockClose) dockClose(); // narrowed (or switched off): no docked details
+  main.classList.toggle("has-dock", wideLayout() && dock.children.length > 0);
+}
+
+let wideWas = null;
+window.addEventListener("resize", () => {
+  if (wideLayout() !== wideWas) render();
+});
 
 document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
   const last = document.getElementById("modal-root").lastElementChild;
   if (last) { last.remove(); document.body.classList.toggle("modal-open", !!document.getElementById("modal-root").children.length); }
+  else if (dockClose && !e.target.closest?.("input, textarea, select")) dockClose(); // nothing over it: the docked details close
 });
 
 function confirmDialog(message, okLabel, onOk) {
@@ -419,7 +466,7 @@ function fitTileNames(box) {
 const VIEWS = {
   inventory: { label: "Inventory", icon: "bag", render: renderInventory,
     top: () => [missingSystemBanner(), foundElsewhereBanner(), notInPartyBanner(), party.active && undecidedBanner()] },
-  catalog: { label: "Catalog", icon: "book", render: renderCatalog, builder: true },
+  catalog: { label: "Catalog", icon: "book", render: renderCatalog, builder: true, side: catalogSide },
   shops: { label: "Shops", icon: "cart", render: renderShops },
   gm: { label: "GM", icon: "shield", render: renderGm, gmOnly: true },
   party: { label: "Party", icon: "users", render: renderParty, partyOnly: true },
@@ -455,7 +502,7 @@ function countsInPlay(item, srcId) {
 // May this entry's count be changed here and now?
 const canCount = e => editing() || countsInPlay(currentItem(e), e.srcId);
 
-// Does this GM play characters too? If not, the Inventory tab would only ever be empty.
+// Does this GM play characters too? (If not, the header names the GM, except on the Inventory tab.)
 const gmHasCharacters = () => party.active ? party.linked().length > 0 : store.state.characters.some(c => !isBlankCharacter(c));
 
 // A tab's name (the GM tab's comes from the game system's words).
@@ -466,7 +513,6 @@ function viewVisible(key) {
   if (v.partyOnly && !party.active) return false;
   if (v.builder && playMode()) return false;
   if (v.gmOnly && !isGmDevice()) return false;
-  if (key === "inventory" && (isGmDevice() || party.isHost()) && !gmHasCharacters()) return false;
   return true;
 }
 
@@ -488,7 +534,7 @@ function render() {
   if (!viewVisible(ui.view)) ui.view = isGmDevice() && viewVisible("gm") ? "gm" : Object.keys(VIEWS).find(viewVisible);
   // A GM who plays no character is just the GM.
   document.getElementById("char-name").textContent = joining ? "Join the party"
-    : isGmDevice() && !gmHasCharacters() ? termCap("gameMaster") : char ? char.name : "";
+    : isGmDevice() && !gmHasCharacters() && ui.view !== "inventory" ? termCap("gameMaster") : char ? char.name : "";
   document.getElementById("campaign-name").textContent = store.campaign().name;
   document.getElementById("nav").hidden = joining;
   const offers = party.active ? party.incoming().length : 0;
@@ -505,6 +551,19 @@ function render() {
   // Above the view: its notices, then the system's panels (they stay loaded: see js/panels.js).
   setChildren(document.getElementById("view-top"), freshTestBanner(), !joining && treasureBanner(), !joining && VIEWS[ui.view].top?.());
   syncPanels(char, !joining && ui.view === "inventory");
+  // Wide screens: the view takes the width, with a column beside it (the inventory's panels above,
+  // or the view's own side: the catalog's groups) and the docked details.
+  const wide = wideLayout(), sideEl = document.getElementById("side");
+  wideWas = wide;
+  const side = wide && !joining ? VIEWS[ui.view].side?.() : null;
+  sideEl.hidden = !side;
+  if (side) setChildren(sideEl, side);
+  else sideEl.replaceChildren();
+  const mainEl = document.querySelector("main");
+  mainEl.classList.toggle("wide", wide);
+  mainEl.classList.toggle("has-side", wide && (!!side || !document.getElementById("panels").hidden));
+  mainEl.dataset.screen = ui.view;
+  syncDock();
   main.replaceChildren(joining ? renderJoin() : VIEWS[ui.view].render());
   // Tiles are laid out now: size them and shrink names to fit (resizes are handled by each grid's observer).
   syncTileSize(main);
@@ -516,6 +575,7 @@ function render() {
 }
 
 function go(view) {
+  if (view !== ui.view) dockClose?.(); // docked details belong to the tab they were opened on
   ui.view = view;
   history.replaceState(null, "", "#" + view);
   render();
@@ -774,7 +834,7 @@ function openStoredItem(st, e, controls = null, footer = []) {
   let close;
   close = openModal(entryName(e), [e.customName && h("p", { class: "muted small" }, it.name), controls,
     itemDetails(it, null, e.srcId, () => entryIconVars(st.char, e))],
-  { footer: [...footer, h("button", { class: "btn primary", onclick: () => close() }, "Done")] });
+  { footer: [...footer, h("button", { class: "btn primary", onclick: () => close() }, "Done")], dock: true });
   return close;
 }
 
@@ -1928,7 +1988,8 @@ function openEntry(entryUid, opts = {}) {
   let panel = null;
   const reopen = () => {
     const iconOnly = panel?.classList.contains("icon-focus");
-    close(); openEntry(entryUid);
+    const docked = panel?.classList.contains("docked");
+    close(); openEntry(entryUid, docked ? {} : { window: true });
     if (iconOnly) entryDetailsOpen?.panel.querySelector(".icon-focus-switch input")?.click();
   };
   // Live drawings read this copy's values as they are now (it may have changed, or been
@@ -1943,9 +2004,10 @@ function openEntry(entryUid, opts = {}) {
   close = openModal(entryName(e), [e.customName && h("p", { class: "muted small" }, it.name),
     readBtn, liquidCap(e) > 0 && liquidControls(e), isDeckEntry(e) && deckSection(e, reopen, () => close()),
     cardBackButton(e, () => close()), controls, planner?.el, itemDetails(shown, changeIcon, e.srcId, vars, true), layerSections(base, key => stateOn(char, e, key))],
-  { footer, wide: !!planner, head: [clockworkCog(char, e, () => close()), iconFocusSwitch()], backdrop: iconBackdrop(it, artVars) });
+  { footer, wide: !!planner, head: [clockworkCog(char, e, () => close()), iconFocusSwitch()], backdrop: iconBackdrop(it, artVars),
+    dock: !opts.window && (() => { close(); openEntry(entryUid, { ...opts, window: true }); }) });
   // Its states can change while it's open (a trigger, the GM): render() redraws it if they do.
-  panel = [...document.querySelectorAll("#modal-root .modal")].pop();
+  panel = close.panel;
   if (interactive) makeIconInteractive(panel, it.iconDoc, entryUid, touch, artVars);
   if (opts.use) panel.querySelector(".icon-focus-switch input")?.click(); // Use: straight to the picture
   entryDetailsOpen = { uid: entryUid, states: JSON.stringify(entryStates(char, e)), panel, reopen };
@@ -2157,9 +2219,29 @@ const CATALOG_TABS = [["items", "Items"], ["mine", "My items"], ["drawings", "Dr
 function renderCatalog() {
   const tab = CATALOG_TABS.some(([k]) => k === ui.catTab) ? ui.catTab : "items";
   return h("div", { class: "view-catalog-tabs" },
-    subTabs("Catalog", CATALOG_TABS, tab, k => { ui.catTab = k; render(); }),
+    !wideLayout() && subTabs("Catalog", CATALOG_TABS, tab, k => { ui.catTab = k; render(); }), // (wide: the side list)
     tab === "items" ? catalogItemsView()
       : h("div", { class: "view-custom" }, tab === "mine" ? myItemsSection() : tab === "drawings" ? drawingsSection() : templatesSection()));
+}
+
+// Wide screens: the catalog's groups and tabs down the side, with the chosen group's kinds.
+function catalogSide() {
+  const tab = CATALOG_TABS.some(([k]) => k === ui.catTab) ? ui.catTab : "items";
+  const st = listState("catalog"), items = store.catalog();
+  const counts = {};
+  for (const it of items) { const g = groupOfItem(it)?.id; counts[g] = (counts[g] || 0) + 1; }
+  const pick = (k, type) => { ui.catTab = k; if (type) { st.type = type; st.sub = null; } render(); window.scrollTo(0, 0); };
+  const row = (label, n, active, onclick, dot) => h("button", { type: "button", class: "side-row" + (active ? " active" : ""), "aria-current": active ? "true" : null, onclick },
+    dot, h("span", null, label), n != null && h("small", null, n));
+  const type = st.type || "all";
+  const g = tab === "items" && groupById(type);
+  return h("nav", { class: "group side-list", "aria-label": "Catalog" },
+    h("div", { class: "group-head" }, h("h3", null, "Catalog")),
+    row("All items", items.length, tab === "items" && type === "all", () => pick("items", "all")),
+    systemGroups().filter(x => counts[x.id]).map(x => row(x.name, counts[x.id], tab === "items" && type === x.id, () => pick("items", x.id), colorDot(groupColor(x.id), x.name))),
+    g && subChips(g.id, st.sub ?? null, s => items.filter(i => groupOfItem(i)?.id === g.id && s.match(i)).length, key => { st.sub = key; render(); }),
+    h("div", { class: "side-sep" }),
+    CATALOG_TABS.filter(([k]) => k !== "items").map(([k, label]) => row(label, null, tab === k, () => pick(k))));
 }
 
 // A row of sub-tabs at the top of a screen.
@@ -2183,7 +2265,7 @@ function quickAdd(item) {
   commit((s, c) => addToInventory(c, item), `Added ${item.name}${item.bundle > 1 ? ` ×${item.bundle}` : ""}`, true);
 }
 
-function openCatalogItem(item) {
+function openCatalogItem(item, opts = {}) {
   const char = store.char();
   const isCustom = item.id.startsWith("custom-");
   const isPack = hasFeature(item, "pack", item.id);
@@ -2260,7 +2342,8 @@ function openCatalogItem(item) {
     openReader(item, isCustom ? { onEdit: () => openItemForm(store.findCustom(item.id) || item) } : {});
   } }, icon(item.imageOnly ? "image" : "book"), item.imageOnly ? "View" : "Read");
   close = openModal(item.name, [readBtn, controls, planner?.el, itemDetails(item, changeIcon, item.id, null, true), layerSections(item, () => false)],
-    { footer, wide: !!planner, head: iconFocusSwitch(), backdrop: iconBackdrop(item) });
+    { footer, wide: !!planner, head: iconFocusSwitch(), backdrop: iconBackdrop(item),
+      dock: !opts.window && (() => { close(); openCatalogItem(item, { window: true }); }) });
 }
 
 // ------------------------------------------------------------------ decks
@@ -2684,15 +2767,24 @@ async function openIconDrawer(opts, onSave) {
       editor?.store.commit(normalizeDocument(clone(d.doc)));
       editor?.fitToView();
     }) }, icon("copy"), h("span", { class: "hide-sm" }, "Start from…"));
+  // How it works: a few lines under the top bar, shown on asking (remembered), so the canvas gets the room.
+  const hint = h("p", { class: "icon-drawer-hint muted small", hidden: readPref("packrat-icon-editor-help", "") !== "1" },
+    "Build the icon from shapes on layers: add shapes from the library, and pick a layer by tapping it on the canvas (again for the one under it) or in the strip beside it. Drag the ✥ handle (or press and hold the shape) to move it; drag its handles to resize or rotate it. The gear sets handle sizes and how the view moves. Modifiers add outlines, effects and masks. Variables make it live: in the Variables tab, bind a layer to one of Pack Rat's item values (“fill” shows how full a container is) or to the time for a clock. Global and Local values (names starting global_ or local_, e.g. global_storm, local_heat) are set by the GM (GM tab → Values): add one with + Global value or + Local value in the Variables tab, where the Pack Rat item list explains them. It's drawn in one colour; the app colours it like its other icons.");
+  const helpBtn = h("button", { class: "btn", type: "button", "aria-expanded": String(!hint.hidden), title: "How the editor works",
+    onclick: () => {
+      hint.hidden = !hint.hidden;
+      helpBtn.setAttribute("aria-expanded", String(!hint.hidden));
+      writePref("packrat-icon-editor-help", hint.hidden ? "" : "1");
+    } }, icon("help"), h("span", { class: "hide-sm" }, "How it works"));
   // No Escape-to-close: the editor uses Escape itself, and closing would lose the drawing.
   const overlay = h("div", { class: "reader icon-drawer", role: "dialog", "aria-modal": "true", "aria-label": "Draw an icon" },
     h("div", { class: "reader-bar" },
       h("div", { class: "reader-title" }, opts.title || `Draw an icon${opts.name ? ` for ${opts.name}` : ""}`),
+      helpBtn,
       startFrom,
       h("button", { class: "btn", onclick: close }, "Cancel"),
       h("button", { class: "btn primary", onclick: save }, icon("check"), opts.saveLabel || "Use this icon")),
-    h("p", { class: "icon-drawer-hint muted small" },
-      "Build the icon from shapes on layers: add shapes from the library, and pick a layer by tapping it on the canvas (again for the one under it) or in the strip beside it. Drag the ✥ handle (or press and hold the shape) to move it; drag its handles to resize or rotate it. The gear sets handle sizes and how the view moves. Modifiers add outlines, effects and masks. Variables make it live: in the Variables tab, bind a layer to one of Pack Rat's item values (“fill” shows how full a container is) or to the time for a clock. Global and Local values (names starting global_ or local_, e.g. global_storm, local_heat) are set by the GM (GM tab → Values): add one with + Global value or + Local value in the Variables tab, where the Pack Rat item list explains them. It's drawn in one colour; the app colours it like its other icons."),
+    hint,
     host);
   document.body.append(overlay);
   document.body.classList.add("modal-open");
@@ -3771,7 +3863,11 @@ function renderSettings() {
     h("div", { class: "switch-row" },
       h("span", null, h("b", null, "Sounds"),
         h("span", { class: "muted small" }, "What items you can use make when touched: a drum's beat, a bell, a die's rattle. Quiet plays them softly; Off keeps them silent on this device.")),
-      slideSwitch("Sounds", SOUND_LEVELS.map(([k, label]) => [k, label]), soundLevel(), k => { writePref("packrat-sounds", k); render(); }, { even: true, cls: "seg-field" })));
+      slideSwitch("Sounds", SOUND_LEVELS.map(([k, label]) => [k, label]), soundLevel(), k => { writePref("packrat-sounds", k); render(); }, { even: true, cls: "seg-field" })),
+    h("div", { class: "switch-row" },
+      h("span", null, h("b", null, "Wide screens"),
+        h("span", { class: "muted small" }, `On a screen wider than ${WIDE_MIN} pixels. Use the room: the inventory's panels beside its list, details on the right, the catalog's groups down the side, GM panels side by side. One column: centred, as on a narrower screen.`)),
+      slideSwitch("Wide screens", [["room", "Use the room"], ["one", "One column"]], readPref("packrat-wide", "room"), k => { writePref("packrat-wide", k); render(); }, { even: true, cls: "seg-field" })));
   const guide = h("section", { class: "settings-card help-link" },
     icon("book"),
     h("div", null, h("b", null, "User guide"),
@@ -3871,7 +3967,7 @@ function dataCard() {
     !party.active && [
       h("p", { class: "muted small" }, "Erasing removes every campaign, character, rule package and drawing on this device. Export everything first: it can't be undone."),
       h("button", { class: "btn danger", onclick: () => confirmDialog("Erase every campaign, character, rule package and drawing on this device?", "Erase everything",
-        () => commit(() => store.reset(), "All data erased", true)) }, icon("trash"), "Erase everything on this device…")]);
+        () => { commit(() => store.reset(), "All data erased", true); addShowcase(); }) }, icon("trash"), "Erase everything on this device…")]);
 }
 
 function newCharPrompt() {
@@ -4046,6 +4142,7 @@ async function boot() {
     party.connect();
   }
   render();
+  addShowcase(); // a new install: the Adventurer's example items (js/showcase.js)
   if (!party.active) lookForSavedData();
   if (party.unreachable) party.retryJoin();
   // Closing the host's window ends the party for everyone, so ask first.

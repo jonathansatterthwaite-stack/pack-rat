@@ -28,8 +28,9 @@
 
 const CONTROL_TYPES = [["slider", "Slider"], ["range", "Range slider"], ["toggle", "Switch"], ["button", "Button"], ["dropdown", "Dropdown"],
   ["polygon", "Polygon"], ["board", "Board"], ["tabs", "Tabs"], ["icon", "Picture"], ["text", "Text"]];
-// The kinds offered when making one: a range slider is a slider with two handles (Handles).
+// The kinds offered when making one, in groups: a range slider is a slider with two handles (Handles).
 const CONTROL_KINDS = CONTROL_TYPES.filter(([k]) => k !== "range");
+const CONTROL_GROUPS = [["Layout", ["tabs"]], ["Display", ["text", "icon"]], ["Interactive", ["slider", "toggle", "button", "dropdown", "polygon", "board"]]];
 const SETS_VALUE = new Set(["slider", "toggle", "button", "dropdown"]); // one value, `name`
 const isUpright = ctl => ctl.h > ctl.w;
 // A control's picture: its drawing (live with the Global values it reads), else its built-in icon.
@@ -570,7 +571,7 @@ function editControlPanel(panel) {
     h("label", { class: "field" }, h("span", null, "Name"),
       h("input", { type: "text", value: draft.name, maxlength: 60, placeholder: "e.g. Ship's helm, Weather, Doom clock", oninput: e => { draft.name = e.target.value; } })),
     h("div", { class: "form grid" }, num("cols", "Columns", 1, 12), num("rows", "Rows", 1, 24)),
-    h("p", { class: "muted small" }, "A grid for your controls: sliders, range sliders, switches, buttons, dropdowns, polygons, boards, icons and text. Each sets a Global value or a player's or item's Local value.")),
+    h("p", { class: "muted small" }, "A grid for your controls: sliders, range sliders, switches, buttons, dropdowns, polygons, boards, pictures and text. Each sets a Global value or a player's or item's Local value.")),
   { footer: [h("button", { class: "btn", onclick: () => close() }, "Cancel"), h("button", { class: "btn primary", onclick: save }, icon("check"), isNew ? "Make it" : "Save")] });
 }
 
@@ -744,7 +745,8 @@ function editPanelControl(panel, ctl, at) {
   };
   const drawFields = () => setChildren(fields,
     h("label", { class: "field" }, h("span", null, "Kind"), h("select", { onchange: e => { draft.type = e.target.value; drawFields(); } },
-      CONTROL_KINDS.map(([k, label]) => h("option", { value: k, selected: (draft.type === "range" ? "slider" : draft.type) === k }, label)))),
+      CONTROL_GROUPS.map(([group, kinds]) => h("optgroup", { label: group }, kinds.map(k => h("option", { value: k, selected: (draft.type === "range" ? "slider" : draft.type) === k },
+        CONTROL_KINDS.find(t => t[0] === k)[1])))))),
     (draft.type === "slider" || draft.type === "range") && h("div", { class: "field" }, h("span", null, "Handles"),
       slideSwitch("Handles", [["slider", "One: a value"], ["range", "Two: a lower and an upper value"]], draft.type, v => { draft.type = v; drawFields(); }, { even: true, cls: "seg-field" })),
     text("label", draft.type === "text" ? "Text" : "Label", draft.type === "icon" ? "Optional" : ""),

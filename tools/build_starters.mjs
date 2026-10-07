@@ -145,6 +145,103 @@ const starters = [];
   starters.push({ id: "starter-deck", name: "Card deck", hint: "For a set (a deck of cards): tap to draw a card. The stack shows how many are left (Pack Rat's value pieces).", doc: doc(layers, [v("pieces", 3, 0, 60)]) });
 }
 
+// ---- Live drawings for the first character's items (see js/showcase.js): they follow Pack Rat's
+// item values (fill, qty), the GM's map (Global values party_x, party_y, goal_x, goal_y, 0 to 100) and the time.
+
+// --- Backpack: the inside fills up as it's loaded (fill: 0 empty, 1 full).
+{
+  const layers = [
+    shape({ shape: "rect", name: "Load", x: 128, y: 158, width: 150, height: 140, bindings: [bind("height", "140 * clamp(fill, 0, 1)", { x: 0.5, y: 1 })] }),
+    shape({ shape: "rect", name: "Inside", x: 128, y: 158, width: 132, height: 128, modifiers: [T.createModifier("round", { radius: 18 }), T.createMaskModifier({ mode: "clip" })] }),
+    shape({ shape: "rect", name: "Bag", x: 128, y: 158, width: 156, height: 152, modifiers: [T.createModifier("round", { radius: 26 }), ...outline(12)] }),
+    shape({ shape: "rect", name: "Flap", x: 128, y: 92, width: 132, height: 44, modifiers: [T.createModifier("round", { radius: 14 }), ...outline(10)] }),
+    shape({ shape: "ellipse", name: "Handle", x: 128, y: 52, width: 56, height: 40, params: { hole: 62 } }),
+    shape({ shape: "rect", name: "Buckle", x: 128, y: 116, width: 26, height: 22 }),
+  ];
+  starters.push({ id: "starter-backpack", name: "Backpack", hint: "A container whose picture fills up as you load it (Pack Rat's value fill: 0 empty, 1 full).", doc: doc(layers, [v("fill", 0.4, 0, 1, 0.01)]) });
+}
+
+// --- Arrows: a quiver showing up to ten arrows, one for each in the stack (qty).
+{
+  const layers = [];
+  const order = [4, 5, 3, 6, 2, 7, 1, 8, 0, 9]; // the middle ones first
+  const pivot = { x: 128, y: 230 };
+  const at = (deg, d) => ({ x: pivot.x + Math.sin(deg * Math.PI / 180) * d, y: pivot.y - Math.cos(deg * Math.PI / 180) * d });
+  for (let k = 0; k < 10; k++) {
+    const deg = -27 + k * 6, n = order.indexOf(k) + 1;
+    const shaft = at(deg, 92), tip = at(deg, 190);
+    layers.push(shape({ shape: "rect", name: `Arrow ${n}`, x: shaft.x, y: shaft.y, width: 6, height: 184, rotation: deg, bindings: [bind("visible", `qty >= ${n}`)] }));
+    layers.push(shape({ shape: "polygon", name: `Head ${n}`, x: tip.x, y: tip.y, width: 18, height: 24, params: { sides: 3 }, rotation: deg, bindings: [bind("visible", `qty >= ${n}`)] }));
+  }
+  layers.push(shape({ shape: "rect", name: "Quiver", x: 128, y: 186, width: 92, height: 120, modifiers: [T.createModifier("round", { radius: 12 })] }));
+  starters.push({ id: "starter-arrows", name: "Arrows", hint: "A stack's picture: one arrow for each in the stack, up to ten (Pack Rat's value qty).", doc: doc(layers, [v("qty", 6, 0, 20)]) });
+}
+
+// --- Rations: a pile of up to six bundles, one for each in the stack (qty).
+{
+  const spots = [[52, 206], [128, 206], [204, 206], [90, 146], [166, 146], [128, 86]];
+  const layers = spots.map(([x, y], i) => shape({ shape: "rect", name: `Bundle ${i + 1}`, x, y, width: 70, height: 52,
+    modifiers: [T.createModifier("round", { radius: 16 }), ...outline(9)], bindings: [bind("visible", `qty >= ${i + 1}`)] }));
+  spots.forEach(([x, y], i) => layers.push(shape({ shape: "rect", name: `String ${i + 1}`, x, y, width: 7, height: 52, bindings: [bind("visible", `qty >= ${i + 1}`)] })));
+  starters.push({ id: "starter-rations", name: "Rations", hint: "A stack's picture: one bundle for each in the stack, up to six (Pack Rat's value qty).", doc: doc(layers, [v("qty", 4, 0, 10)]) });
+}
+
+const MAP_VARS = () => [v("global_party_x", 30, 0, 100), v("global_party_y", 70, 0, 100), v("global_goal_x", 70, 0, 100), v("global_goal_y", 30, 0, 100)];
+
+// --- Compass: the needle points from the party to the goal on the GM's map.
+{
+  const layers = [
+    shape({ shape: "ellipse", name: "Case", x: 128, y: 128, width: 216, height: 216, modifiers: outline(14) }),
+    shape({ shape: "polygon", name: "North", x: 128, y: 44, width: 22, height: 18, params: { sides: 3 } }),
+    ...[90, 180, 270].map(a => shape({ shape: "rect", name: `Tick ${a}`, x: 128 + Math.sin(a * Math.PI / 180) * 86, y: 128 - Math.cos(a * Math.PI / 180) * 86,
+      width: 6, height: 18, rotation: a })),
+    group({ name: "Needle", x: 128, y: 128, children: [
+      shape({ shape: "polygon", name: "Point", x: 0, y: -40, width: 30, height: 80, params: { sides: 3 } }),
+      shape({ shape: "polygon", name: "Tail", x: 0, y: 40, width: 30, height: 80, params: { sides: 3 }, flipY: true, modifiers: outline(6) }),
+    ], bindings: [bind("rotation", "deg(atan2(global_goal_x - global_party_x, global_party_y - global_goal_y))")] }),
+    shape({ shape: "ellipse", name: "Pin", x: 128, y: 128, width: 18, height: 18 }),
+  ];
+  starters.push({ id: "starter-compass", name: "Compass", hint: "Points from the party to the goal on the GM's map: Global values party_x, party_y and goal_x, goal_y (a board's pins set them).", doc: doc(layers, MAP_VARS()) });
+}
+
+// --- Totem: wiggles (and glows) when the party is near the goal on the GM's map.
+{
+  const near = "(hypot(global_goal_x - global_party_x, global_goal_y - global_party_y) < 15)";
+  const totem = group({ name: "Totem", x: 128, y: 128, children: [
+    shape({ shape: "ellipse", name: "Head", x: 0, y: -62, width: 92, height: 80, modifiers: outline(10) }),
+    shape({ shape: "ellipse", name: "Left eye", x: -18, y: -68, width: 16, height: 16 }),
+    shape({ shape: "ellipse", name: "Right eye", x: 18, y: -68, width: 16, height: 16 }),
+    shape({ shape: "polygon", name: "Beak", x: 0, y: -44, width: 20, height: 18, params: { sides: 3 }, flipY: true }),
+    shape({ shape: "polygon", name: "Left wing", x: -70, y: 0, width: 56, height: 40, params: { sides: 3 }, rotation: -90 }),
+    shape({ shape: "polygon", name: "Right wing", x: 70, y: 0, width: 56, height: 40, params: { sides: 3 }, rotation: 90 }),
+    shape({ shape: "rect", name: "Body", x: 0, y: 30, width: 64, height: 110, modifiers: [T.createModifier("round", { radius: 8 }), ...outline(10)] }),
+    shape({ shape: "rect", name: "Band", x: 0, y: 30, width: 64, height: 10 }),
+    shape({ shape: "rect", name: "Base", x: 0, y: 96, width: 116, height: 22 }),
+  ], bindings: [bind("rotation", `${near} * 9 * sin(t * 14)`, { x: 0.5, y: 1 })] });
+  const layers = [
+    shape({ shape: "ellipse", name: "Glow", x: 128, y: 128, width: 236, height: 236, opacity: 0.18, bindings: [bind("visible", near)] }),
+    totem,
+  ];
+  starters.push({ id: "starter-totem", name: "Totem", hint: "Wiggles and glows when the party is near the goal on the GM's map (Global values party_x, party_y, goal_x, goal_y: within 15).", doc: doc(layers, MAP_VARS()) });
+}
+
+// --- Pocket watch: the real time, with a second hand.
+{
+  const hand = (name, w, len, expr) => shape({ shape: "rect", name, x: 128, y: 144 - len / 2, width: w, height: len, bindings: [bind("rotation", expr, { x: 0.5, y: 1 })] });
+  const layers = [
+    shape({ shape: "ellipse", name: "Bow", x: 128, y: 20, width: 40, height: 30, params: { hole: 55 } }),
+    shape({ shape: "rect", name: "Crown", x: 128, y: 40, width: 26, height: 18, modifiers: [T.createModifier("round", { radius: 4 })] }),
+    shape({ shape: "ellipse", name: "Case", x: 128, y: 144, width: 196, height: 196, modifiers: outline(14) }),
+    ...Array.from({ length: 12 }, (_, i) => shape({ shape: "rect", name: `Hour ${i || 12}`, x: 128 + Math.sin(i * Math.PI / 6) * 74, y: 144 - Math.cos(i * Math.PI / 6) * 74,
+      width: i % 3 ? 4 : 8, height: i % 3 ? 10 : 16, rotation: i * 30 })),
+    hand("Hour hand", 10, 50, "(hours12 + minutes / 60) * 30"),
+    hand("Minute hand", 7, 72, "(minutes + seconds / 60) * 6"),
+    hand("Second hand", 3, 78, "seconds * 6"),
+    shape({ shape: "ellipse", name: "Pin", x: 128, y: 144, width: 16, height: 16 }),
+  ];
+  starters.push({ id: "starter-watch", name: "Pocket watch", hint: "Keeps the real time: its hands follow the clock (hours12, minutes, seconds).", doc: doc(layers) });
+}
+
 const out = `// Generated by tools/build_starters.mjs (svg-lay-tool documents): interactive drawings to start
 // from, offered in Catalog → Drawings and the icon editor's Start from…. Rebuild it rather than editing.
 const STARTER_DRAWINGS = ${JSON.stringify(starters.map(s => ({ ...s, doc: T.normalizeDocument(s.doc) })))};
