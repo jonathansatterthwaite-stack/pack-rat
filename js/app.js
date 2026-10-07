@@ -2770,6 +2770,21 @@ async function openIconDrawer(opts, onSave) {
   // How it works: a few lines under the top bar, shown on asking (remembered), so the canvas gets the room.
   const hint = h("p", { class: "icon-drawer-hint muted small", hidden: readPref("packrat-icon-editor-help", "") !== "1" },
     "Build the icon from shapes on layers: add shapes from the library, and pick a layer by tapping it on the canvas (again for the one under it) or in the strip beside it. Drag the ✥ handle (or press and hold the shape) to move it; drag its handles to resize or rotate it. The gear sets handle sizes and how the view moves. Modifiers add outlines, effects and masks. Variables make it live: in the Variables tab, bind a layer to one of Pack Rat's item values (“fill” shows how full a container is) or to the time for a clock. Global and Local values (names starting global_ or local_, e.g. global_storm, local_heat) are set by the GM (GM tab → Values): add one with + Global value or + Local value in the Variables tab, where the Pack Rat item list explains them. It's drawn in one colour; the app colours it like its other icons.");
+  // One colour (tinted like Pack Rat's icons) or the drawing's own colours: kept with the drawing.
+  let own = ownColours(opts.doc);
+  const colourBtn = h("button", { class: "btn", type: "button", "aria-pressed": String(own),
+    title: "One colour: Pack Rat tints it like its icons. Own colours: the colour pickers and gradients, shown as drawn (with its type colour behind it in lists).",
+    onclick: () => {
+      own = !own;
+      editor?.setFeatures({ colorMode: own ? "full" : "monochrome", gradients: own, blendModes: own });
+      editor?.store.commit(d => ({ ...d, colorMode: own ? "full" : "monochrome" }));
+      drawColourBtn();
+    } });
+  const drawColourBtn = () => {
+    colourBtn.setAttribute("aria-pressed", String(own));
+    colourBtn.replaceChildren(h("span", { class: "colour-swatches" + (own ? " own" : "") }), h("span", { class: "hide-sm" }, own ? "Own colours" : "One colour"));
+  };
+  drawColourBtn();
   const helpBtn = h("button", { class: "btn", type: "button", "aria-expanded": String(!hint.hidden), title: "How the editor works",
     onclick: () => {
       hint.hidden = !hint.hidden;
@@ -2780,6 +2795,7 @@ async function openIconDrawer(opts, onSave) {
   const overlay = h("div", { class: "reader icon-drawer", role: "dialog", "aria-modal": "true", "aria-label": "Draw an icon" },
     h("div", { class: "reader-bar" },
       h("div", { class: "reader-title" }, opts.title || `Draw an icon${opts.name ? ` for ${opts.name}` : ""}`),
+      colourBtn,
       helpBtn,
       startFrom,
       h("button", { class: "btn", onclick: close }, "Cancel"),
@@ -2794,7 +2810,7 @@ async function openIconDrawer(opts, onSave) {
       width: 256, height: 256, background: null,
       theme: "auto", // follows light / dark like the app (whose colours it takes, see .icon-drawer-host)
       features: {
-        colorMode: "monochrome", monoColor: opts.color || "#888",
+        colorMode: own ? "full" : "monochrome", monoColor: opts.color || "#888",
         export: false, canvasSize: false, background: false,
       },
       // The values Pack Rat fills in for an item, and how to use Global and Local values: formulas can
@@ -2835,9 +2851,17 @@ function drawingSvg(doc, variables, time = undefined) {
   const { renderDocumentToString, normalizeDocument } = window.SvgLayTool;
   const n = normalizedDrawing(doc, normalizeDocument);
   return renderDocumentToString(n, {
-    background: false, colorMode: "monochrome", monoColor: "currentColor", idPrefix: DRAWN_ID_PREFIX,
+    background: false, idPrefix: DRAWN_ID_PREFIX,
+    ...(ownColours(n) ? {} : { colorMode: "monochrome", monoColor: "currentColor" }), // (its own colours: as drawn)
     variables: { ...iconVariableDefaults(n), ...(variables || {}) }, ...(time !== undefined ? { time } : {}) });
 }
+
+// A drawing in its own colours (the icon editor's top bar: Own colours) is shown as drawn, with the
+// item's type colour behind it (Settings → This device → Full-colour drawings: a plate or an outline);
+// the others are one colour, tinted like the built-in icons.
+const ownColours = doc => doc?.colorMode === "full";
+const COLOUR_BEHIND = [["plate", "Plate"], ["outline", "Outline"], ["none", "None"]];
+const colourBehind = () => { const v = readPref("packrat-colour-behind", "plate"); return COLOUR_BEHIND.some(([k]) => k === v) ? v : "plate"; };
 
 // The Global and Local values a drawing uses reach the editor's preview as app values (which win
 // over the drawing's own variables of the same name), not as a list: keep them in step as it
@@ -3864,6 +3888,10 @@ function renderSettings() {
       h("span", null, h("b", null, "Sounds"),
         h("span", { class: "muted small" }, "What items you can use make when touched: a drum's beat, a bell, a die's rattle. Quiet plays them softly; Off keeps them silent on this device.")),
       slideSwitch("Sounds", SOUND_LEVELS.map(([k, label]) => [k, label]), soundLevel(), k => { writePref("packrat-sounds", k); render(); }, { even: true, cls: "seg-field" })),
+    h("div", { class: "switch-row" },
+      h("span", null, h("b", null, "Full-colour drawings"),
+        h("span", { class: "muted small" }, "Drawings in their own colours show the item's type colour behind them, so lists still sort by colour: a soft plate, or an outline round the drawing.")),
+      slideSwitch("Full-colour drawings", COLOUR_BEHIND, colourBehind(), k => { writePref("packrat-colour-behind", k); render(); }, { even: true, cls: "seg-field" })),
     h("div", { class: "switch-row" },
       h("span", null, h("b", null, "Wide screens"),
         h("span", { class: "muted small" }, `On a screen wider than ${WIDE_MIN} pixels. Use the room: the inventory's panels beside its list, details on the right, the catalog's groups down the side, GM panels side by side. One column: centred, as on a narrower screen.`)),

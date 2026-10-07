@@ -898,6 +898,12 @@ button.tile:hover { border-color: var(--muted); border-top-color: var(--type); }
 .row.plain, .row.plain.equipped { background: none; }
 .no-colour { --type: var(--muted); }
 .no-colour .item-icon { color: var(--muted) !important; }
+/* Drawings in their own colours: the type colour behind them (Settings → This device → Full-colour drawings). */
+svg.own-colours.behind-plate { background: radial-gradient(circle closest-side, color-mix(in srgb, var(--own-type) 28%, transparent) 97%, transparent 100%); border-radius: 50%; }
+svg.own-colours.behind-outline { filter: drop-shadow(1.5px 0 0 var(--own-type)) drop-shadow(-1.5px 0 0 var(--own-type)) drop-shadow(0 1.5px 0 var(--own-type)) drop-shadow(0 -1.5px 0 var(--own-type)); }
+.no-colour svg.own-colours { --own-type: transparent !important; }
+.colour-swatches { display: inline-block; width: 16px; height: 16px; border-radius: 50%; background: currentColor; opacity: .7; flex: none; }
+.colour-swatches.own { opacity: 1; background: conic-gradient(#d6455d 0 25%, #e8c547 0 50%, #3a6db0 0 75%, #6a9a3a 0); }
 .show-parts .chip-btn .icon { width: 14px; height: 14px; }
 .view-menu-sect > .link { margin-top: 2px; }
 .tile-name.tight { overflow-wrap: anywhere; }
@@ -1151,6 +1157,12 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
 .reader-bar { display: flex; align-items: center; gap: 8px; padding: calc(8px + env(safe-area-inset-top)) 12px 8px; border-bottom: 1px solid var(--border); background: var(--bg); }
 .reader-title { flex: 1; min-width: 0; font-family: var(--display); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .reader-bar .btn { min-height: 36px; padding: 6px 12px; }
+/* A short screen (a phone turned sideways): a slimmer bar over the icon editor */
+@media (max-height: 520px) {
+  .icon-drawer .reader-bar { padding: calc(4px + env(safe-area-inset-top)) 10px 4px; }
+  .icon-drawer .reader-bar .btn { min-height: 30px; padding: 3px 10px; }
+  .icon-drawer .reader-title { font-size: 1rem; }
+}
 .reader-scroll { flex: 1; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
 .doc-page { max-width: 42rem; margin: 0 auto; padding: 32px 24px calc(64px + env(safe-area-inset-bottom)); font-family: var(--display); line-height: 1.7; color: var(--ink); }
 .doc-head { text-align: center; margin-bottom: 1.6em; padding-bottom: 1em; border-bottom: 1px solid var(--border); }
