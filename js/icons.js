@@ -180,7 +180,7 @@ function itemIcon(item, cls = "", vars = null) {
     drawn.style.color = itemColor(item);
     // Its own colours: as drawn, the type colour behind it (a plate or an outline; see ownColours).
     if (ownColours(item.iconDoc)) {
-      drawn.classList.add("own-colours", "behind-" + colourBehind());
+      drawn.classList.add("own-colours", "behind-" + colourBehind(), "behind-" + behindSize());
       drawn.style.setProperty("--own-type", itemColor(item));
     }
     return drawn;

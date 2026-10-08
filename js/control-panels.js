@@ -22,7 +22,12 @@
 //          off, on                         switch (default 0 and 1)
 //          action: "set" | "add", amount   button
 //          options: [{ label, value }]     dropdown (default: the value's choices, else Off and On)
-//          board: { image?, pins }         board: a picture with pins (see gmBoard, js/gm-controls.js)
+//          choose: "players"               dropdown: the party's characters instead, setting no value:
+//                                          whose Local values its pictures show (see Players dropdowns)
+//          from                            a Players dropdown on the panel: a picture shows the Local
+//                                          values of whoever is chosen in it, a control that sets values
+//                                          sets theirs (scope "character"; else scope/target as above)
+//          board: { image?, layers?, pins } board: a picture with pins (see gmBoard, js/gm-controls.js)
 //          levels, items: [tab]            tabs: a tree of tabs, levels deep (see Tabs controls below);
 //                                          a tab's picture: icon, or a drawing (iconDoc, iconSvg, iconLib) }
 
@@ -33,16 +38,40 @@ const CONTROL_KINDS = CONTROL_TYPES.filter(([k]) => k !== "range");
 const CONTROL_GROUPS = [["Layout", ["tabs"]], ["Display", ["text", "icon"]], ["Interactive", ["slider", "toggle", "button", "dropdown", "polygon", "board"]]];
 const SETS_VALUE = new Set(["slider", "toggle", "button", "dropdown"]); // one value, `name`
 const isUpright = ctl => ctl.h > ctl.w;
-// A control's picture: its drawing (live with the Global values it reads), else its built-in icon.
-function controlPicture(ctl, cls, fallback = null) {
+// A control's picture: its drawing (live with the Global values it reads, and the Local values of
+// `whose`: [charId, entryUid]), else its built-in icon.
+function controlPicture(ctl, cls, fallback = null, whose = ["", ""]) {
   if (ctl.iconSvg && ctl.iconDoc) return isLiveDrawing(ctl.iconDoc)
-    ? liveDrawnIcon(ctl.iconDoc, ctl.iconSvg, cls, () => iconValueVars("", ""))
+    ? liveDrawnIcon(ctl.iconDoc, ctl.iconSvg, cls, () => iconValueVars(...whose))
     : drawnIcon(ctl.iconSvg, cls) || iconSvg("image", cls);
   const id = ctl.icon || fallback;
   return id ? iconSvg(id, cls) : null;
 }
+// ------------------------------------------------------------------ Players dropdowns
+// A dropdown can list the party's characters (choose: "players") instead of setting a value: the
+// Picture controls linked to it (from: its id) show the Local values of whoever is chosen. What's
+// chosen is this device's, as tabs are: ui.panelPick["panelId/dropdownId"] (else the first).
+const isPlayersDropdown = c => c?.type === "dropdown" && c.choose === "players";
+function chosenPlayer(panel, dd) {
+  const chars = gmChars(), saved = ui.panelPick[`${panel.id}/${dd.id}`];
+  return (chars.find(c => c.id === saved) || chars[0])?.id || "";
+}
+// A control that sets values for whoever is chosen in a Players dropdown: as one for that player.
+function forChosen(panel, ctl) {
+  if (!ctl.from || ctl.type === "icon" || isPlayersDropdown(ctl)) return ctl;
+  const dd = panel.controls.find(c => c.id === ctl.from);
+  return isPlayersDropdown(dd) ? { ...ctl, scope: "character", target: chosenPlayer(panel, dd) } : ctl;
+}
+// Whose Local values a picture shows: [charId, entryUid] (none: Global values only).
+function pictureWhose(panel, ctl) {
+  if (ctl.from) { const dd = panel.controls.find(c => c.id === ctl.from); return [isPlayersDropdown(dd) ? chosenPlayer(panel, dd) : "", ""]; }
+  if (ctl.scope === "character") return [ctl.target || "", ""];
+  if (ctl.scope === "item") { const [c, u] = String(ctl.target || "").split("/"); return [c || "", u || ""]; }
+  return ["", ""];
+}
+
 // The pictures a panel's boards use (so exports carry them).
-const panelImages = panel => (panel.controls || []).map(c => c.board?.image).filter(Boolean);
+const panelImages = panel => (panel.controls || []).flatMap(c => [c.board?.image, ...(c.board?.layers || []).map(l => l.image)]).filter(Boolean);
 
 // The value a control shows: as it's set where the control applies, else the value's default.
 const specOfControl = (ctl, specs) => specs.get(`${ctl.scope === "party" ? "global" : "local"}:${ctl.name}`);
@@ -278,9 +307,12 @@ const dropdownOptions = (ctl, spec) => ctl.options?.length ? ctl.options
 // ------------------------------------------------------------------ a control, working
 
 function controlLive(ctl, specs, panel) {
+  ctl = forChosen(panel, ctl);
   const spec = specOfControl(ctl, specs), v = controlValue(ctl, specs);
   const label = ctl.label || ctl.name || "";
-  const caption = label && h("span", { class: "cp-label" }, label);
+  // (for whoever is chosen in a Players dropdown: their name after its label)
+  const who = ctl.from && ctl.type !== "icon" && ctl.target && gmChars().find(c => c.id === ctl.target)?.name;
+  const caption = label && h("span", { class: "cp-label" }, label, who && h("span", { class: "cp-who" }, ` · ${who}`));
   switch (ctl.type) {
     case "slider": {
       const min = ctl.min ?? spec?.min ?? 0, max = ctl.max ?? spec?.max ?? 1, step = ctl.step ?? spec?.step ?? "any";
@@ -320,13 +352,22 @@ function controlLive(ctl, specs, panel) {
         onclick: () => sendControl(ctl, ctl.action === "add" ? Math.round((v + (ctl.amount ?? 1)) * 1000) / 1000 : ctl.amount ?? 1) },
         controlPicture(ctl, "cp-btn-icon"), label);
     case "dropdown":
+      if (isPlayersDropdown(ctl)) {
+        const chars = gmChars(), at = chosenPlayer(panel, ctl);
+        return [caption || h("span", { class: "cp-label" }, "Player"), h("select", { class: "cp-select", "aria-label": label || "Player",
+          onchange: ev => { ui.panelPick[`${panel.id}/${ctl.id}`] = ev.target.value; render(); } },
+          chars.length ? chars.map(c => h("option", { value: c.id, selected: c.id === at }, c.name)) : h("option", { value: "" }, "No players yet"))];
+      }
       return [caption, h("select", { class: "cp-select", "aria-label": label || "Value", onchange: ev => sendControl(ctl, +ev.target.value) },
         dropdownOptions(ctl, spec).map(o => h("option", { value: o.value, selected: o.value === v }, o.label)))];
     case "icon":
-      return [controlPicture(ctl, "cp-icon", "question"), caption];
-    case "board":
-      return [caption, gmBoard(ctl.board || { pins: [] }),
-        iconBtn("expand", "Expand: zoom and scroll", () => openBoardZoom(ctl.board || { pins: [] }, ctl.label || "Board"), "cp-expand")];
+      return [controlPicture(ctl, "cp-icon", "question", pictureWhose(panel, ctl)), caption];
+    case "board": {
+      // Its layers' state on this device, and its groups' members splitting off (kept with it).
+      const opts = { key: `${panel.id}/${ctl.id}`, change: fn => updatePanel(panel.id, p => { const c = findItem(p, ctl.id); if (c?.board) fn(c.board); }) };
+      return [caption, gmBoard(ctl.board || { pins: [] }, opts),
+        iconBtn("expand", "Expand: zoom, scroll and layers", () => openBoardZoom(ctl.board || { pins: [] }, ctl.label || "Board", opts), "cp-expand")];
+    }
     default: // text: words, and the value it shows (if any)
       return [caption, ctl.name && h("b", { class: "cp-readout" }, showValue(spec, v))];
   }
@@ -663,14 +704,46 @@ function editPanelControl(panel, ctl, at) {
   const nameInput = (obj, key, aria, placeholder = "value name, e.g. storm") => h("input", { type: "text", list: listId, value: obj[key] || "", placeholder,
     spellcheck: "false", autocomplete: "off", "aria-label": aria, onchange: e => { obj[key] = e.target.value.trim(); } });
   const nameField = (key, label) => h("label", { class: "field" }, h("span", null, label), nameInput(draft, key, label));
+  const playerDropdowns = () => panel.controls.filter(c => isPlayersDropdown(c) && c.id !== draft.id);
+  // Who it sets values for: everyone (Globals), a player, an item, or whoever is chosen in a
+  // Players dropdown on this panel.
   const forField = () => {
-    const sel = h("select", { onchange: e => { const [scope, target] = e.target.value.split(/:(.*)/); draft.scope = scope; draft.target = target || ""; } },
-      pinScopeOptions(`${draft.scope}:${draft.target}`));
-    setTimeout(() => { sel.value = `${draft.scope}:${draft.target}`; });
+    const dds = playerDropdowns(), cur = draft.from ? "from:" + draft.from : `${draft.scope}:${draft.target}`;
+    const sel = h("select", { onchange: e => {
+      const v = e.target.value;
+      if (v.startsWith("from:")) { draft.from = v.slice(5); draft.scope = "character"; draft.target = ""; }
+      else { delete draft.from; const [scope, target] = v.split(/:(.*)/); draft.scope = scope; draft.target = target || ""; }
+    } }, pinScopeOptions(draft.from ? "party:" : cur),
+      dds.length > 0 && h("optgroup", { label: "Chosen in a Players dropdown" },
+        dds.map(d => h("option", { value: "from:" + d.id }, `Whoever is chosen in ${d.label || "the Players dropdown"}`))));
+    setTimeout(() => { sel.value = cur; });
     return [h("label", { class: "field" }, h("span", null, "For"), sel),
       h("datalist", { id: listId }, [...new Set([...specs.values()].map(v => v.name))].sort().map(n => h("option", { value: n })))];
   };
   const valueFields = () => [nameField("name", draft.type === "text" ? "Shows the value (optional)" : "Sets the value"), forField()];
+  const players = () => isPlayersDropdown(draft);
+  // A dropdown lists the value's choices (and sets it), or the party's players (whose values other controls use).
+  const listsField = () => h("div", { class: "field" }, h("span", null, "Lists"),
+    slideSwitch("Lists", [["values", "Choices: sets a value"], ["players", "Players: choose whose"]], players() ? "players" : "values",
+      v => { if (v === "players") draft.choose = "players"; else delete draft.choose; drawFields(); }, { even: true, cls: "seg-field" }),
+    players() && h("small", { class: "muted" }, "The party's characters. Other controls can follow whoever is chosen here: a picture shows their Local values (its Local values of), a slider or switch sets them (its For)."));
+  // Whose Local values a picture shows: none (Global values only), a character's, an item's, or
+  // whoever is chosen in a Players dropdown on this panel.
+  const whoseField = () => {
+    const dds = playerDropdowns();
+    const cur = draft.from ? "from:" + draft.from : `${draft.scope || "party"}:${draft.target || ""}`;
+    const sel = h("select", { onchange: e => {
+      const v = e.target.value;
+      if (v.startsWith("from:")) { draft.from = v.slice(5); draft.scope = "party"; draft.target = ""; }
+      else { delete draft.from; const [scope, target] = v.split(/:(.*)/); draft.scope = scope; draft.target = target || ""; }
+    } }, pinScopeOptions(draft.from ? "party:" : cur),
+      dds.length > 0 && h("optgroup", { label: "Chosen in a Players dropdown" },
+        dds.map(d => h("option", { value: "from:" + d.id }, `Whoever is chosen in ${d.label || "the Players dropdown"}`))));
+    setTimeout(() => { sel.value = cur; });
+    return h("label", { class: "field" }, h("span", null, "Local values of"), sel,
+      h("small", { class: "muted" }, "Its drawing reads their Local values (local_…) as well as the Global ones."
+        + (dds.length ? "" : " To switch between players, add a dropdown that lists Players, then choose it here.")));
+  };
   // A polygon's corners: a row each (label, the value it sets, its amount at the corner), 3 to 8.
   const cornersEditor = () => {
     const box = h("div", { class: "cp-corners" });
@@ -750,7 +823,8 @@ function editPanelControl(panel, ctl, at) {
     (draft.type === "slider" || draft.type === "range") && h("div", { class: "field" }, h("span", null, "Handles"),
       slideSwitch("Handles", [["slider", "One: a value"], ["range", "Two: a lower and an upper value"]], draft.type, v => { draft.type = v; drawFields(); }, { even: true, cls: "seg-field" })),
     text("label", draft.type === "text" ? "Text" : "Label", draft.type === "icon" ? "Optional" : ""),
-    (SETS_VALUE.has(draft.type) || draft.type === "text") && valueFields(),
+    draft.type === "dropdown" && listsField(),
+    ((SETS_VALUE.has(draft.type) && !players()) || draft.type === "text") && valueFields(),
     draft.type === "range" && [nameField("name", "Sets the lower value"), nameField("name2", "Sets the upper value"), forField()],
     draft.type === "polygon" && [(draft.vertices = draft.vertices?.length >= 3 ? draft.vertices : [{ label: "", name: "" }, { label: "", name: "" }, { label: "", name: "" }], cornersEditor()), forField()],
     (draft.type === "slider" || draft.type === "range") && h("div", { class: "form grid" }, num("min", "From", "the value's own"), num("max", "To", "the value's own"), num("step", "Step", "any")),
@@ -765,13 +839,14 @@ function editPanelControl(panel, ctl, at) {
       h("label", { class: "field" }, h("span", null, "When pressed"), h("select", { onchange: e => { draft.action = e.target.value; } },
         h("option", { value: "set", selected: draft.action !== "add" }, "Set the value to"), h("option", { value: "add", selected: draft.action === "add" }, "Add to the value (negative takes away)"))),
       num("amount", "Amount", "1")],
-    draft.type === "dropdown" && choicesEditor(rows),
+    draft.type === "dropdown" && !players() && choicesEditor(rows),
     draft.type === "board" && h("div", { class: "field" }, h("span", null, "Picture and pins"),
       h("div", { class: "inline wrap" },
         h("span", { class: "muted small" }, `${draft.board?.image ? "A picture" : "A blank square"}, ${plural(draft.board?.pins?.length || 0, "pin")}`),
         h("button", { type: "button", class: "btn", onclick: () => editBoard(draft.board || { pins: [] }, b => { draft.board = b; drawFields(); }, draft.label || "") },
           icon("edit"), "Edit board…"))),
     (draft.type === "icon" || draft.type === "button") && iconPick(),
+    draft.type === "icon" && whoseField(),
     draft.type === "tabs" && tabsEditor(),
     whereFields(),
     h("label", { class: "field" }, h("span", null, "Colour (its edge, background and highlights)"), h("div", { class: "inline" },
@@ -780,14 +855,16 @@ function editPanelControl(panel, ctl, at) {
   drawFields();
 
   const save = () => {
-    if (draft.type === "dropdown") {
+    if (draft.type !== "dropdown") delete draft.choose;
+    if (players()) { delete draft.options; delete draft.name; draft.scope = "party"; draft.target = ""; }
+    else if (draft.type === "dropdown") {
       const opts = choicesFromRows(rows);
       if (opts.error) return toast(opts.error);
       draft.options = opts.list;
     }
     if (draft.type === "board") draft.board = draft.board || { pins: [] };
     else delete draft.board;
-    if (SETS_VALUE.has(draft.type) && !isValueName(draft.name)) return toast("Choose the value it sets: a letter, then letters, digits or _");
+    if (SETS_VALUE.has(draft.type) && !players() && !isValueName(draft.name)) return toast("Choose the value it sets: a letter, then letters, digits or _");
     if (draft.type === "text" && draft.name && !isValueName(draft.name)) return toast("Not a value name");
     if (draft.type === "range" && (!isValueName(draft.name) || !isValueName(draft.name2))) return toast("Choose the two values it sets: a letter, then letters, digits or _");
     if (draft.type === "range" && draft.name === draft.name2) return toast("The lower and upper values need different names");
@@ -798,6 +875,7 @@ function editPanelControl(panel, ctl, at) {
     if (!SETS_VALUE.has(draft.type) && draft.type !== "text" && draft.type !== "range") delete draft.name;
     if (draft.type !== "range") delete draft.name2;
     if (draft.type !== "polygon") { delete draft.vertices; delete draft.at; }
+    if (draft.type === "tabs" || draft.type === "board" || players()) delete draft.from;
     if (draft.type !== "icon" && draft.type !== "button") { delete draft.icon; setItemDrawing(draft, null); }
     if (draft.type === "tabs") {
       // Tabs as saved: named, at most `levels` deep.

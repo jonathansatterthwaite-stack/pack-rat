@@ -393,7 +393,7 @@ function knownValues() {
   const docs = [...drawingLibrary().map(d => d.doc), ...store.allCustomItems().map(i => i.iconDoc),
     ...store.state.characters.flatMap(c => c.items.map(e => e.item.iconDoc)), ...(party.active ? party.chars.flatMap(c => c.items.map(e => e.item.iconDoc)) : [])];
   for (const doc of docs) if (doc) for (const r of drawingValueRefs(doc).values()) add(r.scope, r.name, r.spec, r.scope === "any");
-  for (const c of store.state.gmControls || []) for (const k of c.controls || []) for (const p of k.board?.pins || []) {
+  for (const c of store.state.gmControls || []) for (const k of c.controls || []) for (const p of pinSetters(k.board || {})) {
     [[p.xVar, p.xRange], [p.yVar, p.yRange]].forEach(([n, r]) => n && add(p.scope === "party" ? "global" : "local", n,
       { value: Math.min(...r), min: Math.min(...r), max: Math.max(...r), step: "any" }));
   }
@@ -432,7 +432,8 @@ const limitValueName = st => st?.limit ? st.limit.value || (st.limit.gmValue || 
 // [{ label, scope, target, names }]
 function valueSetters() {
   return (store.state.gmControls || []).flatMap(panel => (panel.controls || []).flatMap(c => c.type === "board"
-    ? (c.board?.pins || []).map(p => ({ label: `the pin “${p.label || "Pin"}” on ${panel.name}`, scope: p.scope, target: p.target, names: [p.xVar, p.yVar].filter(Boolean) }))
+    ? pinSetters(c.board || {}).map(p => ({ label: p.group ? `the group “${p.group.label || "Group"}” on ${panel.name}` : `the pin “${p.label || "Pin"}” on ${panel.name}`,
+      scope: p.scope, target: p.target, names: [p.xVar, p.yVar].filter(Boolean) }))
     : c.type === "text" ? []
     : [{ label: `the ${{ toggle: "switch", range: "range slider" }[c.type] || c.type} “${c.label || c.name || c.type}” on ${panel.name}`, scope: c.scope, target: c.target,
       names: (c.type === "polygon" ? (c.vertices || []).map(v => v.name) : [c.name, c.name2]).filter(Boolean) }].filter(s => s.names.length)));

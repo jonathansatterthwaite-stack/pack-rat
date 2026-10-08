@@ -4,7 +4,8 @@
 //   them (arrows, rations); a compass pointing from the party to the goal on the GM's map, and a
 //   totem that wiggles near it; a pocket watch keeping the real time; a deck of playing cards.
 // The GM gets the map they follow (GM tab → Controls → Map: a board with two pins setting the
-// Global values party_x, party_y, goal_x and goal_y).
+// Global values party_x, party_y, goal_x and goal_y: the party's tent on its own layer, the goal's
+// chest on a layer that starts locked, each pictured, with its exact spot shown).
 // They're added once, at a new install's first start (store.data.showcase === "pending", set by
 // defaultData), unless the game system says `showcase: false`. Showcase entries (e.showcase)
 // still leave the Adventurer counting as untouched (isBlankCharacter).
@@ -28,14 +29,18 @@ function showcaseItem(id, tplIds, fields, starter) {
   return { ...newItemFrom(showcaseTemplate(...tplIds)), ...fields, id, iconDoc: doc, iconSvg: drawingSvg(doc) };
 }
 
-// The GM's map: a blank board with the party and the goal on it.
+// The GM's map: a blank board with the party and the goal on it, each on a layer of its own (the
+// goal's starts locked: the Layers button, expanded, unlocks it), pictured, sitting on its spot.
 function showcaseMap() {
-  const g = { scope: "party", target: "" };
+  const g = { scope: "party", target: "" }, party = "l" + uid(), goal = "l" + uid();
+  const look = (icon, anchor) => ({ look: "picture", icon, size: "l", anchor, spot: true });
   return { id: "gc" + uid(), kind: "panel", name: "Map", cols: 6, rows: 6, controls: [
-    { id: "c" + uid(), type: "board", x: 0, y: 0, w: 6, h: 6, label: "Map", board: { pins: [
-      { id: "p" + uid(), label: "Party", color: "#2e86de", xVar: "party_x", yVar: "party_y", ...g, xRange: [0, 100], yRange: [0, 100] },
-      { id: "p" + uid(), label: "Goal", color: "#c0392b", xVar: "goal_x", yVar: "goal_y", ...g, xRange: [0, 100], yRange: [0, 100] },
-    ] } },
+    { id: "c" + uid(), type: "board", x: 0, y: 0, w: 6, h: 6, label: "Map", board: {
+      layers: [{ id: party, name: "Party", kind: "pins" }, { id: goal, name: "Goal", kind: "pins", locked: true }],
+      pins: [
+        { id: "p" + uid(), label: "Party", color: "#2e86de", xVar: "party_x", yVar: "party_y", ...g, xRange: [0, 100], yRange: [0, 100], layer: party, ...look("tent", [0.5, 1]) },
+        { id: "p" + uid(), label: "Goal", color: "#c0392b", xVar: "goal_x", yVar: "goal_y", ...g, xRange: [0, 100], yRange: [0, 100], layer: goal, ...look("treasure-chest", [0.5, 0.5]) },
+      ] } },
   ] };
 }
 
@@ -60,9 +65,9 @@ async function addShowcase() {
     put(showcaseItem("showcase-arrows", ["ammunition", "gear"], { name: "Arrows", weight: 0.05,
       description: "A stack: its picture shows an arrow for each you have (up to ten)." }, "starter-arrows"), 7, pack.uid);
     put(showcaseItem("showcase-compass", ["gear"], { name: "Compass", weight: 0.5,
-      description: "Points from the party to the goal on the GM's map (GM tab → Controls → Map). Take the GM role (Settings → This device) and drag the pins to see it turn." }, "starter-compass"));
+      description: "Points from the party to the goal on the GM's map (GM tab → Controls → Map). Take the GM role (Settings → This device) and drag the party's tent to see it turn; the goal's layer starts locked (expand the map: Layers)." }, "starter-compass"));
     put(showcaseItem("showcase-totem", ["gear"], { name: "Totem", weight: 1,
-      description: "Wiggles and glows when the party is near the goal on the GM's map. Drag the party's pin close to the goal (GM role) to wake it." }, "starter-totem"));
+      description: "Wiggles and glows when the party is near the goal on the GM's map. Drag the party's tent close to the chest (GM role) to wake it." }, "starter-totem"));
     put(showcaseItem("showcase-watch", ["gear"], { name: "Pocket watch", weight: 0.25,
       description: "Keeps the real time. Drawn icons can follow the clock, and items' values." }, "starter-watch"));
     put(showcaseItem("showcase-cards", ["tool", "gear"], { name: "Playing cards", weight: 0, deckCards: SHOWCASE_CARDS,

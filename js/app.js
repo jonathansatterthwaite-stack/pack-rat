@@ -72,6 +72,10 @@ const ICONS = {
   eye: '<path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0"/><circle cx="12" cy="12" r="3"/>',
   more: '<circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="19" cy="12" r="1.3" fill="currentColor"/><circle cx="5" cy="12" r="1.3" fill="currentColor"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  eyeOff: '<path d="M3 3l18 18M10.6 5.1A10.7 10.7 0 0 1 12 5c6 0 9.9 6.6 10 7a17 17 0 0 1-3 3.7M6.6 6.6C3.8 8.4 2.1 11.7 2 12c.1.4 4 7 10 7a9.6 9.6 0 0 0 4.4-1.1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>',
+  lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+  unlock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.5-1.9"/>',
+  layers: '<path d="M12 3 2 8l10 5 10-5z"/><path d="m2 13 10 5 10-5"/>',
 };
 
 function icon(name, cls = "") {
@@ -269,6 +273,8 @@ const ui = {
   gmControlsTab: "panels", // Controls' own tabs: "panels", "values" or "connections"
   cwFocus: null, // the item the Clockwork tab shows first ("charId/uid", from its cog)
   panelEdit: null, // the control panel being arranged (its id)
+  boardView: {}, // boards' layers shown or hidden, locked or not ("panelId/ctlId/layerId" -> { hidden, locked })
+  panelPick: {}, // the player chosen in each Players dropdown ("panelId/dropdownId" -> character id)
   panelTabs: {}, // the tabs chosen in each Tabs control ("panelId/tabsId" -> [tab id per level])
   settingsTab: "settings", // Settings · Campaigns · Files
   catTab: "items", // Catalog: Items · My items · Drawings · Templates
@@ -292,6 +298,9 @@ const DISPLAY_PARTS = [
   { key: "image", label: "Picture" },
   { key: "name", label: "Name" },
   { key: "colour", label: "Type colour", hint: "Icons and tiles in their type's colour" },
+  // (Its label follows Settings → Full-colour drawings; hidden when that's None.)
+  { key: "behind", get label() { return colourBehind() === "outline" ? "Outline" : "Plate"; },
+    hint: "Behind drawings in their own colours: their type colour, as a plate or an outline", when: () => colourBehind() !== "none" },
   { key: "details", label: "Details", hint: "What it is (“Simple melee · 1d6 piercing”), a container's load, notes", tiles: false },
   { key: "tags", label: "Tags", hint: "Equipped, attuned and other states, charges, where it is", tiles: false },
   { key: "worth", label: "Worth", default: (st, layout) => layout === "tiles" || !!st.showWorth },
@@ -377,7 +386,7 @@ function displayToggles(st, prefs, key, onChange) {
   const changed = Object.keys(prefs.show?.[layout] || {}).length > 0;
   return [
     h("div", { class: "chips show-parts", role: "group", "aria-label": `Show on ${layout === "tiles" ? "tiles" : "rows"}` },
-      DISPLAY_PARTS.filter(p => !(layout === "tiles" && p.rowsOnly)).map(p => {
+      DISPLAY_PARTS.filter(p => !(layout === "tiles" && p.rowsOnly) && (!p.when || p.when())).map(p => {
         const on = displayShows(st, layout, p.key);
         return h("button", { type: "button", class: "chip-btn" + (on ? " active" : ""), "aria-pressed": String(on), title: p.hint || "",
           onclick: () => { setDisplayPart(prefs, key, layout, p.key, !on); onChange(); } }, on && icon("check"), p.label);
@@ -1339,7 +1348,7 @@ function entryTile(st, e, showPath) {
   const show = part => displayShows(st, "tiles", part);
   const details = show("details") && [liquidLabel(e) || containerLoad(char, e) || itemSummary(it), e.notes, st.sub?.(e)].filter(Boolean).join(" — ");
   const tags = show("tags") ? entryTags(st, e, it, path).flat().filter(Boolean) : [];
-  const el = h("button", { class: ["tile", e.equipped && "equipped", st.rowClass?.(e), !show("card") && "plain", !show("colour") && "no-colour",
+  const el = h("button", { class: ["tile", e.equipped && "equipped", st.rowClass?.(e), !show("card") && "plain", !show("colour") && "no-colour", !show("behind") && "no-behind",
       details && "has-details", tags.length > 0 && "has-tags", !show("image") && "no-image"].filter(Boolean).join(" "), ...dragFrom(st, e),
     title: [entryName(e), liquidLabel(e) || containerLoad(char, e) || itemSummary(it), e.equipped && equipWord(e),
       ...statesOnFor(char, e).map(st => st.label.toLowerCase()), e.charges != null && `${e.charges}/${it.maxCharges} charges`, path, st.sub?.(e),
@@ -1362,7 +1371,7 @@ function entryRow(st, e, showPath = false) {
   const setQty = n => st.setQty(e, n);
   const show = part => displayShows(st, "list", part);
   const details = show("details") && [liquidLabel(e) || containerLoad(char, e) || itemSummary(it), e.notes, st.sub?.(e)].filter(Boolean).join(" — ");
-  const row = h("div", { class: ["row", e.equipped && "equipped", st.rowClass?.(e), !show("card") && "plain", !show("colour") && "no-colour"].filter(Boolean).join(" "), ...dragFrom(st, e) },
+  const row = h("div", { class: ["row", e.equipped && "equipped", st.rowClass?.(e), !show("card") && "plain", !show("colour") && "no-colour", !show("behind") && "no-behind"].filter(Boolean).join(" "), ...dragFrom(st, e) },
     show("image") && itemIcon(it, "row-icon", () => entryIconVars(char, e)),
     h("button", { class: "row-main", "aria-label": show("name") ? null : entryName(e), onclick: () => st.open(e) },
       h("div", { class: "row-title" }, show("name") && entryName(e),
@@ -2862,6 +2871,9 @@ function drawingSvg(doc, variables, time = undefined) {
 const ownColours = doc => doc?.colorMode === "full";
 const COLOUR_BEHIND = [["plate", "Plate"], ["outline", "Outline"], ["none", "None"]];
 const colourBehind = () => { const v = readPref("packrat-colour-behind", "plate"); return COLOUR_BEHIND.some(([k]) => k === v) ? v : "plate"; };
+// How big it is: the plate's share of the picture, the outline's width.
+const BEHIND_SIZES = [["s", "Small"], ["m", "Medium"], ["l", "Large"]];
+const behindSize = () => { const v = readPref("packrat-colour-behind-size", "m"); return BEHIND_SIZES.some(([k]) => k === v) ? v : "m"; };
 
 // The Global and Local values a drawing uses reach the editor's preview as app values (which win
 // over the drawing's own variables of the same name), not as a list: keep them in step as it
@@ -3062,7 +3074,8 @@ function setItemDrawing(it, d) {
 function drawingUsers(id) {
   const tabs = items => (items || []).flatMap(t => [t, ...tabs(t.items)]); // a Tabs control's tabs, every level
   return [...store.allCustomItems(), ...store.data.campaigns.flatMap(cp => [...cp.characters.flatMap(c => c.items.map(e => e.item)),
-    ...(cp.gmControls || []).flatMap(p => (p.controls || []).flatMap(c => [c, ...(c.type === "tabs" ? tabs(c.items) : [])]))])]
+    ...(cp.gmControls || []).flatMap(p => (p.controls || []).flatMap(c => [c, ...(c.type === "tabs" ? tabs(c.items) : []),
+      ...(c.board?.layers || []), ...(c.board?.pins || []).flatMap(pin => [pin, ...(pin.members || [])])]))])]
     .filter(it => it.iconLib === id);
 }
 
@@ -3892,6 +3905,10 @@ function renderSettings() {
       h("span", null, h("b", null, "Full-colour drawings"),
         h("span", { class: "muted small" }, "Drawings in their own colours show the item's type colour behind them, so lists still sort by colour: a soft plate, or an outline round the drawing.")),
       slideSwitch("Full-colour drawings", COLOUR_BEHIND, colourBehind(), k => { writePref("packrat-colour-behind", k); render(); }, { even: true, cls: "seg-field" })),
+    colourBehind() !== "none" && h("div", { class: "switch-row" },
+      h("span", null, h("b", null, colourBehind() === "outline" ? "Outline size" : "Plate size"),
+        h("span", { class: "muted small" }, colourBehind() === "outline" ? "How thick the outline round them is." : "How much of the picture the plate behind them fills.")),
+      slideSwitch("Size", BEHIND_SIZES, behindSize(), k => { writePref("packrat-colour-behind-size", k); render(); }, { even: true, cls: "seg-field" })),
     h("div", { class: "switch-row" },
       h("span", null, h("b", null, "Wide screens"),
         h("span", { class: "muted small" }, `On a screen wider than ${WIDE_MIN} pixels. Use the room: the inventory's panels beside its list, details on the right, the catalog's groups down the side, GM panels side by side. One column: centred, as on a narrower screen.`)),

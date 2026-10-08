@@ -618,6 +618,53 @@ input.settle-n { width: 70px; flex: none; }
 .gm-pin-grid input.invalid { border-color: var(--bad); }
 .gm-range-pair { display: flex; align-items: center; gap: 6px; font-size: .88rem; color: var(--muted); }
 .gm-range-pair input.gm-range { width: 76px; }
+/* Boards' layers, pictured pins, groups (js/gm-controls.js: Boards). */
+.cp-who { font-weight: 400; opacity: .8; }
+.gm-board-layer { position: absolute; inset: 0; pointer-events: none; }
+.gm-layer-pic { display: block; width: 100%; height: 100%; object-fit: fill; border-radius: 8px; }
+.gm-board-lines { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.gm-board-lines line { stroke-width: 2; stroke-dasharray: 4 5; opacity: .75; vector-effect: non-scaling-stroke; }
+.gm-pin-pic { width: 100%; height: 100%; pointer-events: none; filter: drop-shadow(0 1px 2px rgb(0 0 0 / .45)); }
+.gm-pin.pictured .gm-pin-label { top: calc(100% + 2px); }
+.gm-pin.pictured:focus-visible .gm-pin-pic, .gm-pin.pictured.dragging .gm-pin-pic { filter: drop-shadow(0 0 2px var(--accent)) drop-shadow(0 0 3px var(--accent)); }
+.gm-pin.pictured.unset .gm-pin-pic { opacity: .55; }
+.gm-pin-spot { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%; background: #fff; border: 2px solid #222; pointer-events: none; }
+.gm-pin-count { position: absolute; top: -6px; right: -8px; min-width: 18px; padding: 0 4px; border-radius: 9px; background: var(--pin); color: #fff;
+  border: 2px solid #fff; font-size: .7rem; font-weight: 700; line-height: 14px; text-align: center; pointer-events: none; }
+.gm-pin-lock { position: absolute; top: -6px; left: -6px; width: 16px; height: 16px; border-radius: 50%; background: #34495e; color: #fff;
+  display: flex; align-items: center; justify-content: center; pointer-events: none; }
+.gm-pin-lock .icon { width: 10px; height: 10px; }
+.gm-pin.locked { cursor: default; }
+.gm-pin.member .gm-pin-dot { width: 18px; height: 18px; }
+.gm-layer-list, .gm-members { display: grid; gap: 6px; }
+.gm-layer-row { display: flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 8px; background: var(--surface); }
+.gm-layer-row.edit { display: grid; }
+.gm-layer-row-head { display: flex; align-items: center; gap: 6px; }
+.gm-layer-row.off > .grow, .gm-layer-row.off .gm-layer-row-head input { opacity: .6; }
+.gm-layer-row .icon-btn.on, .gm-layer-row-head .icon-btn.on, .board-zoom .reader-bar .icon-btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.gm-layer-row .grow, .gm-member .grow, .gm-pin-row.compact .grow { flex: 1; min-width: 0; }
+.gm-layer-thumb { width: 56px; height: 56px; }
+.board-zoom-layers { padding: 8px 12px; border-top: 1px solid var(--border); max-height: 40vh; overflow-y: auto; }
+.board-zoom-layers h3 { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; font-size: 1rem; }
+.board-zoom-holder { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.gm-member { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--border); }
+.gm-members .gm-member:first-of-type { border-top: 0; }
+.gm-member.edit { border: 1px solid var(--border); border-radius: var(--radius); padding: 6px; background: var(--surface); }
+.gm-member.edit input[type=color] { width: 36px; height: 34px; padding: 2px; flex: none; }
+.gm-member-fields { display: grid; gap: 4px; }
+.gm-member-pic { padding: 2px 6px; }
+.gm-member-face { width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; flex: none; color: var(--pin); }
+.gm-member-face .gm-pin-dot { width: 18px; height: 18px; border-width: 2px; }
+.gm-member-face.big { width: 48px; height: 48px; }
+.gm-pin-row.compact { display: flex; align-items: center; gap: 8px; }
+.gm-pin-row.compact small { display: block; }
+.gm-pin-look { align-items: center; }
+.gm-anchor-row { display: flex; gap: 12px; align-items: flex-start; }
+.gm-anchor { display: grid; grid-template-columns: repeat(3, 28px); gap: 3px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); flex: none; }
+.gm-anchor button { width: 28px; height: 28px; border-radius: 5px; border: 1px dashed var(--border); background: none; padding: 0; cursor: pointer; }
+.gm-anchor button.on { background: var(--accent); border: 0; }
+.gm-nudge { margin-top: 6px; gap: 6px; align-items: center; color: var(--text); }
+.gm-nudge-in { width: 64px; }
 @media (max-width: 560px) {
   .gm-pin-grid { grid-template-columns: auto 1fr; }
   .gm-range-pair { grid-column: 2; }
@@ -899,9 +946,14 @@ button.tile:hover { border-color: var(--muted); border-top-color: var(--type); }
 .no-colour { --type: var(--muted); }
 .no-colour .item-icon { color: var(--muted) !important; }
 /* Drawings in their own colours: the type colour behind them (Settings → This device → Full-colour drawings). */
-svg.own-colours.behind-plate { background: radial-gradient(circle closest-side, color-mix(in srgb, var(--own-type) 28%, transparent) 97%, transparent 100%); border-radius: 50%; }
-svg.own-colours.behind-outline { filter: drop-shadow(1.5px 0 0 var(--own-type)) drop-shadow(-1.5px 0 0 var(--own-type)) drop-shadow(0 1.5px 0 var(--own-type)) drop-shadow(0 -1.5px 0 var(--own-type)); }
+svg.own-colours { --own-plate: 97%; --own-line: 1.5px; }
+svg.own-colours.behind-s { --own-plate: 68%; --own-line: 1px; }
+svg.own-colours.behind-l { --own-plate: 100%; --own-line: 2.5px; }
+svg.own-colours.behind-plate { background: radial-gradient(circle closest-side, color-mix(in srgb, var(--own-type) 28%, transparent) calc(var(--own-plate) - 3%), transparent var(--own-plate)); border-radius: 50%; }
+svg.own-colours.behind-outline { filter: drop-shadow(var(--own-line) 0 0 var(--own-type)) drop-shadow(calc(-1 * var(--own-line)) 0 0 var(--own-type)) drop-shadow(0 var(--own-line) 0 var(--own-type)) drop-shadow(0 calc(-1 * var(--own-line)) 0 var(--own-type)); }
 .no-colour svg.own-colours { --own-type: transparent !important; }
+/* (Turned off in a list's View menu; not in the item's details, where it's shown large on its own.) */
+.no-behind svg.own-colours, .details-icon svg.own-colours, svg.own-colours.details-watermark { background: none; filter: none; }
 .colour-swatches { display: inline-block; width: 16px; height: 16px; border-radius: 50%; background: currentColor; opacity: .7; flex: none; }
 .colour-swatches.own { opacity: 1; background: conic-gradient(#d6455d 0 25%, #e8c547 0 50%, #3a6db0 0 75%, #6a9a3a 0); }
 .show-parts .chip-btn .icon { width: 14px; height: 14px; }
