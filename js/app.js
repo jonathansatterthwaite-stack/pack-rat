@@ -4380,7 +4380,7 @@ function openCampaignStates() {
   const canEdit = isGmDevice() || !party.active;
   const box = h("div", { class: "states-list" });
   const needs = st => st.requires ? featureByKey(st.requires)?.label || st.requires : null;
-  const describe = st => [st.who === "gm" ? `Only the ${term("gm")}` : "The player", needs(st) && `needs ${needs(st)}`, st.limit && `limit ${st.limit.default}`].filter(Boolean).join(" · ");
+  const describe = st => [st.who === "gm" ? `Only the ${term("gm")}` : "The player", needs(st) && `needs ${needs(st)}${st.requiresProperty ? ` (${st.requiresProperty})` : ""}`, st.limit && `limit ${st.limit.default}`].filter(Boolean).join(" · ");
   const draw = () => setChildren(box,
     h("h4", null, `From ${activeSystem().name}`, h("span", { class: "muted small" }, " (fixed)")),
     sysStates.length ? sysStates.map(st => h("div", { class: "state-row" }, h("span", { class: "grow" }, h("b", null, st.label), h("small", { class: "muted" }, describe(st))), icon("lock")))
