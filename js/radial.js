@@ -251,11 +251,14 @@ function inventoryMenu(e) {
         if (x) playerSetState(e.uid, s.key, !stateOn(c, x, s.key));
       } };
     }),
+    // The item's own actions (a container's: its words, its effect).
+    ...itemActions(currentItem(e, char)).map((a, i) => ({ icon: a.effect === "fill" ? "plus" : a.effect === "random" ? "dice" : "bag", label: a.label, run: () => runItemAction(e.uid, i) })),
     editing() && { icon: "edit", label: "Edit", run: () => openItemForm(e.item, { entryUid: e.uid }) },
     { icon: "move", label: "Move to…", run: () => openMoveTo(e.uid) },
     { icon: "coins", label: "Sell", run: () => openSell(e.uid) },
     party.active && party.others().length > 0 && { icon: "users", label: "Trade", run: () => openTradeBuilder(null, e.uid) },
-    { icon: "trash", label: "Remove", danger: true, run: () => confirmRemoveEntry(e.uid) },
+    party.active && { icon: "eye", label: "Show…", run: () => openShowItem(e.uid) },
+    { icon: "trash", label: discarding(char) ? "Discard" : "Remove", danger: true, run: () => confirmRemoveEntry(e.uid) },
   ].filter(Boolean);
 }
 
@@ -263,22 +266,26 @@ function inventoryMenu(e) {
 function openMoveTo(entryUid) {
   const char = store.char(), e = char.items.find(x => x.uid === entryUid);
   if (!e) return;
-  const here = e.parent ? e.parent + (e.strapped ? ":out" : "") : "";
+  const here = locationValue(e);
   let close;
   const rows = containerOptions(char, e.uid).map(opt => {
     const value = opt.value, current = value === here;
     return h("button", { type: "button", class: "row row-main switch" + (current ? " equipped" : ""), disabled: current,
-      onclick: () => { close(); const loc = parseLocation(value); moveEntry(e.uid, loc.parent, loc.strapped); } },
+      onclick: () => { close(); const loc = parseLocation(value); moveEntry(e.uid, loc.parent, loc.strapped, loc.compartment); } },
       icon(value ? (value.endsWith(":out") ? "link" : "bag") : "user"),
       h("div", null, h("div", { class: "row-title" }, opt.textContent), current && h("div", { class: "row-sub" }, "Where it is now")));
   });
   close = openModal(`Move ${entryName(e)}`, h("div", { class: "group move-to" }, rows));
 }
 
+// In a party, a character's items are discarded (to the GM) rather than removed (js/party-ui.js).
+const discarding = char => party.active && !!char && party.isLinked(char.id);
+
 // Removing an item asks first (Undo still works after).
 function confirmRemoveEntry(entryUid, after) {
   const char = store.char(), e = char?.items.find(x => x.uid === entryUid);
   if (!e) return;
+  if (discarding(char)) return discardEntry(entryUid, after);
   const name = entryName(e) + (e.qty > 1 ? ` (×${e.qty.toLocaleString()})` : "");
   const inside = holdsItems(char, e) && char.items.some(x => x.parent === e.uid);
   confirmDialog(`Remove ${name} from ${char.name}'s inventory?${inside ? " What's in it stays where it was." : ""}`, "Remove", () => {

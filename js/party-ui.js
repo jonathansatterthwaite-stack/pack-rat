@@ -784,3 +784,126 @@ function gmLimits(c) {
       h("span", { class: "small muted" }, `${stateCount(c, st.key)} ${st.label.toLowerCase()}` + (typeof own === "number" ? "" : " · default")));
   }));
 }
+
+// ------------------------------------------------------------------ showing an item
+// In a party, an item can be shown to some of the party and the GM (Show… in its menu): it pops up
+// for them to look at; nothing moves. The host keeps it until everyone has seen it (server.py:
+// prune_shows).
+
+// The entries inside an entry (for showing a container with what's in it).
+function entryContents(char, e) {
+  const out = [], walk = id => { for (const x of char.items.filter(x => x.parent === id)) { out.push(x); walk(x.uid); } };
+  walk(e.uid);
+  return out.slice(0, 200);
+}
+// An entry as it's shown: its item as it is now (identified, named…), without its layers and
+// rules (what it could become isn't theirs to see).
+function shownEntry(char, e) {
+  const { layers, triggers, ...item } = clone(currentItem(e, char));
+  return { ...clone(e), item };
+}
+
+function openShowItem(entryUid) {
+  const char = store.char(), e = char?.items.find(x => x.uid === entryUid);
+  if (!e || !party.active) return;
+  const others = party.chars.filter(c => c.id !== char.id);
+  const toGm = !party.isGm();
+  const chosen = new Set(others.filter(c => c.online && !c.mine).map(c => c.id));
+  let gm = false, close;
+  const send = async () => {
+    if (!chosen.size && !gm) return toast("Choose who to show it to");
+    close();
+    try {
+      await party.api("POST", "api/show", { from: party.isLinked(char.id) ? char.id : "", item: shownEntry(char, e),
+        contents: entryContents(char, e).map(x => shownEntry(char, x)), to: [...chosen], gm });
+      const names = [...others.filter(c => chosen.has(c.id)).map(c => c.name), gm && `the ${term("gm")}`].filter(Boolean);
+      toast(`Showing ${entryName(e)} to ${names.join(", ")}`);
+    } catch (err) {
+      toast(err.status === 404 && /Unknown|endpoint/i.test(err.message) ? "The party's host needs the latest Pack Rat to show items" : err.message);
+    }
+  };
+  close = openModal(`Show ${entryName(e)}`, h("div", { class: "form" },
+    h("p", { class: "muted small" }, "It pops up for them to look at. Nothing changes hands."),
+    h("div", { class: "group" },
+      others.map(c => h("label", { class: "row check-row" },
+        h("input", { type: "checkbox", checked: chosen.has(c.id), onchange: ev => { ev.target.checked ? chosen.add(c.id) : chosen.delete(c.id); } }),
+        onlineDot(c.online), h("span", { class: "grow" }, c.name), c.mine && h("span", { class: "tag" }, "yours"))),
+      toGm && h("label", { class: "row check-row" },
+        h("input", { type: "checkbox", checked: gm, onchange: ev => { gm = ev.target.checked; } }),
+        icon("shield"), h("span", { class: "grow" }, `The ${term("gm")}`)))),
+  { footer: [h("button", { class: "btn", onclick: () => close() }, "Cancel"), h("button", { class: "btn primary", onclick: send }, icon("eye"), "Show it")] });
+}
+
+// Who on this device a show is for: its characters it was shown to, and "gm" (shown to the GM, on
+// a GM's device), not yet seen.
+const showFor = s => [...s.to.filter(id => party.isLinked(id)), ...(s.gm && party.isGm() ? ["gm"] : [])].filter(w => !s.seen.includes(w));
+
+// Pops up items shown to this device, one at a time (called on every render).
+const showsOpen = new Set();
+function syncShows() {
+  if (!party.active) return;
+  const next = (party.shows || []).find(s => showFor(s).length && !showsOpen.has(s.id));
+  if (!next || document.querySelector("#modal-root .show-pop")) return;
+  showsOpen.add(next.id);
+  openShownItem(next);
+}
+
+function openShownItem(s) {
+  const e = s.item, it = e.item;
+  const seen = () => { for (const w of showFor(s)) party.api("POST", `api/show/${s.id}/seen`, { character: w }).catch(() => {}); };
+  const close = openModal(`${s.fromName} shows you…`, h("div", { class: "show-pop" },
+    h("p", null, h("b", null, entryName(e)), e.qty > 1 && ` ×${e.qty.toLocaleString()}`, e.customName && h("span", { class: "muted small" }, ` (${it.name})`)),
+    s.to.length > 1 && h("p", { class: "muted small" }, `Shown to ${s.to.map(id => party.chars.find(c => c.id === id)?.name || "someone").join(", ")}${s.gm ? ` and the ${term("gm")}` : ""}.`),
+    e.notes && h("p", { class: "small" }, e.notes),
+    itemDetails(it, null, e.srcId),
+    s.contents.length > 0 && h("div", { class: "field" }, h("span", null, "Inside"),
+      h("ul", { class: "show-contents" }, s.contents.filter(x => x.parent === e.uid).map(x => h("li", null, entryName(x), x.qty > 1 && ` ×${x.qty}`))))),
+  { footer: [h("button", { class: "btn primary", onclick: () => { seen(); close(); } }, icon("check"), "Seen")] });
+}
+
+// ------------------------------------------------------------------ discarding
+// In a party, Remove is Discard: the item goes to the GM (a Discarded hoard on the GM's Treasure
+// tab, with a line in its history), by way of the host.
+
+async function discardEntry(entryUid, after) {
+  const char = store.char(), e = char?.items.find(x => x.uid === entryUid);
+  if (!e) return;
+  const name = entryName(e) + (e.qty > 1 ? ` (×${e.qty.toLocaleString()})` : "");
+  const inside = holdsItems(char, e) && char.items.some(x => x.parent === e.uid);
+  confirmDialog(`Discard ${name}? It goes to the ${term("gm")} (their Treasure tab, Discarded).${inside ? " What's in it stays with you." : ""}`, "Discard", async () => {
+    after?.();
+    // (all of it, layers and rules too: it's the GM's now)
+    const copy = { ...clone(e), parent: null, strapped: false, equipped: false };
+    const kids = char.items.filter(x => x.parent === e.uid).map(x => x.uid); // (they stay with you: removeEntry moves them out)
+    commit((s, c) => removeEntry(c, e.uid), `Discarded ${entryName(e)}`);
+    try {
+      await party.api("POST", "api/discard", { character: char.id, items: [copy] });
+    } catch (err) {
+      // Not sent: it stays, with what was in it.
+      commit((s, c) => { if (c.id !== char.id) return; c.items.push(e); for (const x of c.items) if (kids.includes(x.uid)) x.parent = e.uid; });
+      toast(err.status === 404 && /Unknown|endpoint/i.test(err.message) ? "The party's host needs the latest Pack Rat to discard items: it's back" : `Couldn't discard it: ${err.message}`);
+    }
+  });
+}
+
+// On a GM's device: discarded items go into the Discarded hoard (called on every render).
+const discardsTaken = new Set();
+function takeDiscards() {
+  if (!party.active || !party.isGm()) return;
+  for (const d of party.discards || []) {
+    if (discardsTaken.has(d.id)) continue;
+    discardsTaken.add(d.id);
+    commit(s => {
+      s.hoards ||= [];
+      let hd = s.hoards.find(x => x.discarded);
+      if (!hd) { hd = { ...newHoard("Discarded"), discarded: true, notes: "What players discard comes here." }; s.hoards.unshift(hd); }
+      for (const e of d.items) {
+        const x = { ...clone(e), uid: uid(), parent: null, strapped: false, equipped: false };
+        x.history = [...(x.history || []), { at: d.at, text: `Discarded by ${d.name}` }].slice(-20);
+        hd.items.push(x);
+      }
+    }, `${d.name} discarded ${d.items.map(e => entryName(e)).join(", ")} (Treasure: Discarded)`);
+    party.api("DELETE", `api/discard/${d.id}`).catch(() => discardsTaken.delete(d.id));
+  }
+}
+

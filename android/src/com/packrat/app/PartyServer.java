@@ -132,6 +132,8 @@ public class PartyServer {
     private JSONArray trades = new JSONArray();
     private JSONArray shops = new JSONArray();
     private JSONArray treasure = new JSONArray(); // treasure being shown to players (see treasureApi)
+    private JSONArray shows = new JSONArray(); // items being shown (see showApi)
+    private JSONArray discards = new JSONArray(); // discarded items waiting for a GM's device (see discardApi)
     /** GM values (see gm_api in server.py): {party: {name: v}, characters: {id: {…}}, items: {"charId/uid": {…}}}. */
     private JSONObject gm = new JSONObject();
     /** Host-level (kept whatever the campaign): tokens of the devices the host has made GMs, and devices' names. */
@@ -346,6 +348,8 @@ public class PartyServer {
         trades = data.optJSONArray("trades") != null ? data.optJSONArray("trades") : new JSONArray();
         shops = data.optJSONArray("shops") != null ? data.optJSONArray("shops") : new JSONArray();
         treasure = data.optJSONArray("treasure") != null ? data.optJSONArray("treasure") : new JSONArray();
+        shows = data.optJSONArray("shows") != null ? data.optJSONArray("shows") : new JSONArray();
+        discards = data.optJSONArray("discards") != null ? data.optJSONArray("discards") : new JSONArray();
         gm = data.optJSONObject("gm") != null ? data.optJSONObject("gm") : new JSONObject();
         campaign = data.optJSONObject("campaign");
         if (hostLevel) {
@@ -362,6 +366,8 @@ public class PartyServer {
             data.put("trades", trades);
             data.put("shops", shops);
             data.put("treasure", treasure);
+            data.put("shows", shows);
+            data.put("discards", discards);
             data.put("gm", gm);
             data.put("partyId", partyId);
             data.put("gms", gms);
@@ -506,6 +512,22 @@ public class PartyServer {
             if (in) shown.put(t);
         }
         snap.put("treasure", shown);
+        // Items shown: to the devices of those they're shown to (a GM's, when shown to the GM), and
+        // to whoever showed them. Discarded items wait for a GM's device to take them.
+        pruneShows();
+        JSONArray myShows = new JSONArray();
+        for (int i = 0; i < shows.length(); i++) {
+            JSONObject s = shows.getJSONObject(i);
+            JSONArray to = s.getJSONArray("to");
+            boolean in = (gmView && s.optBoolean("gm")) || s.optString("by").equals(token);
+            for (int j = 0; !in && j < to.length(); j++) in = mine.contains(to.optString(j));
+            if (!in) continue;
+            JSONObject copy = new JSONObject(s.toString());
+            copy.put("fromMine", s.optString("by").equals(token));
+            myShows.put(copy);
+        }
+        snap.put("shows", myShows);
+        if (gmView) snap.put("discards", new JSONArray(discards.toString()));
         snap.put("isHost", host);
         snap.put("campaign", campaign == null ? JSONObject.NULL : new JSONObject(campaign.toString()));
         snap.put("time", System.currentTimeMillis()); // the clock moving values follow
@@ -1336,6 +1358,7 @@ public class PartyServer {
                 entry.put("strapped", parent != null && e.optBoolean("strapped"));
                 entry.put("equipped", false);
                 entry.put("seen", JSONObject.NULL);
+                addHistory(entry, "From " + t.optString("name") + " (treasure)");
                 newUid.put(uid, entry.getString("uid"));
                 List<JSONObject> pieces = new ArrayList<>();
                 boolean kids = false;
@@ -1441,6 +1464,162 @@ public class PartyServer {
             if (!x.isNull("parent") && !uids.contains(x.getString("parent"))) { x.put("parent", JSONObject.NULL); x.put("strapped", false); }
         }
         return items;
+    }
+
+    // ------------------------------------------------------------ showing and discarding (see show_api in server.py)
+
+    /** A line in an item's history (where it came from): its last 20 kept. */
+    private static void addHistory(JSONObject e, String text) throws JSONException {
+        JSONArray past = e.optJSONArray("history"), out = new JSONArray();
+        int from = past == null ? 0 : Math.max(0, past.length() - 19);
+        for (int i = from; past != null && i < past.length(); i++) if (past.optJSONObject(i) != null) out.put(past.getJSONObject(i));
+        JSONObject line = new JSONObject();
+        line.put("at", System.currentTimeMillis());
+        line.put("text", cut(text, 160));
+        out.put(line);
+        e.put("history", out);
+    }
+
+    private static final long SHOW_TTL_MS = 2L * 60 * 60 * 1000;
+    // (Kept in memory and in the party's save: a player can't fill them up.)
+    private static final int SHOW_MAX_BYTES = 300_000, SHOWS_PER_DEVICE = 20, DISCARD_MAX_BYTES = 1_000_000, DISCARDS_PER_CHARACTER = 50;
+
+    /** Shows go once everyone they're shown to has seen them, or after two hours. */
+    private void pruneShows() throws JSONException {
+        long cutoff = System.currentTimeMillis() - SHOW_TTL_MS;
+        JSONArray keep = new JSONArray();
+        for (int i = 0; i < shows.length(); i++) {
+            JSONObject s = shows.getJSONObject(i);
+            if (s.optLong("at") > cutoff && !seenByAll(s)) keep.put(s);
+        }
+        shows = keep;
+    }
+
+    private static boolean seenByAll(JSONObject s) throws JSONException {
+        Set<String> seen = new HashSet<>();
+        JSONArray sn = s.getJSONArray("seen"), to = s.getJSONArray("to");
+        for (int i = 0; i < sn.length(); i++) seen.add(sn.optString(i));
+        for (int i = 0; i < to.length(); i++) if (!seen.contains(to.optString(i))) return false;
+        return !s.optBoolean("gm") || seen.contains("gm");
+    }
+
+    private JSONObject showApi(Request req, List<String> parts, String token) throws ApiError, JSONException {
+        boolean isGm = isGm(req, token);
+        JSONObject body = req.method.equals("POST") ? req.json() : new JSONObject();
+        synchronized (lock) {
+            JSONObject r = new JSONObject();
+            if (req.method.equals("POST") && parts.isEmpty()) {
+                if (!partyEnabled()) throw new ApiError(404, "No party is being hosted");
+                String from = body.optString("from", "");
+                JSONObject c = from.isEmpty() ? null : characters.optJSONObject(from);
+                if (!from.isEmpty() && (c == null || !c.optString("owner").equals(token))) throw new ApiError(403, "You can only show your own characters' things");
+                if (from.isEmpty() && !isGm) throw new ApiError(403, "Show it from one of your characters");
+                JSONArray one = new JSONArray();
+                if (body.optJSONObject("item") != null) one.put(body.getJSONObject("item"));
+                JSONArray items = cleanTreasureItems(one);
+                if (items.length() == 0) throw new ApiError(400, "Nothing to show");
+                JSONArray to = new JSONArray(), in = body.optJSONArray("to");
+                for (int i = 0; in != null && i < in.length() && to.length() < 30; i++) {
+                    String id = in.optString(i);
+                    if (characters.has(id) && !id.equals(from)) to.put(id);
+                }
+                boolean toGm = body.optBoolean("gm");
+                if (to.length() == 0 && !toGm) throw new ApiError(400, "Choose who to show it to");
+                int mine = 0;
+                for (int i = 0; i < shows.length(); i++) if (shows.getJSONObject(i).optString("by").equals(token)) mine++;
+                if (shows.length() >= 200 || mine >= SHOWS_PER_DEVICE) throw new ApiError(429, "Too much is being shown: try again once it's been seen");
+                JSONArray contents = cleanTreasureItems(body.optJSONArray("contents")), kept = new JSONArray();
+                for (int i = 0; i < contents.length() && i < 200; i++) kept.put(contents.get(i));
+                JSONObject s = new JSONObject();
+                s.put("id", newId("s"));
+                s.put("by", token);
+                s.put("from", from);
+                s.put("fromName", c != null ? c.optString("name") : "The GM");
+                s.put("item", items.get(0));
+                s.put("contents", kept);
+                s.put("to", to);
+                s.put("gm", toGm);
+                s.put("seen", new JSONArray());
+                s.put("at", System.currentTimeMillis());
+                if (s.toString().length() > SHOW_MAX_BYTES) throw new ApiError(413, "That's too big to show");
+                shows.put(s);
+                changed(true);
+                r.put("id", s.getString("id"));
+                return r;
+            }
+            JSONObject s = null;
+            int at = -1;
+            for (int i = 0; !parts.isEmpty() && i < shows.length(); i++) if (shows.getJSONObject(i).optString("id").equals(parts.get(0))) { s = shows.getJSONObject(i); at = i; }
+            if (s == null) throw new ApiError(404, "That isn't being shown any more");
+            String action = parts.size() > 1 ? parts.get(1) : null;
+            if (req.method.equals("DELETE") && action == null) {
+                if (!s.optString("by").equals(token) && !isGm) throw new ApiError(403, "Only whoever showed it can take it back");
+                shows.remove(at);
+                changed(true);
+                r.put("ok", true);
+                return r;
+            }
+            if (req.method.equals("POST") && "seen".equals(action)) {
+                String who = body.optString("character", "");
+                if (who.equals("gm")) {
+                    if (!(isGm && s.optBoolean("gm"))) throw new ApiError(403, "That wasn't shown to you");
+                } else {
+                    JSONObject c = characters.optJSONObject(who);
+                    boolean to = false;
+                    JSONArray ts = s.getJSONArray("to");
+                    for (int i = 0; i < ts.length(); i++) to |= ts.optString(i).equals(who);
+                    if (c == null || !c.optString("owner").equals(token) || !to) throw new ApiError(403, "That wasn't shown to you");
+                }
+                JSONArray seen = s.getJSONArray("seen");
+                boolean already = false;
+                for (int i = 0; i < seen.length(); i++) already |= seen.optString(i).equals(who);
+                if (!already) seen.put(who);
+                pruneShows();
+                changed(true);
+                r.put("ok", true);
+                return r;
+            }
+            throw new ApiError(404, "Unknown endpoint");
+        }
+    }
+
+    private JSONObject discardApi(Request req, List<String> parts, String token) throws ApiError, JSONException {
+        synchronized (lock) {
+            JSONObject r = new JSONObject();
+            if (req.method.equals("POST") && parts.isEmpty()) {
+                JSONObject body = req.json();
+                String cid = body.optString("character", "");
+                JSONObject c = characters.optJSONObject(cid);
+                if (c == null || !c.optString("owner").equals(token)) throw new ApiError(403, "You can only discard your own characters' things");
+                JSONArray items = cleanTreasureItems(body.optJSONArray("items")), kept = new JSONArray();
+                for (int i = 0; i < items.length() && i < 500; i++) kept.put(items.get(i));
+                if (kept.length() == 0) throw new ApiError(400, "Nothing to discard");
+                int theirs = 0;
+                for (int i = 0; i < discards.length(); i++) if (discards.getJSONObject(i).optString("character").equals(cid)) theirs++;
+                if (discards.length() >= 500 || theirs >= DISCARDS_PER_CHARACTER) throw new ApiError(429, "The GM has a lot waiting: try again once they've taken it");
+                JSONObject d = new JSONObject();
+                d.put("id", newId("d"));
+                d.put("character", cid);
+                d.put("name", c.optString("name"));
+                d.put("items", kept);
+                d.put("at", System.currentTimeMillis());
+                if (d.toString().length() > DISCARD_MAX_BYTES) throw new ApiError(413, "That's too big to discard in one go");
+                discards.put(d);
+                changed(true);
+                r.put("id", d.getString("id"));
+                return r;
+            }
+            if (req.method.equals("DELETE") && parts.size() == 1) {
+                if (!isGm(req, token)) throw new ApiError(403, "Only a GM can do that");
+                JSONArray keep = new JSONArray();
+                for (int i = 0; i < discards.length(); i++) if (!discards.getJSONObject(i).optString("id").equals(parts.get(0))) keep.put(discards.get(i));
+                discards = keep;
+                changed(true);
+                r.put("ok", true);
+                return r;
+            }
+            throw new ApiError(404, "Unknown endpoint");
+        }
     }
 
     private JSONObject treasureApi(Request req, List<String> parts, String token) throws ApiError, JSONException {
@@ -1627,6 +1806,7 @@ public class PartyServer {
             src.put("items", keep);
             carryValues(src, dst, moving, null);
             makeLoose(e);
+            addHistory(e, "From " + src.optString("name", "someone") + ", in a trade");
             for (JSONObject k : kids) {
                 k.put("equipped", false);
                 k.put("attuned", false);
@@ -1641,6 +1821,7 @@ public class PartyServer {
             e.put("qty", e.optInt("qty") - qty);
             JSONObject part = new JSONObject(e.toString());
             makeLoose(part);
+            addHistory(part, "From " + src.optString("name", "someone") + ", in a trade");
             part.put("uid", newId(""));
             part.put("qty", qty);
             carryValues(src, dst, Collections.singletonList(uid), part.optString("uid"));
@@ -1981,6 +2162,8 @@ public class PartyServer {
         if (p0.equals("shops")) return shopsApi(req, parts.subList(1, parts.size()), token);
         if (p0.equals("gm")) return gmApi(req, parts.subList(1, parts.size()), token);
         if (p0.equals("treasure")) return treasureApi(req, parts.subList(1, parts.size()), token);
+        if (p0.equals("show")) return showApi(req, parts.subList(1, parts.size()), token);
+        if (p0.equals("discard")) return discardApi(req, parts.subList(1, parts.size()), token);
         if (p0.equals("presence") || p0.equals("host") || p0.equals("quit")) {
             if (!req.fromApp) throw new ApiError(403, "Only the app on the hosting device can do that");
             if (m.equals("GET") && p0.equals("presence")) {
@@ -2384,6 +2567,29 @@ public class PartyServer {
     }
 
     /** POST /api/campaign {id, name, shops, gmValues}: a GM loads one of their campaigns (see campaign_api in server.py). */
+    /** A campaign's own item states (see clean_own_states in server.py): known fields only, within limits. */
+    private static JSONArray cleanOwnStates(JSONArray raw) throws JSONException {
+        JSONArray out = new JSONArray();
+        for (int i = 0; raw != null && i < raw.length() && out.length() < 30; i++) {
+            JSONObject st = raw.optJSONObject(i);
+            if (st == null || !(st.opt("key") instanceof String) || !(st.opt("label") instanceof String)) continue;
+            JSONObject x = new JSONObject();
+            x.put("key", cut(st.getString("key"), 40));
+            x.put("label", cut(st.getString("label"), 30));
+            x.put("who", "gm".equals(st.optString("who")) ? "gm" : "player");
+            if (!st.optString("requires").isEmpty()) x.put("requires", cut(st.optString("requires"), 40));
+            JSONObject lim = st.optJSONObject("limit");
+            if (lim != null && (lim.opt("default") instanceof Integer) && lim.getInt("default") > 0 && lim.getInt("default") < 1000) {
+                JSONObject l = new JSONObject();
+                l.put("default", lim.getInt("default"));
+                l.put("mode", "warn");
+                x.put("limit", l);
+            }
+            out.put(x);
+        }
+        return out;
+    }
+
     private JSONObject campaignApi(Request req, String token) throws ApiError, JSONException {
         if (!isGm(req, token)) throw new ApiError(403, "Only a GM can choose the campaign");
         JSONObject body = req.json();
@@ -2423,6 +2629,7 @@ public class PartyServer {
             campaign.put("gmOnly", gmOnly);
             // Rules, values and controls (Clockwork): off, shops don't follow values.
             campaign.put("clockwork", !(body.opt("clockwork") instanceof Boolean) || body.optBoolean("clockwork", true));
+            campaign.put("ownStates", cleanOwnStates(body.optJSONArray("ownStates")));
             changed(false);
         }
         return new JSONObject().put("ok", true);

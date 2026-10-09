@@ -283,6 +283,8 @@ const party = {
   takeRoles(snap) {
     this.shops = snap.shops || [];
     this.treasure = snap.treasure || []; // treasure being shown (js/treasure.js)
+    this.shows = snap.shows || []; // items shown to this device's characters, or by them (js/party-ui.js)
+    this.discards = snap.discards || []; // discarded items waiting for a GM's device
     this.gm = snap.gm || {};
     // The host's clock, which moving values follow (js/clockwork.js): how far ahead of ours it is.
     if (typeof snap.time === "number") this.clockOffset = snap.time - Date.now();
@@ -308,7 +310,10 @@ const party = {
     await this.api("POST", "api/campaign", { id: camp.id, name: camp.name, shops: camp.shops, gmValues: valuesFromNow(camp.gmValues),
       system: camp.system ? { id: camp.system, name: systemName(camp.system) } : null,
       // The servers work out shop payments in its money, and sale prices with its states' layers.
-      currency: currencyRules(sysOf(camp)), states: systemStates(sysOf(camp)).map(st => st.key),
+      currency: currencyRules(sysOf(camp)),
+      states: [...systemStates(sysOf(camp)), ...(camp === store.campaign() ? [] : campaignStates(camp))].map(st => st.key),
+      // The campaign's own states, for players' devices to use (see takeSystem).
+      ownStates: campaignStates(camp),
       // Values only a GM sets (states' limits); players set their other Locals (js/clockwork.js).
       gmOnly: systemStates(sysOf(camp)).map(limitValueName).filter(Boolean).map(valueKey),
       // Rules, values and controls (js/clockwork.js): off for everyone when the GM says so.
@@ -317,9 +322,16 @@ const party = {
 
   // The game system the GM's campaign plays (hosts from before systems don't say: keep ours).
   takeSystem(camp, pc) {
-    if (!pc || !("system" in pc)) return false;
+    if (!pc) return false;
+    let changed = false;
+    // Its own states (a player's device follows the GM's; the GM's device has them already).
+    if (Array.isArray(pc.ownStates) && !this.isGm() && JSON.stringify(camp.states || []) !== JSON.stringify(pc.ownStates)) {
+      camp.states = clone(pc.ownStates);
+      changed = true;
+    }
+    if (!("system" in pc)) return changed;
     const id = pc.system?.id || null;
-    if (camp.system === id && camp.systemName === pc.system?.name) return false;
+    if (camp.system === id && camp.systemName === pc.system?.name) return changed;
     camp.system = id;
     camp.systemName = pc.system?.name; // to name it if this device hasn't got it
     return true;

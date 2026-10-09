@@ -388,6 +388,9 @@ const store = {
   // Apply a mutation, persist, and re-render.
   update(fn) {
     fn(this.state);
+    // Coins and coin items kept in step (see syncCoins).
+    for (const c of this.state.characters || []) syncCoins(c, this.state.settings);
+    for (const hd of this.state.hoards || []) syncCoins(hd, this.state.settings); // (kept like an inventory)
     this.save();
     this.listeners.forEach(l => l());
   },
@@ -579,6 +582,55 @@ function fillDeck(char, deck) {
 const cardsIn = (char, deck) => char.items.filter(e => e.parent === deck.uid && e.item.card);
 const cardsOut = (char, deck) => char.items.filter(e => e.fromDeck === deck.uid && e.parent !== deck.uid);
 
+// ------------------------------------------------------------------ container actions
+// What an item offers to do with what's in it (item.actions): each its own words (label) and one
+// of a few effects, then, if it says, a state of the item switched: "Shake one out" and "Fish one
+// out" are both a random one; "Smash it" is everything out, then Broken on.
+//   [{ label, effect: "random" | "choose" | "empty" | "fill", state?, on? }]
+const CONTAINER_EFFECTS = [["random", "Takes one out, at random"], ["choose", "Takes one out (you choose)"], ["empty", "Takes everything out"], ["fill", "Puts things in"]];
+// A set's, unless it has its own: "Draw a card" (one at random) and "Take all out".
+function itemActions(it) {
+  const own = (Array.isArray(it?.actions) ? it.actions : []).filter(a => a && a.label && CONTAINER_EFFECTS.some(([k]) => k === a.effect));
+  if (own.length || Array.isArray(it?.actions) || !deckList(it, it?.id)) return own;
+  const noun = pieceNoun(it);
+  return [{ label: noun === "card" ? "Draw a card" : "Take one at random", effect: "random" }, { label: "Take all out", effect: "empty" }];
+}
+
+// What's in a container that can come out (not what's strapped to it).
+const takeable = (char, holder) => char.items.filter(e => e.parent === holder.uid && !e.strapped);
+
+// Take n of an entry out of its container, to where the container is: a stack's split off (and
+// joins one there), a single thing just moves. Returns the entry where it landed.
+function takeOutOf(char, holder, e, n = e.qty) {
+  const parent = holder.parent || null, strapped = !!(parent && holder.strapped);
+  n = Math.min(n, e.qty);
+  if (stacks(e.item, e.srcId)) {
+    const got = addToInventory(char, { ...clone(e.item), id: e.srcId }, n, parent, strapped);
+    if (e.liquid && !got.liquid) got.liquid = clone(e.liquid);
+    e.qty -= n;
+    if (e.qty <= 0) char.items = char.items.filter(x => x !== e);
+    return got;
+  }
+  if (n < e.qty) {
+    e.qty -= n;
+    const part = { ...clone(e), uid: uid(), qty: n, parent, strapped };
+    char.items.push(part);
+    return part;
+  }
+  e.parent = parent;
+  e.strapped = strapped;
+  return e;
+}
+
+// One thing out at random (each thing as likely as any other: a stack of 30 coins is 30 chances).
+function takeRandom(char, holder, random = Math.random) {
+  const list = takeable(char, holder), total = list.reduce((s, e) => s + e.qty, 0);
+  if (!total) return null;
+  let r = Math.floor(random() * total);
+  const e = list.find(x => (r -= x.qty) < 0);
+  return takeOutOf(char, holder, e, 1);
+}
+
 // Draw pieces at random: out of the set to where the set is (they're then ordinary items).
 // Only moves data, so whatever shows the draw (this device's draw window, or later everyone's
 // in a party) can work from the piece uids returned. random: for a host doing the drawing.
@@ -597,8 +649,19 @@ function drawFromSet(char, setUid, count = 1, random = Math.random) {
   return drawn;
 }
 
-// In a deck: kept out of the inventory lists.
+// Kept out of the inventory lists: a deck's pieces, the coins in the purse (the Coins panel
+// shows those; see syncCoins), and, but to the GM, what's in a sealed container.
+function inSealed(char, e) {
+  if (typeof isGmDevice === "function" && isGmDevice()) return false;
+  const seen = new Set();
+  for (let p = e.parent && char.items.find(x => x.uid === e.parent); p && !seen.has(p.uid); p = p.parent && char.items.find(x => x.uid === p.parent)) {
+    seen.add(p.uid);
+    if (p.item?.sealed && !e.strapped) return true;
+  }
+  return false;
+}
 function inDeck(char, e) {
+  if (inPurse(e) || inSealed(char, e)) return true;
   if (!e.item.card || !e.parent) return false;
   const p = char.items.find(x => x.uid === e.parent);
   return !!p && isDeckEntry(p);
@@ -680,18 +743,23 @@ function holdsItems(char, e) {
   return hasFeature(currentItem(e), "holds", e.srcId) || char.items.some(x => x.parent === e.uid && !x.item.card);
 }
 
-// Containers that take only certain things, counted rather than weighed: a map case holds ten
-// rolled-up sheets of paper or five of parchment, a quiver twenty arrows. size(item) is how many
-// places one of the item takes up (0 = doesn't fit).
-const ROLLED_DOCS = ["Letter", "Note", "Scroll", "Map"];
-const HOLDERS = {
-  scrolls: { label: "Paper, parchment, maps & scrolls", limit: 10, unit: "sheet",
-    size: it => hasFeature(it, "holds") ? 0
-      : /parchment/i.test(it.name) ? 2
-      : (itemRootId(it) === "document" && ROLLED_DOCS.includes(it.category)) || (itemRootId(it) === "consumable" && it.category === "Scroll")
-        || /\b(paper|map|chart|scroll|letter|deed|sheet)s?\b/i.test(it.name) ? 1 : 0 },
-  arrows: { label: "Arrows", limit: 20, unit: "arrow", size: it => hasFeature(it, "ammunition") && /arrow/i.test(it.name) ? 1 : 0 },
-  bolts: { label: "Crossbow bolts", limit: 20, unit: "bolt", size: it => hasFeature(it, "ammunition") && /bolt/i.test(it.name) ? 1 : 0 },
+// What a container allows in (item.allows): rules, any of which an item can match; none: anything.
+// A rule matches when everything it says does: specific items (by id), a group, a template, a
+// category, a feature, words in the name. It can say how many places one takes (size: parchment 2).
+// Coins, arrows and maps are only items: a coin pouch allows the coin items, a quiver arrows.
+//   { label?, item?: [id], group?, template?, category?: [name], feature?, property?, name?: "words", size? }
+// (property: one of its properties starts with it: "Two-handed", "Versatile")
+// A container with allowed contents and a count (holdLimit) is counted rather than weighed: a map
+// case holds ten sheets of paper or five of parchment, a quiver twenty arrows.
+// The "Only holds" choices of before (item.holds: scrolls, arrows, bolts) read as rules:
+const HOLDER_RULES = {
+  scrolls: { limit: 10, unit: "sheet", rules: [
+    { label: "Parchment", name: "parchment", size: 2 },
+    { label: "Paper, maps & scrolls", name: "paper map chart scroll letter deed sheet" },
+    { template: "document", category: ["Letter", "Note", "Scroll", "Map"] },
+    { template: "consumable", category: ["Scroll"] }] },
+  arrows: { limit: 20, unit: "arrow", rules: [{ label: "Arrows", feature: "ammunition", name: "arrow" }] },
+  bolts: { limit: 20, unit: "bolt", rules: [{ label: "Crossbow bolts", feature: "ammunition", name: "bolt" }] },
 };
 
 // Inventory copies made before a container learnt these fields fall back to the catalog's.
@@ -699,16 +767,59 @@ function containerField(e, key) {
   return e.item[key] !== undefined ? e.item[key] : catalogItem(e.srcId)?.[key];
 }
 
+// A container's rules: its own, else from its old "Only holds" choice.
+function containerRules(e) {
+  const own = containerField(e, "allows");
+  if (Array.isArray(own) && own.length) return own;
+  return HOLDER_RULES[containerField(e, "holds")]?.rules || [];
+}
+const nameWords = words => {
+  const list = String(words || "").split(/[\s,]+/).filter(Boolean).map(w => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return list.length ? new RegExp(`\\b(${list.join("|")})s?\\b`, "i") : null;
+};
+function ruleMatches(r, it, srcId) {
+  if (r.item?.length && !r.item.includes(srcId) && !r.item.includes(it.id)) return false;
+  if (r.group && groupOfItem(it)?.id !== r.group) return false;
+  if (r.template && itemRootId(it) !== r.template && itemTemplate(it)?.id !== r.template) return false;
+  if (r.category?.length && !r.category.includes(it.category)) return false;
+  if (r.feature && !hasFeature(it, r.feature, srcId)) return false;
+  if (r.property && !itemHasProperty(it, r.property)) return false;
+  if (r.name && !nameWords(r.name)?.test(it.name || "")) return false;
+  return true;
+}
+// How many places an item takes in a container with these rules (0: not allowed in).
+function ruleSize(rules, it, srcId) {
+  if (!rules.length) return 1;
+  // (a container goes in one that allows only certain things only when a rule asks for containers)
+  if (hasFeature(it, "holds", srcId) && !rules.some(r => r.feature === "holds")) return 0;
+  const r = rules.find(x => ruleMatches(x, it, srcId));
+  return r ? r.size || 1 : 0;
+}
+// "Arrows", "Gold piece, Silver piece": what the rules allow, in words.
+function rulesLabel(rules) {
+  return [...new Set(rules.map(r => r.label || r.name || (r.item?.length ? r.item.map(id => store.findItem(id)?.name || coinName(id) || id).join(", ") : "")
+    || r.category?.join(", ") || groupById(r.group)?.name || (r.template && (store.template(r.template)?.name || r.template)) || featureByKey(r.feature)?.label || "?"))].join(", ");
+}
+const coinName = id => id?.startsWith(COIN_ID) ? coinItem(id.slice(COIN_ID.length)).name : null;
+
+// May an item go in a container? (Counted ones also need room: see holderSpec.)
+function containerAllows(e, it, srcId) {
+  if (!hasFeature(currentItem(e), "holds", e.srcId)) return true;
+  return ruleSize(containerRules(e), it, srcId) > 0;
+}
+
+// A counted container: { label, limit, unit, size(item, srcId) }, else null (weighed, or anything).
 function holderSpec(e) {
   if (!hasFeature(currentItem(e), "holds", e.srcId)) return null;
-  const key = containerField(e, "holds");
-  const spec = HOLDERS[key];
-  return spec ? { ...spec, key, limit: e.item.holdLimit || spec.limit } : null;
+  const old = HOLDER_RULES[containerField(e, "holds")];
+  const rules = containerRules(e), limit = e.item.holdLimit || old?.limit;
+  if (!rules.length || !(limit > 0)) return null;
+  return { label: rulesLabel(rules), limit, unit: e.item.holdUnit || old?.unit || "item", size: (it, srcId) => ruleSize(rules, it, srcId) };
 }
 
 // Places used inside a counted container.
 function holderUsed(char, e, spec = holderSpec(e)) {
-  return childrenOf(char, e.uid).filter(c => !c.strapped).reduce((s, c) => s + (spec.size(c.item) || 1) * c.qty, 0);
+  return childrenOf(char, e.uid).filter(c => !c.strapped).reduce((s, c) => s + (spec.size(c.item, c.srcId) || 1) * c.qty, 0);
 }
 
 // Liquid capacity in pints (0 = not a liquid container).
@@ -747,6 +858,15 @@ function fillLevel(char, e) {
   if (cap) return { ratio: (e.liquid?.pints || 0) / cap, over: false, kind: "liquid" };
   return null;
 }
+
+// Compartments: a container's own named spaces (item.compartments: [{ id, name, capacityLb? }]),
+// besides its main space and, with straps, its outside. An entry in one says so (e.compartment);
+// one with no capacity of its own shares the container's. (One that's gone: the main space.)
+const compartmentsOf = e => Array.isArray(e?.item?.compartments) ? e.item.compartments.filter(c => c && c.id && c.name) : [];
+const compartmentOf = (char, e) => {
+  const p = e.parent && !e.strapped && char.items.find(x => x.uid === e.parent);
+  return p && compartmentsOf(p).find(c => c.id === e.compartment) || null;
+};
 
 // Backpacks (and custom containers with the option) can have gear strapped to the outside.
 // Older inventory copies of the backpack predate the `straps` flag, hence the srcId check.
@@ -801,15 +921,96 @@ function strappedWeight(char, e) {
   return childrenOf(char, e.uid).filter(c => c.strapped).reduce((s, c) => s + entryTotalWeight(char, c), 0);
 }
 
-// Coins counted, and their worth in the smallest coin (the names say cp: D&D 5e's copper).
-function coinCount(coins) { return coinOrder().reduce((s, k) => s + (coins[k] || 0), 0); }
+// Coins' worth in the smallest coin (the names say cp: D&D 5e's copper).
 function coinTotalCp(coins) { return currency().coins.reduce((s, c) => s + (coins[c.key] || 0) * c.value, 0); }
 
 function carriedWeight(char, settings) {
-  let w = childrenOf(char, null).reduce((s, e) => s + entryTotalWeight(char, e), 0);
-  const per = currency().perWeight;
-  if (settings.coinWeight && per) w += coinCount(char.coins) / per;
-  return w;
+  // (Coins are items: their weight is theirs, see coinItem.)
+  return childrenOf(char, null).reduce((s, e) => s + entryTotalWeight(char, e), 0);
+}
+
+// ------------------------------------------------------------------ coins as items
+// Each of the system's coins is a stackable item (coin: its key). A character's coins are those
+// items: loose ones are in the purse (the Coins panel; not listed in the inventory), others in
+// containers. char.coins is their total, which shops, trades, the purse and both party servers
+// keep working with: when it changes, the change becomes items (into the purse, or out of it
+// first), and when the items change, it follows. char.coinsAt is the total when they last matched.
+
+const COIN_ID = "coin-";
+const isCoinEntry = e => !!e?.item?.coin;
+const inPurse = e => isCoinEntry(e) && !e.parent;
+
+// The item for one of the system's coins: "Gold piece", worth its value, weighing what the
+// currency says (when coins have weight).
+function coinItem(key, settings = store.state?.settings || {}) {
+  const cur = currency(), c = cur.coins.find(x => x.key === key);
+  const name = c ? (c.itemName || `${c.name.charAt(0).toUpperCase()}${c.name.slice(1)} piece`) : key;
+  const tpl = systemIndex().templates.has("treasure") ? { type: "treasure" } : {};
+  return { id: COIN_ID + key, name, ...tpl, coin: key, cost: c?.value || 0,
+    weight: settings.coinWeight !== false && cur.perWeight ? Math.round(1e6 / cur.perWeight) / 1e6 : 0,
+    features: { stacks: true }, countInPlay: true, description: `One ${c?.name || key} coin (${key}).` };
+}
+
+// The purse's coins (loose ones), by key.
+function purseTotals(char) {
+  const out = {};
+  for (const e of char.items || []) if (inPurse(e)) out[e.item.coin] = (out[e.item.coin] || 0) + e.qty;
+  return out;
+}
+
+// The coins a character's items hold, by key (the ones that count: not kept apart).
+function coinItemTotals(char) {
+  const out = {};
+  for (const e of char.items || []) if (isCoinEntry(e) && coinCounts(char, e)) out[e.item.coin] = (out[e.item.coin] || 0) + e.qty;
+  return out;
+}
+// Does a coin count in the character's coins? (Not when it's in a container keeping its coins apart.)
+function coinCounts(char, e) {
+  const seen = new Set();
+  for (let p = e.parent && char.items.find(x => x.uid === e.parent); p && !seen.has(p.uid); p = p.parent && char.items.find(x => x.uid === p.parent)) {
+    seen.add(p.uid);
+    if (p.item?.coinsApart) return false;
+  }
+  return true;
+}
+
+function syncCoins(char, settings = {}) {
+  const keys = coinOrder();
+  if (!keys.length || !Array.isArray(char.items)) return;
+  // (No coins recorded, e.g. treasure just taken back: the items are the coins.)
+  if (!char.coins) { char.coins = coinItemTotals(char); char.coinsAt = { ...char.coins }; }
+  const coins = char.coins;
+  // The coin items, as this campaign's settings weigh them.
+  for (const e of char.items) if (isCoinEntry(e) && keys.includes(e.item.coin)) {
+    const w = coinItem(e.item.coin, settings).weight;
+    if (e.item.weight !== w) e.item.weight = w;
+  }
+  const have = coinItemTotals(char);
+  // What changed the total since it last matched (or, the first time, all of it) becomes items.
+  const was = char.coinsAt || have;
+  for (const k of keys) {
+    const d = Math.floor((coins[k] || 0) - (was[k] || 0));
+    if (d > 0) addToInventory(char, coinItem(k, settings), d, null);
+    else if (d < 0) takeCoins(char, k, -d);
+  }
+  const now = coinItemTotals(char);
+  const total = Object.fromEntries(keys.map(k => [k, now[k] || 0]));
+  for (const [k, v] of Object.entries(coins)) if (!keys.includes(k)) total[k] = v; // (another system's coins: as they were)
+  char.coins = total;
+  char.coinsAt = { ...total };
+}
+
+// Take n coins of a kind: from the purse first, then wherever they are (the biggest piles first).
+function takeCoins(char, key, n) {
+  const piles = char.items.filter(e => isCoinEntry(e) && e.item.coin === key && coinCounts(char, e))
+    .sort((a, b) => (a.parent ? 1 : 0) - (b.parent ? 1 : 0) || b.qty - a.qty);
+  for (const e of piles) {
+    if (n <= 0) break;
+    const t = Math.min(n, e.qty);
+    e.qty -= t;
+    n -= t;
+  }
+  char.items = char.items.filter(e => !(isCoinEntry(e) && e.qty <= 0));
 }
 
 // ------------------------------------------------------------------ coins

@@ -85,10 +85,11 @@ function dnd5eRules() {
     const thrown = propArg(it, "thrown");
     const reach = it.kind === "Ranged" ? null : hasProp(it, "reach") ? 10 : 5;
     const versatile = propArg(it, "versatile");
+    const both = !!(versatile && x.states?.twoHanded); // held two-handed: its versatile damage
     return {
       ability, abil, prof, toHit: abil + (prof ? (st.prof ?? 2) : 0) + magic,
-      damage: damageText(it.damage, abil + magic), type: it.damageType || "",
-      twoHanded: versatile && damageText(versatile, abil + magic),
+      damage: damageText(both ? versatile : it.damage, abil + magic), type: it.damageType || "", both,
+      twoHanded: !both && versatile && damageText(versatile, abil + magic),
       // Off-hand (two-weapon fighting): no ability bonus to damage unless it's negative.
       offHand: hasProp(it, "light") && damageText(it.damage, Math.min(0, abil) + magic),
       reach: reach && reach + " ft",
@@ -198,7 +199,7 @@ function dnd5eCombatPanel() {
           x.name, x.qty > 1 && h("span", { class: "tag" }, "×" + x.qty)),
         h("div", { class: "to-hit", title: hitWhy }, h("b", null, fmtMod(a.toHit)), h("small", null, "to hit"))),
       h("div", { class: "attack-dmg" }, h("b", null, a.damage), a.type && " " + a.type,
-        a.twoHanded && h("span", { class: "muted" }, " · two hands " + a.twoHanded)),
+        a.twoHanded && h("span", { class: "muted" }, " · two hands " + a.twoHanded), a.both && h("span", { class: "muted" }, " · two-handed")),
       h("div", { class: "attack-meta" }, [where, a.ability.toUpperCase(), !a.prof && "not proficient"].filter(Boolean).join(" · ")),
       // Range and ammunition are spelt out above; the other properties keep their rules as tooltips.
       otherProps.length > 0 && h("div", { class: "attack-props" }, propertyChips(otherProps)),

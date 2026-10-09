@@ -130,10 +130,15 @@ const catalogItem = id => id ? systemIndex().catalog.get(id) : undefined;
 
 // The system's states (Release 2 systems had `toggles`: player states, limits warning).
 function systemStates(sys = activeSystem()) {
-  if (sys.states) return sys.states;
-  return (sys.toggles || []).map(tg => ({ key: tg.key, label: tg.label, who: "player", requires: tg.feature,
+  const base = sys.states || (sys.toggles || []).map(tg => ({ key: tg.key, label: tg.label, who: "player", requires: tg.feature,
     limit: tg.limit ? { default: tg.limit, mode: "warn", text: tg.limitText } : undefined }));
+  // The campaign's own states come after its system's (which they can't replace).
+  const own = sys === activeSystem() ? campaignStates() : [];
+  return own.length ? [...base, ...own.filter(st => !base.some(b => b.key === st.key))] : base;
 }
+// A campaign's own states (Settings → Campaigns → Item states), the same shape as a system's:
+// Broken, Lit, Wet… In a party, the GM's campaign's (the host passes them on).
+const campaignStates = (camp = store.data ? store.campaign() : null) => Array.isArray(camp?.states) ? camp.states : [];
 const stateByKey = key => systemStates().find(st => st.key === key);
 
 // The states an entry has set itself.
@@ -160,7 +165,48 @@ function entryStates(char, e) {
 }
 const stateOn = (char, e, key) => !!entryStates(char, e)[key];
 // The states an entry can have: those requiring a feature only if it has it (or a layer for the state).
-const statesFor = e => systemStates().filter(st => !st.requires || e.item.layers?.[st.key] || hasFeature(e.item, st.requires, e.srcId));
+const statesFor = e => systemStates().filter(st => (!st.requires || e.item.layers?.[st.key] || hasFeature(e.item, st.requires, e.srcId))
+  && (!st.requiresProperty || itemHasProperty(currentItem(e), st.requiresProperty)));
+// One of an item's properties starts with it ("Versatile" for "Versatile (1d10)").
+const itemHasProperty = (it, p) => (it?.properties || []).some(x => String(x).toLowerCase().startsWith(String(p).toLowerCase()));
+
+// ------------------------------------------------------------------ equipment slots
+// Where equipped things go, as the game system has it (D&D 5e: Hands ×2, Armor ×1):
+//   slots: [{ key, label, count, rules: [rule] }]
+// An item goes in the first slot with a rule it matches (the same rules as containers' allowed
+// contents, see ruleMatches; a rule's `state` must be on too), taking `size` of it (a greatsword
+// both hands; a versatile one both while it's Two-handed). An item can say its own: slot (a key,
+// or "none") and slotSize. A system without slots: anything can be equipped, as before.
+const systemSlots = () => Array.isArray(activeSystem().slots) ? activeSystem().slots : [];
+function slotFor(char, e, states = null) {
+  const it = currentItem(e, char);
+  if (it.slot === "none") return null;
+  const on = states || entryStates(char, e);
+  for (const s of systemSlots()) {
+    if (it.slot && it.slot !== s.key) continue;
+    const r = it.slot ? { size: it.slotSize } : (s.rules || []).find(x => (!x.state || on[x.state]) && ruleMatches(x, it, e.srcId));
+    if (r) return { ...s, size: Math.max(1, Math.floor(r.size || 1)) };
+  }
+  return null;
+}
+// What's equipped in a slot (but `except`), and how much of it they take.
+function slotHolders(char, key, except = null) {
+  return char.items.filter(x => x.equipped && x.uid !== except).map(x => ({ e: x, slot: slotFor(char, x) })).filter(x => x.slot?.key === key);
+}
+const slotUsed = (char, key, except = null) => slotHolders(char, key, except).reduce((n, x) => n + x.slot.size, 0);
+// "Hands (1, or 2 while Two-handed)": where an item goes, in words (for its details).
+function slotWords(it, srcId) {
+  if (it.slot === "none") return null;
+  for (const s of systemSlots()) {
+    if (it.slot) { if (it.slot === s.key) return `${s.label} (${Math.max(1, it.slotSize || 1)})`; continue; }
+    const base = (s.rules || []).find(x => !x.state && ruleMatches(x, it, srcId));
+    if (!base) continue;
+    const alt = (s.rules || []).find(x => x.state && (x.size || 1) !== (base.size || 1) && ruleMatches(x, it, srcId));
+    const st = alt && stateByKey(alt.state);
+    return `${s.label} (${base.size || 1}${alt ? `, or ${alt.size || 1} while ${st?.label || alt.state}` : ""})`;
+  }
+  return null;
+}
 // The states that are on, for its tags.
 const statesOnFor = (char, e) => systemStates().filter(st => stateOn(char, e, st.key));
 

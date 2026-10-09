@@ -96,6 +96,17 @@ const DND5E_SYSTEM = {
       limit: { value: "attuneSlots", default: 3, mode: "warn", text: "You can attune to at most {limit} items", label: "Attunement slots" } },
     { key: "identified", label: "Identified", who: "gm" },
     { key: "cursed", label: "Cursed", who: "gm" },
+    // A versatile weapon held in both hands: its bigger damage (the Combat panel), both hands (slots).
+    { key: "twoHanded", label: "Two-handed", who: "player", requires: "weapon", requiresProperty: "Versatile" },
+  ],
+  // Where equipped things go (see systemSlots): weapons and shields in the hands, armor on the body.
+  slots: [
+    { key: "hands", label: "Hands", count: 2, rules: [
+      { feature: "weapon", property: "Two-handed", size: 2 },
+      { feature: "weapon", state: "twoHanded", size: 2 },
+      { feature: "weapon" },
+      { feature: "armor", category: ["Shield"] }] },
+    { key: "armor", label: "Armor", count: 1, rules: [{ feature: "armor" }] },
   ],
 
   // Words on the app's own screens (see TERMS in js/system.js).

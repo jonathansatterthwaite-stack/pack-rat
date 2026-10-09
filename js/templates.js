@@ -34,9 +34,13 @@ const CORE_FEATURES = [
     { key: "capacityLb", label: "Capacity (lb)", kind: "number" },
     { key: "weightless", label: "Contents don't add weight (e.g. Bag of Holding)", kind: "checkbox" },
     { key: "straps", label: "Gear can be strapped to the outside", kind: "checkbox" },
-    { key: "holds", label: "Only holds (counted)", kind: "select", options: ["", "scrolls", "arrows", "bolts"],
-      labels: { "": "Anything, by weight", scrolls: "Paper, parchment, maps & scrolls", arrows: "Arrows", bolts: "Crossbow bolts" } },
+    { key: "allows", label: "Holds", kind: "allows" },
     { key: "holdLimit", label: "How many it holds (counted)", kind: "number", placeholder: "20" },
+    { key: "holdUnit", label: "Counted in (one)", kind: "text", placeholder: "arrow, sheet, coin…" },
+    { key: "coinsApart", label: "Coins in it don't count in the Coins panel (a piggy bank)", kind: "checkbox" },
+    { key: "sealed", label: "Sealed: what's in it is hidden (only the GM sees)", kind: "checkbox" },
+    { key: "compartments", label: "Compartments", kind: "compartments" },
+    { key: "actions", label: "Actions", kind: "actions" },
   ] },
   { key: "liquid", label: "Liquid", hint: "Holds a liquid: record what's in it and how much.", fields: [
     { key: "liquidPints", label: "Liquid capacity (pints)", kind: "number", step: "any" },
@@ -44,6 +48,7 @@ const CORE_FEATURES = [
   { key: "deck", label: "Set", hint: "Made of pieces kept together, like the cards of a deck or the pieces of a chess set. They don't clutter the inventory; take them out (or draw one at random) and put them back.", fields: [
     { key: "pieceName", label: "One piece is called", kind: "text", placeholder: "card, piece, tile…" },
     { key: "deckCards", label: "Pieces", kind: "pieces" },
+    { key: "actions", label: "Actions", kind: "actions" },
   ] },
   { key: "pack", label: "Pack", hint: "An equipment pack: unpacks into the items listed, packed the way you choose.", fields: [
     { key: "contents", label: "Contents", kind: "packContents" },

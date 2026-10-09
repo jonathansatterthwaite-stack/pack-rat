@@ -580,6 +580,8 @@ function render() {
   refreshLiveIcons(); // live icons outside the view (an open item's details) show the new values
   refreshEntryDetails();
   syncTreasure(); // treasure being shown: pops up, redraws, comes back (js/treasure.js)
+  syncShows(); // items shown to this device pop up; a GM's device takes discarded items (js/party-ui.js)
+  takeDiscards();
   syncClocks(); // values moving over time keep the game tick going (js/clockwork.js)
 }
 
@@ -610,6 +612,7 @@ function missingSystemBanner() {
 function renderInventory() {
   const char = store.char();
   return h("div", { class: "view-inventory" },
+    slotsBar(char),
     itemManager({ key: "inventory", sorts: INVENTORY_SORTS, sort: "smart", placeholder: "Search inventory", storage: () => charStorage(char) }));
 }
 
@@ -838,11 +841,18 @@ function entryMatches(char, e, q) {
 
 // An item's details from a storage other than this device's inventory (which has its own, with
 // much more: openEntry): the item as it is now, with the storage's controls above it.
+// Where an item came from: its history (traded, given from treasure, discarded), newest last.
+function entryHistory(e) {
+  const list = (e.history || []).filter(x => x && x.text);
+  return list.length > 0 && h("div", { class: "field full entry-history" }, h("span", null, "History"),
+    h("ul", null, list.map(x => h("li", null, x.text, x.at && h("span", { class: "muted small" }, ` · ${new Date(x.at).toLocaleDateString()}`)))));
+}
+
 function openStoredItem(st, e, controls = null, footer = []) {
   const it = currentItem(e, st.char);
   let close;
   close = openModal(entryName(e), [e.customName && h("p", { class: "muted small" }, it.name), controls,
-    itemDetails(it, null, e.srcId, () => entryIconVars(st.char, e))],
+    itemDetails(it, null, e.srcId, () => entryIconVars(st.char, e)), entryHistory(e)],
   { footer: [...footer, h("button", { class: "btn primary", onclick: () => close() }, "Done")], dock: true });
   return close;
 }
@@ -1146,7 +1156,11 @@ function moveContainer(st, siblings, index, dir) {
 function containerGroup(st, c, depth, siblings = [c], index = 0) {
   const char = st.char;
   const all = sortEntries(st, childrenOf(char, c.uid).filter(e => !inDeck(char, e)));
-  const kids = all.filter(k => !k.strapped);
+  // Sealed: what's inside isn't shown (but to the GM).
+  const sealed = !!c.item.sealed && !isGmDevice() && childrenOf(char, c.uid).some(k => !k.strapped);
+  const comps = compartmentsOf(c);
+  const inComp = k => !k.strapped && comps.some(x => x.id === k.compartment);
+  const kids = sealed ? [] : all.filter(k => !k.strapped && !inComp(k));
   const outside = all.filter(k => k.strapped);
   const spec = holderSpec(c);
   const fill = fillLevel(char, c);
@@ -1168,9 +1182,18 @@ function containerGroup(st, c, depth, siblings = [c], index = 0) {
     !collapsed && [
       entryList(st, kids),
       orderContainers(st, kids.filter(k => holdsItems(char, k))).map((k, i, list) => containerGroup(st, k, depth + 1, list, i)),
-      !kids.length && h("p", { class: "muted pad" }, spec
-        ? `Empty — holds ${spec.key === "scrolls" ? `${spec.limit} rolled-up sheets of paper (${spec.limit / 2} of parchment), maps or scrolls` : `${spec.limit} ${spec.unit}s`}.${how}`
-        : `Empty.${how}`),
+      !kids.length && h("p", { class: "muted pad" }, sealed ? "Sealed: what's in it can't be seen."
+        : spec ? `Empty — holds ${spec.limit} ${spec.unit}s (${spec.label.toLowerCase()}).${how}` : `Empty.${how}`),
+      // Its compartments: each with what's in it, and its load (its own capacity, or the container's).
+      !sealed && comps.map(k => {
+        const here = all.filter(x => !x.strapped && x.compartment === k.id);
+        const w = here.reduce((s, x) => s + entryTotalWeight(char, x), 0);
+        return dropZone(st, c.uid, h("div", { class: "compartment" },
+          h("div", { class: "strapped-head" }, icon("bag"), h("h4", null, k.name),
+            h("span", { class: "muted" + (k.capacityLb && w > k.capacityLb ? " warn-text" : "") }, k.capacityLb ? `${+w.toFixed(2)} / ${k.capacityLb} ${weightUnit()}` : fmtWeight(w))),
+          here.length ? [entryList(st, here), orderContainers(st, here.filter(x => holdsItems(char, x))).map((x, i, list) => containerGroup(st, x, depth + 1, list, i))]
+            : h("p", { class: "muted pad small" }, `Empty.${st.move ? " Drag items here, or choose it as their Location." : ""}`)), false, k.id);
+      }),
       ((st.move && canStrap(c)) || outside.length > 0) && dropZone(st, c.uid, h("div", { class: "strapped" },
         h("div", { class: "strapped-head" }, icon("link"), h("h4", null, "Strapped outside"),
           h("span", { class: "muted" }, outside.length ? fmtWeight(strappedWeight(char, c)) : "")),
@@ -1183,7 +1206,7 @@ function containerGroup(st, c, depth, siblings = [c], index = 0) {
 
 // Desktop drag-and-drop between a storage's sections; touch uses the Move menu. Drags only land
 // in the storage they came from.
-function dropZone(st, parentUid, el, strapped = false) {
+function dropZone(st, parentUid, el, strapped = false, compartment = null) {
   if (!st.move) return el;
   el.addEventListener("dragover", e => {
     if (!e.dataTransfer.types.includes("text/entry")) return;
@@ -1195,26 +1218,30 @@ function dropZone(st, parentUid, el, strapped = false) {
     e.preventDefault(); e.stopPropagation();
     el.classList.remove("drop-target");
     const [from, id] = e.dataTransfer.getData("text/entry").split("|");
-    if (from === (st.id || "inv") && id) st.move(id, parentUid, strapped);
+    if (from === (st.id || "inv") && id) st.move(id, parentUid, strapped, compartment);
   });
   return el;
 }
 const dragFrom = (st, e) => st.move ? { draggable: "true",
   ondragstart: ev => { ev.dataTransfer.setData("text/entry", `${st.id || "inv"}|${e.uid}`); ev.dataTransfer.effectAllowed = "move"; } } : {};
 
-function moveEntry(id, parentUid, strapped = false) {
+function moveEntry(id, parentUid, strapped = false, compartment = null) {
   const char = store.char();
   const entry = char.items.find(x => x.uid === id);
   strapped = !!(parentUid && strapped);
-  if (!entry || entry.uid === parentUid || (entry.parent === parentUid && !!entry.strapped === strapped)) return;
+  compartment = parentUid && !strapped && compartment || null;
+  if (!entry || entry.uid === parentUid || (entry.parent === parentUid && !!entry.strapped === strapped && (entry.compartment || null) === compartment)) return;
   if (parentUid && isDescendant(char, parentUid, id)) return toast("Can't put a container inside itself");
   const holder = parentUid && char.items.find(x => x.uid === parentUid);
+  const comp = compartment && compartmentsOf(holder).find(c => c.id === compartment);
   const name = holder ? entryName(holder) : null;
-  const dest = !name ? "on person" : strapped ? `the outside of ${name}` : name;
+  const dest = !name ? "on person" : strapped ? `the outside of ${name}` : comp ? `${name}: ${comp.name}` : name;
   // Cases and quivers take only their own kind of thing, and only as many as fit.
+  if (holder && !strapped && !containerAllows(holder, entry.item, entry.srcId))
+    return toast(`The ${name} only holds ${rulesLabel(containerRules(holder)).toLowerCase()}`);
   const spec = holder && !strapped && holderSpec(holder);
   if (spec) {
-    const size = spec.size(entry.item);
+    const size = spec.size(entry.item, entry.srcId);
     if (!size) return toast(`The ${name} only holds ${spec.label.toLowerCase()}`);
     const room = Math.floor((spec.limit - holderUsed(char, holder, spec)) / size);
     if (room <= 0) return toast(`The ${name} is full`);
@@ -1233,6 +1260,7 @@ function moveEntry(id, parentUid, strapped = false) {
     const x = c.items.find(x => x.uid === id);
     x.parent = parentUid;
     x.strapped = strapped;
+    if (comp) x.compartment = comp.id; else delete x.compartment;
   }, `Moved ${entryName(entry)} to ${dest}`, true);
 }
 
@@ -1462,6 +1490,14 @@ function writeEntry(entryUid) {
 function playerSetState(entryUid, key, on) {
   const char = store.char(), e = char?.items.find(x => x.uid === entryUid);
   if (!e) return false;
+  // Equipped, a state that takes more of its slot (Two-handed): only if there's room.
+  if (on && e.equipped) {
+    const now = slotFor(char, e), then = slotFor(char, e, { ...entryStates(char, e), [key]: true });
+    if (then && (then.key !== now?.key || then.size > (now?.size || 0)) && slotUsed(char, then.key, e.uid) + then.size > then.count) {
+      toast(`Your ${then.label.toLowerCase()} are full: ${slotHolders(char, then.key, e.uid).map(x => entryName(x.e)).join(", ")}`);
+      return false;
+    }
+  }
   return clockwork.change({ char, entry: e }, `item.state.${key}`, !!on, isGmDevice() ? "gm" : "player").ok;
 }
 
@@ -1502,18 +1538,84 @@ function setEntryQty(e, n) {
 }
 
 function toggleEquip(entryUid) {
+  // Into its slot (the system's): a full one asks what to take out first.
+  const char = store.char(), e0 = char?.items.find(x => x.uid === entryUid);
+  if (e0 && !e0.equipped) {
+    const slot = slotFor(char, e0);
+    if (slot && slotUsed(char, slot.key, e0.uid) + slot.size > slot.count) return slotConflict(char, e0, slot);
+  }
   commit((s, c) => {
     const e = c.items.find(x => x.uid === entryUid);
     e.equipped = !e.equipped;
-    // Only one suit of armor and one shield at a time.
+    // (No slots: only one suit of armor and one shield at a time.)
     const isArmor = x => hasFeature(currentItem(x), "armor", x.srcId);
-    if (e.equipped && isArmor(e)) {
+    if (e.equipped && isArmor(e) && !systemSlots().length) {
       const shield = e.item.category === "Shield";
       c.items.forEach(o => {
         if (o !== e && o.equipped && isArmor(o) && (o.item.category === "Shield") === shield) o.equipped = false;
       });
     }
   });
+}
+
+// Equipping into a full slot: take something out (or, if a state makes it take more room, switch
+// that off: a two-handed sword wielded one-handed), then equip it.
+function slotConflict(char, e, slot) {
+  const holders = slotHolders(char, slot.key, e.uid);
+  const used = holders.reduce((n, x) => n + x.slot.size, 0), need = slot.size;
+  const fits = freed => used - freed + need <= slot.count;
+  let close;
+  const go = fn => () => {
+    close();
+    commit((s, c) => {
+      fn(c);
+      const x = c.items.find(i => i.uid === e.uid);
+      if (x) x.equipped = true;
+    }, `Equipped ${entryName(e)}`, true);
+  };
+  const options = [];
+  for (const hd of holders) {
+    if (fits(hd.slot.size)) options.push(h("button", { class: "btn", onclick: go(c => { const x = c.items.find(i => i.uid === hd.e.uid); if (x) x.equipped = false; }) }, `Unequip ${entryName(hd.e)}`));
+    // A state that makes it take more room (Two-handed): switched off, does it fit?
+    for (const r of slot.rules || []) {
+      if (!r.state || !stateOn(char, hd.e, r.state)) continue;
+      const less = slotFor(char, hd.e, { ...entryStates(char, hd.e), [r.state]: false });
+      const st = stateByKey(r.state);
+      if (less?.key === slot.key && less.size < hd.slot.size && fits(hd.slot.size - less.size))
+        options.push(h("button", { class: "btn primary", onclick: go(c => { const x = c.items.find(i => i.uid === hd.e.uid); if (x) setState(x, r.state, false); }) },
+          `${entryName(hd.e)}: ${st?.label || r.state} off`));
+    }
+  }
+  if (!options.length || holders.length > 1)
+    options.push(h("button", { class: "btn", onclick: go(c => { for (const hd of holders) { const x = c.items.find(i => i.uid === hd.e.uid); if (x) x.equipped = false; } }) },
+      `Unequip ${holders.map(hd => entryName(hd.e)).join(" and ")}`));
+  close = openModal(`Equip ${entryName(e)}?`, h("div", { class: "form" },
+    h("p", null, `${slot.label} (${used} of ${slot.count}): ${holders.map(hd => entryName(hd.e) + (hd.slot.size > 1 ? ` (${hd.slot.size})` : "")).join(", ")}. ${entryName(e)} needs ${need}.`),
+    h("div", { class: "inline wrap" }, options)),
+  { footer: [h("button", { class: "btn", onclick: () => close() }, "Cancel")] });
+}
+
+// The system's slots and what's in them: a line above the inventory, and its window.
+function slotsBar(char) {
+  const slots = systemSlots();
+  if (!slots.length || !char) return null;
+  return h("button", { type: "button", class: "slots-bar", title: "What's equipped where", onclick: () => openSlots() },
+    icon("shield"), slots.map(s => { const n = slotUsed(char, s.key); return h("span", { class: "slot-chip" + (n >= s.count ? " full" : "") }, `${s.label} ${n}/${s.count}`); }));
+}
+function openSlots() {
+  const char = store.char();
+  let close;
+  const draw = () => systemSlots().map(s => {
+    const holders = slotHolders(char, s.key), n = holders.reduce((a, x) => a + x.slot.size, 0);
+    return h("div", { class: "slot-box" + (n >= s.count ? " full" : "") },
+      h("div", { class: "slot-head" }, h("b", null, s.label), h("span", { class: "muted small" }, `${n} of ${s.count}`)),
+      holders.length ? holders.map(x => h("div", { class: "row slot-row" }, itemIcon(currentItem(x.e, char), "row-icon"),
+        h("div", { class: "row-main static" }, h("div", { class: "row-title" }, entryName(x.e)),
+          h("div", { class: "row-sub" }, [`takes ${x.slot.size}`, ...statesOnFor(char, x.e).map(st => st.label)].join(" · "))),
+        h("button", { class: "btn", onclick: () => { close(); toggleEquip(x.e.uid); } }, "Unequip")))
+        : h("p", { class: "muted small" }, "Empty"));
+  });
+  close = openModal("Equipped", h("div", { class: "slots-list" }, draw()));
 }
 
 // ------------------------------------------------------------------ entry details
@@ -1808,11 +1910,14 @@ function itemDetails(item, onIcon = null, srcId = item.id, vars = null, watermar
     add("Capacity", item.capacity || (item.capacityLb && item.capacityLb + " " + weightUnitFor(item.capacityLb)));
     add("Weightless", item.weightless && "Contents don't count toward carried weight");
     add("Straps", item.straps && "Gear can be strapped to the outside");
-    const spec = HOLDERS[item.holds];
-    add("Holds", spec && `Only ${spec.label.toLowerCase()} — up to ${item.holdLimit || spec.limit} ${spec.unit}s` +
-      (item.holds === "scrolls" ? " (parchment takes 2)" : ""));
+    const rules = containerRules({ item, srcId: item.id }), old = HOLDER_RULES[item.holds];
+    const limit = item.holdLimit || old?.limit;
+    add("Holds", rules.length > 0 && `Only ${rulesLabel(rules).toLowerCase()}${limit ? ` — up to ${limit} ${item.holdUnit || old?.unit || "item"}s` : ""}` +
+      (rules.some(r => r.size > 1) ? ` (${rules.filter(r => r.size > 1).map(r => `${(r.label || r.name).toLowerCase()} takes ${r.size}`).join(", ")})` : ""));
+    add("Coins", item.coinsApart && "Coins in it don't count in the Coins panel");
   }
   if (has("liquid")) add("Liquid", item.liquidPints > 0 && `Holds ${fmtVolume(item.liquidPints)}`);
+  add("Equips in", slotWords(item, srcId));
   add("Writing", has("writable") && !isDocument(item) && (hasWriting(item) ? "Written in" : "Blank — can be written in"));
   add("Picture", has("picture") && !isDocument(item) && (hasWriting(item) ? "Has a picture" : "No picture yet"));
   add("Poison type", item.poisonType);
@@ -1870,16 +1975,20 @@ function containerOptions(char, exclude) {
         const name = entryName(c) + (c.parent ? " (nested)" : "");
         // Counted containers are only offered for what they take, with how full they are.
         const spec = holderSpec(c);
-        const fits = !spec || !entry || spec.size(entry.item) > 0 || entry.parent === c.uid;
+        const fits = !entry || entry.parent === c.uid || containerAllows(c, entry.item, entry.srcId);
         return [fits && h("option", { value: c.uid }, "In " + name + (spec ? ` (${holderUsed(char, c, spec)}/${spec.limit})` : "")),
+          ...(fits ? compartmentsOf(c).map(k => h("option", { value: `${c.uid}:c:${k.id}` }, `In ${name}: ${k.name}`)) : []),
           canStrap(c) && h("option", { value: c.uid + ":out" }, "Strapped to " + name)];
       }).filter(Boolean)];
 }
 
+// A place, as the location menus write it: "" (on person), "uid", "uid:out" (strapped to it) or
+// "uid:c:id" (in one of its compartments).
 function parseLocation(value) {
-  const [parent, out] = (value || "").split(":");
-  return { parent: parent || null, strapped: out === "out" };
+  const [parent, out, comp] = (value || "").split(":");
+  return { parent: parent || null, strapped: out === "out", compartment: out === "c" ? comp || null : null };
 }
+const locationValue = e => e.parent ? e.parent + (e.strapped ? ":out" : e.compartment ? `:c:${e.compartment}` : "") : "";
 
 // An inventory item's details, while they're open: redrawn as soon as its states change (the
 // player ticking Attuned, a trigger cursing it, the GM identifying it), so locks and layers
@@ -1905,10 +2014,10 @@ function openEntry(entryUid, opts = {}) {
   let close;
   const moveSel = h("select", { onchange: ev => {
     const loc = parseLocation(ev.target.value);
-    moveEntry(e.uid, loc.parent, loc.strapped);
+    moveEntry(e.uid, loc.parent, loc.strapped, loc.compartment);
     close();
   } }, containerOptions(char, e.uid));
-  moveSel.value = e.parent ? e.parent + (e.strapped ? ":out" : "") : "";
+  moveSel.value = compartmentOf(char, e) ? locationValue(e) : e.parent ? e.parent + (e.strapped ? ":out" : "") : "";
 
   const controls = h("div", { class: "entry-controls" },
     // A name of the player's own for this copy, shown instead of the item's name.
@@ -1946,7 +2055,8 @@ function openEntry(entryUid, opts = {}) {
     isGmDevice() && gmStateControls(char, e),
     h("label", { class: "field full" }, h("span", null, "Notes"),
       h("textarea", { rows: 2, placeholder: "Engravings, who it came from, etc.", value: e.notes,
-        onchange: ev => commit((s, c) => { c.items.find(x => x.uid === e.uid).notes = ev.target.value; }) })));
+        onchange: ev => commit((s, c) => { c.items.find(x => x.uid === e.uid).notes = ev.target.value; }) })),
+    entryHistory(e));
 
   // A pack carried as one item can be unpacked here, where it is (one pack from the stack).
   const planner = hasFeature(it, "pack", e.srcId) && it.contents?.length ? packPlanner(it, char) : null;
@@ -1962,8 +2072,10 @@ function openEntry(entryUid, opts = {}) {
     }, `Unpacked ${entryName(e)}`, true);
   };
   const footer = [
-    h("button", { class: "btn danger", onclick: () => confirmRemoveEntry(e.uid, () => close()) }, icon("trash"), "Remove"),
+    h("button", { class: "btn danger", onclick: () => confirmRemoveEntry(e.uid, () => close()) }, icon("trash"), discarding(char) ? "Discard" : "Remove"),
     planner && h("button", { class: "btn primary", onclick: unpack }, icon("package"), "Unpack"),
+    ...itemActions(it).map((a, i) => h("button", { class: "btn", onclick: () => { close(); runItemAction(e.uid, i); } }, icon(a.effect === "fill" ? "plus" : a.effect === "random" ? "dice" : "bag"), a.label)),
+    party.active && h("button", { class: "btn", onclick: () => { close(); openShowItem(e.uid); } }, icon("eye"), "Show"),
     h("button", { class: "btn", onclick: () => { close(); openSell(e.uid); } }, icon("coins"), "Sell"),
     // Player mode: no editing items (a copy can still be renamed with its display name).
     editing() && h("button", { class: "btn", onclick: () => { close(); openItemForm(base, { entryUid: e.uid }); } }, icon("edit"), "Edit"),
@@ -2100,7 +2212,7 @@ function openSplit(entryUid) {
     }, `Split ${n} × ${entryName(e)} into a new stack`, true);
     const loc = parseLocation(where.value);
     if (loc.parent !== (e.parent || null) || loc.strapped !== !!e.strapped) {
-      moveEntry(newUid, loc.parent, loc.strapped);
+      moveEntry(newUid, loc.parent, loc.strapped, loc.compartment);
       // A quiver or case that took only part of it: the rest goes back into the original stack.
       const left = store.char().items.find(x => x.uid === newUid && x.parent === e.parent && !!x.strapped === !!e.strapped);
       if (left) commit((s, c) => {
@@ -2192,6 +2304,7 @@ function openCoins() {
       h("button", { class: "btn", onclick: () => txn(1) }, icon("plus"), "Gain"),
       h("button", { class: "btn", onclick: () => txn(-1) }, icon("minus"), "Spend")),
     h("p", { class: "muted small" }, "Spending makes change automatically: paying with a bigger coin gives smaller ones back."),
+    coinPlaces(char, () => close()),
     h("button", { class: "btn", onclick: () => {
       close();
       commit((s, c) => {
@@ -2219,6 +2332,188 @@ function openCoins() {
     h("button", { class: "btn", onclick: () => close() }, "Cancel"),
     h("button", { class: "btn primary", onclick: () => { close(); commit((s, c) => { c.coins = coins; }, "Coins updated", true); } }, "Save"),
   ] });
+}
+
+// A container's allowed contents (item.allows, see containerRules in js/store.js): anything, or
+// only what its rules say: a rule each for a group, a template, words in the name, or certain items.
+// Its old "Only holds" choice (scrolls, arrows, bolts) shows as rules, to change.
+function allowsField(f, draft) {
+  const old = HOLDER_RULES[draft.holds];
+  let rules = clone(Array.isArray(draft.allows) && draft.allows.length ? draft.allows : old?.rules || []);
+  const box = h("div", { class: "allows-rules" });
+  const save = () => {
+    draft.allows = rules.length ? rules : undefined;
+    delete draft.holds; // (now its rules)
+    if (old && !draft.holdLimit) { draft.holdLimit = old.limit; draft.holdUnit = old.unit; }
+  };
+  const KINDS = [["item", "Certain items"], ["group", "A group"], ["template", "A template"], ["name", "Names with the words"]];
+  const kindOf = r => r.item ? "item" : r.group ? "group" : r.template ? "template" : "name";
+  // Items to choose from: the catalog's, and the coins.
+  const choices = () => [...coinOrder().map(k => ({ id: COIN_ID + k, name: coinItem(k).name })), ...store.catalog().map(i => ({ id: i.id, name: i.name }))];
+  const listId = "allows-items-" + uid();
+  const valueInput = (r, i) => {
+    const k = kindOf(r);
+    if (k === "group") return h("select", { "aria-label": `Rule ${i + 1}: group`, onchange: e => { r.group = e.target.value; save(); } },
+      systemGroups().map(g => h("option", { value: g.id, selected: r.group === g.id }, g.name)));
+    if (k === "template") return h("select", { "aria-label": `Rule ${i + 1}: template`, onchange: e => { r.template = e.target.value; save(); } },
+      store.templates().map(t => h("option", { value: t.id, selected: r.template === t.id }, t.name)));
+    if (k === "item") {
+      const all = choices();
+      return h("div", { class: "grow" },
+        h("div", { class: "chips" }, (r.item || []).map(id => h("span", { class: "chip" }, all.find(c => c.id === id)?.name || id,
+          h("button", { type: "button", class: "chip-x", "aria-label": "Remove", onclick: () => { r.item = r.item.filter(x => x !== id); save(); draw(); } }, "×")))),
+        h("input", { type: "text", list: listId, placeholder: "Add an item: start typing its name", "aria-label": `Rule ${i + 1}: add an item`,
+          onchange: e => { const c = all.find(x => x.name.toLowerCase() === e.target.value.trim().toLowerCase()); if (c) { r.item = [...new Set([...(r.item || []), c.id])]; save(); draw(); } else toast("No item of that name"); } }),
+        h("datalist", { id: listId }, all.slice(0, 600).map(c => h("option", { value: c.name }))));
+    }
+    return h("input", { type: "text", value: r.name || "", placeholder: "e.g. arrow", "aria-label": `Rule ${i + 1}: words`, oninput: e => { r.name = e.target.value; save(); } });
+  };
+  const draw = () => setChildren(box,
+    h("div", { class: "field" }, h("span", null, f.label),
+      slideSwitch(f.label, [["any", "Anything"], ["only", "Only…"]], rules.length ? "only" : "any", v => {
+        rules = v === "only" ? (rules.length ? rules : [{ item: [] }]) : [];
+        save(); draw();
+      }, { even: true, cls: "seg-field" })),
+    rules.map((r, i) => h("div", { class: "allows-rule" },
+      h("select", { "aria-label": `Rule ${i + 1}: kind`, onchange: e => {
+        const k = e.target.value;
+        rules[i] = { ...(r.size ? { size: r.size } : {}), ...(k === "item" ? { item: [] } : k === "group" ? { group: systemGroups()[0]?.id } : k === "template" ? { template: store.templates()[0]?.id } : { name: "" }) };
+        save(); draw();
+      } }, KINDS.map(([v, l]) => h("option", { value: v, selected: kindOf(r) === v }, l))),
+      // (a rule from before can say more than one thing: shown as its words)
+      (r.feature || r.category) && !r.item ? h("span", { class: "grow muted small" }, rulesLabel([r])) : valueInput(r, i),
+      h("label", { class: "inline small", title: "How many places one takes when it's counted (parchment: 2)" }, "takes",
+        h("input", { type: "number", min: 1, value: r.size || 1, class: "allows-size", "aria-label": `Rule ${i + 1}: places`, onchange: e => { const n = Math.max(1, Math.floor(+e.target.value || 1)); if (n > 1) r.size = n; else delete r.size; save(); } })),
+      iconBtn("trash", "Remove this rule", () => { rules.splice(i, 1); save(); draw(); }, "danger-hover"))),
+    rules.length > 0 && h("button", { type: "button", class: "btn", onclick: () => { rules.push({ name: "" }); save(); draw(); } }, icon("plus"), "Or…"),
+    rules.length > 0 && h("small", { class: "muted" }, "It takes what matches any rule. With a count below (How many it holds), it's counted rather than weighed."));
+  draw();
+  return h("div", { class: "field full" }, box);
+}
+
+// A container's compartments (item.compartments, see compartmentsOf in js/store.js): a name each,
+// and a capacity of its own (else it shares the container's).
+function compartmentsField(f, draft) {
+  const list = clone(compartmentsOf({ item: draft }));
+  const box = h("div", { class: "actions-rows" });
+  const save = () => { draft.compartments = list.length ? list : undefined; };
+  const draw = () => setChildren(box,
+    h("span", null, f.label),
+    list.map((k, i) => h("div", { class: "action-row" },
+      h("input", { type: "text", maxlength: 30, value: k.name, placeholder: "Side pocket", "aria-label": `Compartment ${i + 1}: name`, oninput: e => { k.name = e.target.value; save(); } }),
+      h("input", { type: "number", min: 0, step: "any", value: k.capacityLb ?? "", placeholder: `Shares the container's (${weightUnit()})`, class: "comp-cap", "aria-label": `Compartment ${i + 1}: capacity`,
+        onchange: e => { const n = +e.target.value; if (n > 0) k.capacityLb = n; else delete k.capacityLb; save(); } }),
+      iconBtn("trash", "Remove this compartment (what's in it goes to the main space)", () => { list.splice(i, 1); save(); draw(); }, "danger-hover"))),
+    h("button", { type: "button", class: "btn", onclick: () => { list.push({ id: "k" + uid(), name: "" }); save(); draw(); } }, icon("plus"), "Add a compartment"),
+    h("small", { class: "muted" }, "Spaces of its own: a side pocket, a lid, a hidden pouch. Gear strapped outside has its own place already (Gear can be strapped to the outside)."));
+  draw();
+  return h("div", { class: "field full" }, box);
+}
+
+// A container's actions (item.actions, see itemActions in js/store.js): its own words for each,
+// what it does, and a state it then switches.
+function actionsField(f, draft) {
+  const list = clone(itemActions(draft));
+  const box = h("div", { class: "actions-rows" });
+  // (none at all is kept as none: a set would otherwise get its defaults back)
+  const save = () => { draft.actions = list.length ? list : deckList(draft, draft.id) ? [] : undefined; };
+  const draw = () => setChildren(box,
+    h("span", null, f.label),
+    list.map((a, i) => h("div", { class: "action-row" },
+      h("input", { type: "text", maxlength: 40, value: a.label, placeholder: "Shake one out", "aria-label": `Action ${i + 1}: words`, oninput: e => { a.label = e.target.value; save(); } }),
+      h("select", { "aria-label": `Action ${i + 1}: what it does`, onchange: e => { a.effect = e.target.value; save(); } },
+        CONTAINER_EFFECTS.map(([k, l]) => h("option", { value: k, selected: a.effect === k }, l))),
+      h("select", { "aria-label": `Action ${i + 1}: then`, onchange: e => { const [st, on] = e.target.value.split(":"); if (st) { a.state = st; a.on = on === "on"; } else { delete a.state; delete a.on; } save(); } },
+        h("option", { value: "" }, "Then nothing more"),
+        systemStates().flatMap(st => [["on", `then ${st.label} on`], ["off", `then ${st.label} off`]].map(([v, l]) =>
+          h("option", { value: `${st.key}:${v}`, selected: a.state === st.key && (a.on !== false) === (v === "on") }, l)))),
+      iconBtn("trash", "Remove this action", () => { list.splice(i, 1); save(); draw(); }, "danger-hover"))),
+    h("button", { type: "button", class: "btn", onclick: () => { list.push({ label: "", effect: "random" }); save(); draw(); } }, icon("plus"), "Add an action"),
+    h("small", { class: "muted" }, "Your words, in its menu: \u201cShake one out\u201d, \u201cFish one out\u201d or \u201cDraw a card\u201d (one at random); \u201cSmash it\u201d (everything out, then Broken on)."));
+  draw();
+  return h("div", { class: "field full" }, box);
+}
+
+// Do one of an inventory item's actions (by its place in the list).
+function runItemAction(entryUid, index) {
+  const char = store.char(), e = char?.items.find(x => x.uid === entryUid);
+  const a = e && itemActions(currentItem(e, char))[index];
+  if (!a) return;
+  const then = c => { if (a.state) { const x = c.items.find(i => i.uid === e.uid); if (x) setState(x, a.state, a.on !== false); } };
+  const named = x => `${entryName(x)}${x.qty > 1 ? ` ×${x.qty}` : ""}`;
+  const inside = takeable(char, e);
+  if (a.effect === "fill") {
+    // What can go in: what's carried (not in it already) that it allows.
+    const fits = char.items.filter(x => x.uid !== e.uid && x.parent !== e.uid && !inDeck(char, x) && !isDescendant(char, x.uid, e.uid) && !isDescendant(char, e.uid, x.uid) && containerAllows(e, x.item, x.srcId));
+    if (!fits.length) return toast(`Nothing you carry goes in the ${entryName(e)}`);
+    let close;
+    close = openModal(a.label, h("div", { class: "group move-to" }, fits.map(x => h("button", { type: "button", class: "row row-main switch",
+      onclick: () => { close(); moveEntry(x.uid, e.uid, false); if (a.state) commit((s, c) => then(c)); } }, itemIcon(currentItem(x, char), "row-icon"), h("div", { class: "row-title" }, named(x))))));
+    return;
+  }
+  if (!inside.length) return toast(`The ${entryName(e)} is empty`);
+  // A set's piece at random: its draw window (to see what came out, and put it back or keep it).
+  if (a.effect === "random" && isDeckEntry(e)) { openDraw(e.uid); if (a.state) commit((s, c) => then(c)); return; }
+  if (a.effect === "choose") {
+    let close;
+    close = openModal(a.label, h("div", { class: "group move-to" }, inside.map(x => h("button", { type: "button", class: "row row-main switch",
+      onclick: () => { close(); commit((s, c) => { const holder = c.items.find(i => i.uid === e.uid), y = c.items.find(i => i.uid === x.uid); if (holder && y) takeOutOf(c, holder, y, 1); then(c); }, `${a.label}: ${entryName(x)}`); } },
+      e.item.sealed && !isGmDevice() ? h("div", { class: "row-title" }, "Something") : [itemIcon(currentItem(x, char), "row-icon"), h("div", { class: "row-title" }, named(x))]))));
+    return;
+  }
+  let got = [];
+  commit((s, c) => {
+    const holder = c.items.find(i => i.uid === e.uid);
+    if (!holder) return;
+    if (a.effect === "random") { const x = takeRandom(c, holder); if (x) got.push(entryName(x)); }
+    else for (const x of takeable(c, holder)) { got.push(named(x)); takeOutOf(c, holder, x); }
+    then(c);
+  }, null, true);
+  toast(`${a.label}: ${got.join(", ") || "nothing"}`, null);
+}
+
+// The purse's coins are items (see syncCoins in js/store.js): where the rest are (in containers:
+// counted, or kept apart), taking them out, and putting some of the purse's in a container.
+function coinPlaces(char, close) {
+  const away = char.items.filter(e => isCoinEntry(e) && e.parent && !inSealed(char, e)); // (a sealed container's: not shown)
+  const containers = char.items.filter(e => holdsItems(char, e));
+  const purseOf = k => char.items.find(e => inPurse(e) && e.item.coin === k)?.qty || 0;
+  let n = 0, key = coinOrder().find(k => purseOf(k) > 0) || coinOrder()[0], into = containers[0]?.uid;
+  const moveTo = (uid, parent) => commit((s, c) => {
+    const e = c.items.find(x => x.uid === uid);
+    if (!e) return;
+    e.qty && addToInventory(c, coinItem(e.item.coin, s.settings), e.qty, parent);
+    c.items = c.items.filter(x => x !== e);
+  });
+  const put = () => {
+    const have = purseOf(key), holder = char.items.find(e => e.uid === into);
+    if (!(n > 0)) return toast("How many?");
+    if (n > have) return toast(`The purse has ${have} ${key}`);
+    if (holder && !containerAllows(holder, coinItem(key), COIN_ID + key)) return toast(`The ${entryName(holder)} only holds ${rulesLabel(containerRules(holder)).toLowerCase()}`);
+    close();
+    commit((s, c) => {
+      const p = c.items.find(e => inPurse(e) && e.item.coin === key);
+      p.qty -= n;
+      if (!p.qty) c.items = c.items.filter(x => x !== p);
+      addToInventory(c, coinItem(key, s.settings), n, into);
+    }, `Put ${n} ${key} in ${entryName(char.items.find(e => e.uid === into))}`, true);
+  };
+  return h("div", { class: "coin-places" },
+    h("h4", null, "In containers"),
+    away.length ? h("ul", { class: "coin-away" }, away.map(e => {
+      const where = char.items.find(x => x.uid === e.parent);
+      return h("li", null, h("span", { class: "grow" }, `${e.qty.toLocaleString()} ${e.item.coin} in ${where ? entryName(where) : "?"}`,
+        !coinCounts(char, e) && h("span", { class: "muted small" }, " · kept apart")),
+        h("button", { class: "btn small", onclick: () => { close(); moveTo(e.uid, null); } }, "Take out"));
+    })) : h("p", { class: "muted small" }, "None: they're all in the purse."),
+    containers.length > 0 && h("div", { class: "coin-put" },
+      h("label", { class: "field" }, h("span", null, "Put"),
+        h("input", { type: "number", min: 1, inputmode: "numeric", placeholder: "How many", class: "coin-put-n", oninput: ev => { n = Math.floor(+ev.target.value || 0); } })),
+      h("label", { class: "field" }, h("span", null, "Coin (in the purse)"),
+        h("select", { onchange: ev => { key = ev.target.value; } }, coinOrder().map(k => h("option", { value: k, selected: k === key }, `${k} (${purseOf(k)})`)))),
+      h("label", { class: "field" }, h("span", null, "In"),
+        h("select", { onchange: ev => { into = ev.target.value; } }, containers.map(e => h("option", { value: e.uid }, entryName(e))))),
+      h("button", { class: "btn", onclick: put }, "Put in")));
 }
 
 // ------------------------------------------------------------------ catalog view
@@ -2382,9 +2677,9 @@ function deckSection(deck, reopen, closeDetails) {
   return h("section", { class: "deck" },
     h("div", { class: "section-head" }, h("h4", null, `${nouns[0].toUpperCase() + nouns.slice(1)} — ${plural(inside.length, noun)} in the ${name.toLowerCase()}`)),
     h("div", { class: "inline wrap deck-actions" },
-      inside.length > 0 && h("button", { class: "btn primary", type: "button", onclick: () => { closeDetails(); openDraw(deck.uid); } },
-        icon("dice"), noun === "card" ? "Draw a card" : "Take one at random"),
-      inside.length > 1 && h("button", { class: "btn", type: "button", onclick: act(() => takeCards(deck.uid, inside.map(x => x.uid), `Took all the ${nouns} out of the ${name}`)) }, "Take all out"),
+      // Its actions (its own words: "Draw a card", "Take all out"…).
+      inside.length > 0 && itemActions(currentItem(deck, char)).filter(a => a.effect !== "fill").map((a, i) => h("button", { class: "btn" + (i ? "" : " primary"), type: "button",
+        onclick: () => { closeDetails(); runItemAction(deck.uid, itemActions(currentItem(deck, char)).indexOf(a)); } }, icon(a.effect === "random" ? "dice" : "bag"), a.label)),
       out.length > 0 && h("button", { class: "btn", type: "button", onclick: act(() => putCardsBack(deck.uid, out.map(x => x.uid), `Put ${plural(out.length, noun)} back`)) }, `Put ${plural(out.length, noun)} back`)),
     inside.length ? h("div", { class: "group deck-cards" }, inside.map(card => h("div", { class: "row" + (card.item.image ? " has-img" : "") },
       itemIcon(card.item, "row-icon"),
@@ -2743,7 +3038,12 @@ function loadScript(src, global, what) {
 }
 
 // The icon editor (svg-lay-tool).
-const loadSvgLay = () => loadScript("js/vendor/svg-lay-tool.js", "SvgLayTool", "the icon editor");
+// Its fonts (text layers' letter outlines: a script of their own) come with it, registered once.
+const loadSvgLay = () => loadScript("js/vendor/svg-lay-tool.js", "SvgLayTool", "the icon editor")
+  .then(() => loadScript("js/vendor/svg-lay-fonts.js", "SvgLayToolFonts", "the icon editor's fonts"))
+  .then(() => { if (!SvgLayTool.listFonts().length) SvgLayTool.registerFonts(window.SvgLayToolFonts); });
+// The editor's Parts and Symbols (js/parts-library.js, made by tools/build_parts.mjs).
+const loadPartsLibrary = () => loadScript("js/parts-library.js", "PARTS_LIBRARY", "the parts library");
 
 // Draw an icon from shapes on layers, in one colour (the app tints it like its other icons).
 // opts: doc (to edit), name (for the title), color (to draw in), templates (offer "Start from…" a
@@ -2752,6 +3052,7 @@ const loadSvgLay = () => loadScript("js/vendor/svg-lay-tool.js", "SvgLayTool", "
 async function openIconDrawer(opts, onSave) {
   try {
     await loadSvgLay();
+    await loadPartsLibrary();
   } catch (e) {
     return toast(e.message);
   }
@@ -2827,6 +3128,10 @@ async function openIconDrawer(opts, onSave) {
       variableGroups: [iconVariableGroup(opts.vars)],
       // What a hotspot can ask Pack Rat to do with the item (see makeIconInteractive).
       appActions: iconAppActions(),
+      // The Library: Pack Rat's Parts (kits in slots) and Symbols, and your drawings to put in as a
+      // group (Catalog → Drawings; not the one being drawn).
+      libraries: window.PARTS_LIBRARY || [],
+      drawings: () => drawingLibrary().filter(d => d.doc && d.id !== opts.libId).map(d => ({ id: d.id, name: d.name, doc: d.doc })),
       // "+ Global value" and "+ Local value" beside "+ Add variable": a global_ or local_ variable
       // with a slider (its default and range). See js/clockwork.js.
       variablePresets: [
@@ -2919,6 +3224,8 @@ function bindingFormulas(doc) {
   const out = [];
   const walk = layers => (layers || []).forEach(l => {
     for (const b of l.bindings || []) if (b.enabled !== false && (b.expression || "").trim()) out.push(b.expression);
+    // A text layer's words can show values: "{local_qty} arrows".
+    for (const m of String(l.text?.content || "").matchAll(/\{([^{}\n]{1,200})\}/g)) out.push(m[1]);
     if (l.type === "group") walk(l.children);
   });
   walk(doc?.layers);
@@ -3310,7 +3617,11 @@ function featuresPanel(draft, isOn, chosen, tpl) {
     rows[key].box.hidden = !v || !rows[key].box.childElementCount;
   };
   const shown = new Set(templateFields(tpl).map(f => f.key)); // fields the form has already (a magic bonus…)
+  // Container, Liquid, Set and Pack are one Container: what it holds is a choice of the four.
+  const KINDS = [["holds", "Things"], ["liquid", "Liquid"], ["deck", "Its pieces (a set)"], ["pack", "A pack's contents"]].filter(([k]) => features.some(ft => ft.key === k));
+  const isKind = ft => KINDS.length > 1 && KINDS.some(([k]) => k === ft.key);
   const list = features.map(ft => {
+    if (isKind(ft)) return ft.key === KINDS[0][0] ? containerCard() : null;
     const box = h("div", { class: "form grid feature-fields" }, ft.fields.filter(f => !shown.has(f.key)).map(f => fieldInput(f, draft)));
     box.hidden = !isOn(ft.key) || !box.childElementCount;
     const input = h("input", { type: "checkbox", checked: isOn(ft.key), onchange: ev => {
@@ -3324,7 +3635,46 @@ function featuresPanel(draft, isOn, chosen, tpl) {
       h("label", { class: "check" }, input, h("span", null, h("b", null, ft.label), ft.hint && h("span", { class: "muted" }, " " + ft.hint))),
       box);
   });
-  const body = h("div", { class: "features-body" }, list);
+  function containerCard() {
+    const kindOn = () => KINDS.find(([k]) => isOn(k))?.[0] || null;
+    let kind = kindOn() || "holds";
+    const boxes = Object.fromEntries(KINDS.map(([k]) => {
+      const ft = features.find(f => f.key === k);
+      const box = h("div", { class: "form grid feature-fields" }, ft.fields.filter(f => !shown.has(f.key) && f.kind !== "actions").map(f => fieldInput(f, draft)));
+      // (rows[k]: so the rest of the panel treats each kind as a feature of its own)
+      rows[k] = { input: { set checked(v) {} }, box };
+      return [k, box];
+    }));
+    const kinds = h("div", { class: "field" });
+    // Its actions, whatever it holds (a set's start as Draw a card and Take all out).
+    const actions = h("div", { class: "form grid feature-fields" }, actionsField({ label: "Actions" }, draft));
+    const draw = () => {
+      const on = !!kindOn();
+      for (const [k, box] of Object.entries(boxes)) box.hidden = !on || k !== kind || !box.childElementCount;
+      kinds.hidden = !on;
+      actions.hidden = !on || kind === "pack";
+    };
+    const pick = k => { kind = k; for (const [x] of KINDS) chosen[x] = x === k; draw(); drawSummary(); };
+    setChildren(kinds, h("span", null, "Holds"), slideSwitch("Holds", KINDS, kind, pick, { cls: "seg-field container-kinds" }));
+    const input = h("input", { type: "checkbox", checked: !!kindOn(), onchange: ev => {
+      if (ev.target.checked) pick(kind); else { for (const [x] of KINDS) chosen[x] = false; draw(); drawSummary(); }
+    } });
+    draw();
+    return h("div", { class: "feature container-card" },
+      h("label", { class: "check" }, input, h("span", null, h("b", null, "Container"),
+        h("span", { class: "muted" }, " Holds something: things (a backpack, a piggy bank), a liquid (a waterskin), its own pieces (a deck of cards), or a pack's contents that unpack."))),
+      kinds, Object.values(boxes), actions);
+  }
+
+  // In groups: what it holds, how it's used, equipment, stacking (a system's own go by what they do).
+  const FEATURE_GROUPS = [["holds", "Holds things"], ["use", "Use"], ["equipment", "Equipment"], ["stacking", "Stacking"]];
+  const groupOf = ft => ft.group || ({ holds: "holds", liquid: "holds", deck: "holds", pack: "holds", equippable: "equipment",
+    stacks: "stacking", bundle: "stacking", attunement: "equipment", worn: "equipment", ammunition: "equipment" })[ft.key] || (ft.equip ? "equipment" : "use");
+  const grouped = FEATURE_GROUPS.map(([g, label]) => {
+    const mine = features.map((ft, i) => groupOf(ft) === g ? list[i] : null).filter(Boolean);
+    return mine.length > 0 && h("div", { class: "feature-group" }, h("h4", { class: "feature-group-head" }, label), mine);
+  });
+  const body = h("div", { class: "features-body" }, grouped);
   body.hidden = !open;
   const toggle = h("button", { type: "button", class: "collapse" + (open ? "" : " closed"), "aria-expanded": String(open), onclick: () => {
     open = !open;
@@ -3380,6 +3730,12 @@ function fieldInput(f, draft) {
       return piecesField(f, draft);
     case "packContents":
       return packContentsField(f, draft);
+    case "allows":
+      return allowsField(f, draft);
+    case "actions":
+      return actionsField(f, draft);
+    case "compartments":
+      return compartmentsField(f, draft);
     case "icon": {
       // Preview updates with the name/type; "Automatic" follows the item's name. Or draw one.
       const preview = h("span", { class: "icon-preview" });
@@ -3515,8 +3871,20 @@ function myItemsSection() {
 }
 
 // Templates: the system's by group, and the templates of the packages in use.
+// The catalog's items made with a template, and a link to them (the catalog, searching for it).
+const templateUsage = t => store.catalog().filter(i => itemTemplate(i)?.id === t.id).length;
+function templateUsageLink(t) {
+  const n = templateUsage(t);
+  return h("button", { class: "link small", title: `Show them in the catalog`, onclick: () => {
+    const st = listState("catalog");
+    st.search = `t:"${t.name.toLowerCase()}"`; st.type = "all"; st.sub = null;
+    ui.catTab = "items";
+    go("catalog");
+    window.scrollTo(0, 0);
+  } }, `Used by ${plural(n, "item")}`);
+}
+
 function templatesSection() {
-  const usage = id => store.customItems().filter(i => i.template === id).length;
   const several = store.enabledPackages().length > 1;
   const sys = activeSystem();
   return h("section", null,
@@ -3538,9 +3906,10 @@ function templatesSection() {
               : h("span", { style: { background: groupColor(g.id) } })),
             h("b", null, g.name),
             h("small", { class: "muted" }, multi ? "Built-in" : `Built-in · ${templateFields(tpls[0]).length} fields`),
+            !multi && templateUsageLink(tpls[0]),
             // A combined group lists its templates, each in its shade, with its own New / Copy.
             multi && h("div", { class: "tpl-types" }, tpls.map(t => h("div", { class: "tpl-type" },
-              colorDot(templateColor(t), t.name), h("span", null, t.name),
+              colorDot(templateColor(t), t.name), h("span", null, t.name), templateUsageLink(t),
               h("button", { class: "link", onclick: () => openItemForm(newItemFrom(t)) }, "New"),
               h("button", { class: "link", onclick: () => copyTemplate(t) }, "Copy")))),
             h("div", { class: "tpl-actions" },
@@ -3560,8 +3929,9 @@ function templatesSection() {
         store.templates().filter(t => !isSystemTemplate(t)).map(t => h("div", { class: "tpl-tile static" },
           h("span", { class: "tpl-swatch", style: { background: templateColor(t) } }),
           h("b", null, t.name),
-          h("small", { class: "muted" }, `${templateNote(t)} · ${plural(templateFields(t).length, "field")} · ${plural(usage(t.id), "item")}`
+          h("small", { class: "muted" }, `${templateNote(t)} · ${plural(templateFields(t).length, "field")}`
             + (several ? ` · ${store.templatePackage(t.id)?.name || ""}` : "")),
+          templateUsageLink(t),
           h("div", { class: "tpl-actions" },
             h("button", { class: "link", onclick: () => openItemForm(newItemFrom(t)) }, "New item"),
             h("button", { class: "link", onclick: () => openTemplateEditor(t) }, "Edit"),
@@ -3925,7 +4295,7 @@ function renderSettings() {
         h("a", { href: "https://creativecommons.org/licenses/by/4.0/legalcode", target: "_blank", rel: "noopener" }, "CC BY 4.0"), "."),
       h("p", null, "Item data from ", h("a", { href: "https://dnd5e.wikidot.com/", target: "_blank", rel: "noopener" }, "dnd5e.wikidot.com"),
         " (CC BY-SA 3.0). Item icons from ", h("a", { href: "https://game-icons.net", target: "_blank", rel: "noopener" }, "game-icons.net"),
-        " by " + ICON_CREDITS.join(", ") + " (CC BY 3.0). Dungeons & Dragons is a trademark of Wizards of the Coast; this tool is unofficial.")),
+        " by " + ICON_CREDITS.join(", ") + " (CC BY 3.0). The icon editor's text uses the fonts Alegreya, Nunito and Caveat (SIL Open Font License 1.1). Dungeons & Dragons is a trademark of Wizards of the Coast; this tool is unofficial.")),
     party.isApp() && quitSection());
 }
 
@@ -3996,7 +4366,80 @@ function campaignRulesBlock() {
           [["standard", "Standard (capacity = STR × 15)"], ["variant", "Variant (speed penalties at STR × 5 / × 10)"], ["off", "Off"]]
             .map(([v, l]) => h("option", { value: v, selected: s.settings.encumbrance === v }, l)))),
       currency().perWeight > 0 && h("label", { class: "check field" }, h("input", { type: "checkbox", checked: s.settings.coinWeight, onchange: e => setSetting("coinWeight", e.target.checked) }),
-        ` Coins have weight (${currency().perWeight} coins = 1 ${weightUnit()})`)));
+        ` Coins have weight (${currency().perWeight} coins = 1 ${weightUnit()})`),
+      h("label", { class: "field" }, h("span", null, "Item states"),
+        h("button", { class: "btn", type: "button", onclick: openCampaignStates }, icon("wand"),
+          `${plural(systemStates().length, "state")}${campaignStates().length ? ` (${campaignStates().length} of this campaign's own)` : ""}`))));
+}
+
+// The campaign's item states: its game system's (fixed) and its own, which the GM adds and
+// changes (Broken, Lit, Wet…). Each: who switches it, what it needs, a limit per character.
+function openCampaignStates() {
+  const sysStates = systemStates().filter(st => !campaignStates().some(o => o.key === st.key));
+  const own = clone(campaignStates());
+  const canEdit = isGmDevice() || !party.active;
+  const box = h("div", { class: "states-list" });
+  const needs = st => st.requires ? featureByKey(st.requires)?.label || st.requires : null;
+  const describe = st => [st.who === "gm" ? `Only the ${term("gm")}` : "The player", needs(st) && `needs ${needs(st)}`, st.limit && `limit ${st.limit.default}`].filter(Boolean).join(" · ");
+  const draw = () => setChildren(box,
+    h("h4", null, `From ${activeSystem().name}`, h("span", { class: "muted small" }, " (fixed)")),
+    sysStates.length ? sysStates.map(st => h("div", { class: "state-row" }, h("span", { class: "grow" }, h("b", null, st.label), h("small", { class: "muted" }, describe(st))), icon("lock")))
+      : h("p", { class: "muted small" }, "None."),
+    h("h4", null, "This campaign's own"),
+    own.length ? own.map((st, i) => h("div", { class: "state-row" },
+      h("span", { class: "grow" }, h("b", null, st.label), h("small", { class: "muted" }, describe(st))),
+      canEdit && iconBtn("edit", `Change ${st.label}`, () => editOwnState(st, next => { own[i] = next; save(); })),
+      canEdit && iconBtn("trash", `Remove ${st.label}`, () => { own.splice(i, 1); save(); }, "danger-hover")))
+      : h("p", { class: "muted small" }, "None yet. Add one for things the game system doesn't have: Broken, Lit, Wet, Hidden…"),
+    canEdit && h("button", { class: "btn", onclick: () => editOwnState(null, next => { own.push(next); save(); }) }, icon("plus"), "Add a state"));
+  // Saved at once (and, in a party, sent to the host, so players' devices have them).
+  const save = async () => {
+    commit(() => { store.campaign().states = clone(own); }, null);
+    draw();
+    if (party.active && party.isGm() && party.campaign?.id === store.campaign().id) {
+      try { await party.loadCampaign(store.campaign()); } catch (e) { toast(e.message); }
+    }
+  };
+  draw();
+  openModal("Item states", h("div", { class: "form" },
+    h("p", { class: "muted small" }, "What an item in an inventory can be. Each can change the item (a layer, in its editor) and be used in rules."), box));
+}
+
+// Add (st null) or change one of the campaign's own states: onSave(state).
+function editOwnState(st, onSave) {
+  const draft = st ? clone(st) : { label: "", who: "player" };
+  const taken = new Set(systemStates().map(x => x.key).filter(k => k !== st?.key));
+  let close;
+  const save = () => {
+    const label = (draft.label || "").trim().slice(0, 30);
+    if (!label) return toast("Give it a name");
+    if (!st) {
+      // Its key, from its name (unique among the campaign's states).
+      let key = label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "state";
+      if (/^[0-9]/.test(key)) key = "s_" + key;
+      for (let n = 2, k = key; taken.has(key); n++) key = `${k}${n}`;
+      draft.key = key;
+    }
+    draft.label = label;
+    if (!draft.requires) delete draft.requires;
+    if (!(draft.limit?.default > 0)) delete draft.limit;
+    close();
+    onSave(draft);
+  };
+  close = openModal(st ? `Change ${st.label}` : "New state", h("div", { class: "form" },
+    h("label", { class: "field" }, h("span", null, "Name"),
+      h("input", { type: "text", maxlength: 30, value: draft.label, placeholder: "Broken", oninput: e => { draft.label = e.target.value; } })),
+    h("div", { class: "field" }, h("span", null, "Who switches it"),
+      slideSwitch("Who switches it", [["player", "The player"], ["gm", `Only the ${term("gm")}`]], draft.who, v => { draft.who = v; }, { even: true, cls: "seg-field" }),
+      h("small", { class: "muted" }, "Rules can switch any state.")),
+    h("label", { class: "field" }, h("span", null, "Only items that have"),
+      h("select", { onchange: e => { draft.requires = e.target.value; } },
+        h("option", { value: "", selected: !draft.requires }, "Any item"),
+        allFeatures().map(f => h("option", { value: f.key, selected: draft.requires === f.key }, f.label)))),
+    h("label", { class: "field" }, h("span", null, "At most, per character (optional)"),
+      h("input", { type: "number", min: 1, value: draft.limit?.default ?? "", placeholder: "No limit",
+        onchange: e => { const n = Math.floor(+e.target.value || 0); draft.limit = n > 0 ? { default: n, mode: "warn" } : undefined; } }))),
+  { footer: [h("button", { class: "btn", onclick: () => close() }, "Cancel"), h("button", { class: "btn primary", onclick: save }, icon("check"), "Save")] });
 }
 
 // Files' Data card: where everything is saved, and erasing it all (apart from Export and Import).

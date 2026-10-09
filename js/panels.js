@@ -132,7 +132,7 @@ const ownValues = bucket => Object.fromEntries(Object.entries(bucket || {}).filt
 
 function panelState(char, withIcons = true) {
   const settings = store.state.settings;
-  const value = char.items.reduce((s, e) => s + entryValue(e), 0);
+  const value = char.items.filter(e => !isCoinEntry(e)).reduce((s, e) => s + entryValue(e), 0); // (coins: their own worth)
   const sysFeatures = new Set((activeSystem().features || []).map(f => f.key));
   const items = char.items.filter(e => !inDeck(char, e)).map(e => {
     const it = currentItem(e, char); // as it is now: its active layers applied

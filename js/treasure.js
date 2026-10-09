@@ -17,14 +17,15 @@ function updateHoard(id, fn, msg, undoable = false) {
   commit(s => { const hd = (s.hoards || []).find(x => x.id === id); if (hd) fn(hd); }, msg, undoable);
 }
 
-// What a hoard is worth: its items (with their contents) and its coins.
-const hoardWorth = hd => hd.items.filter(e => !e.parent).reduce((s, e) => s + entryTotalValue(hd, e), 0) + coinTotalCp(hd.coins || {});
+// What a hoard is worth: its items, with their contents (its coins are items too).
+const hoardWorth = hd => hd.items.filter(e => !e.parent).reduce((s, e) => s + entryTotalValue(hd, e), 0);
 const hoardCoinsLabel = hd => coinOrder().filter(k => hd.coins?.[k]).map(k => `${hd.coins[k]} ${k}`).join(", ");
 
 // ------------------------------------------------------------------ giving
 
 // Move a hoard's contents into a character (this device's). Returns how many entries arrived.
 function giveHoard(hd, char) {
+  syncCoins(hd, store.state.settings); // (its coins are items: they go across with the rest)
   const newUid = new Map();
   let n = 0;
   // Parents before their contents, so each knows where its container went.
@@ -51,7 +52,6 @@ function giveHoard(hd, char) {
     }
   };
   place(null);
-  for (const [k, v] of Object.entries(hd.coins || {})) if (v > 0) char.coins = { ...(char.coins || {}), [k]: (char.coins?.[k] || 0) + v };
   return n;
 }
 
@@ -410,7 +410,8 @@ function showHoard(hd) {
   const go = async () => {
     if (!chosen.size) return toast("Choose who to show it to");
     close();
-    const r = await treasureCall("POST", "api/treasure", { name: hd.name, hoard: hd.id, items: hd.items, coins: hd.coins || {}, players: [...chosen] });
+    // The purse's coins go as coins (each picked by how many); the rest as items.
+    const r = await treasureCall("POST", "api/treasure", { name: hd.name, hoard: hd.id, items: hd.items.filter(e => !inPurse(e)), coins: purseTotals(hd), players: [...chosen] });
     if (r?.id) { updateHoard(hd.id, x => { x.showing = r.id; }, `Showing ${hd.name}`); }
   };
   close = openModal(`Show ${hd.name}`, h("div", { class: "form" },
@@ -429,7 +430,14 @@ function reclaimTreasure() {
     const hd = hoards().find(x => x.showing === t.id);
     if (!hd) continue;
     reclaiming.add(t.id);
-    updateHoard(hd.id, x => { x.items = clone(t.items); x.coins = clone(t.coins || {}); delete x.showing; },
+    // What's left: its items, and the coins left as coins (into its purse, as items).
+    updateHoard(hd.id, x => {
+      x.items = clone(t.items);
+      x.coinsAt = coinItemTotals(x);
+      x.coins = { ...x.coinsAt };
+      for (const [k, v] of Object.entries(t.coins || {})) x.coins[k] = (x.coins[k] || 0) + v;
+      delete x.showing;
+    },
       t.given.length ? `${t.name}: ${t.given.map(g => `${g.name} took ${g.items.join(", ")}`).join("; ")}` : `${t.name} is back`);
     treasureCall("DELETE", `api/treasure/${t.id}`);
   }

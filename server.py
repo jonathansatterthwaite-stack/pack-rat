@@ -206,6 +206,22 @@ def clean_gm_values(raw):
     return out
 
 
+def clean_own_states(raw):
+    """A campaign's own item states (js/app.js: editOwnState): known fields only, within limits."""
+    out = []
+    for st in (raw if isinstance(raw, list) else [])[:30]:
+        if not isinstance(st, dict) or not isinstance(st.get("key"), str) or not isinstance(st.get("label"), str):
+            continue
+        x = {"key": st["key"][:40], "label": st["label"][:30], "who": "gm" if st.get("who") == "gm" else "player"}
+        if isinstance(st.get("requires"), str) and st["requires"]:
+            x["requires"] = st["requires"][:40]
+        lim = st.get("limit")
+        if isinstance(lim, dict) and isinstance(lim.get("default"), int) and not isinstance(lim.get("default"), bool) and 0 < lim["default"] < 1000:
+            x["limit"] = {"default": lim["default"], "mode": "warn"}
+        out.append(x)
+    return out
+
+
 def clean_system_ref(raw):
     """The game system a campaign plays, as the GM's device names it ({id, name}), or None."""
     if not isinstance(raw, dict) or not raw.get("id"):
@@ -349,6 +365,7 @@ def treasure_give(t, alloc):
             parent = new_uid.get(e.get("parent"))
             entry = copy.deepcopy(e)
             entry.update(uid=new_id(), qty=q, parent=parent, strapped=bool(parent and e.get("strapped")), equipped=False, seen=None)
+            add_history(entry, f"From {t['name']} (treasure)")
             new_uid[e["uid"]] = entry["uid"]
             pieces = [x for x in t["items"] if x.get("parent") == e["uid"] and (x.get("item") or {}).get("card")]
             if parent is None and not pieces and not any(x.get("parent") == e["uid"] for x in picked):
@@ -416,6 +433,31 @@ def clean_treasure_items(raw):
     return items
 
 
+# ------------------------------------------------------------------ showing and discarding
+# A player (or the GM) shows an item to some of the party, and/or the GM: it pops up for them to
+# look at, nothing moves. Gone once all have seen it, or after two hours.
+#   state["shows"]: [{id, by: token, from: charId | "", fromName, item: entry, contents: [entry],
+#     to: [charId], gm: bool, seen: [charId | "gm"], at}]
+# Discarding an item (in a party, Remove is Discard) sends it to the GM: it waits here until a GM's
+# device takes it into a hoard (Discarded), then deletes it.
+#   state["discards"]: [{id, character, name, items: [entry], at}]
+SHOW_TTL_MS = 2 * 60 * 60 * 1000
+# (Kept in memory and in the party's save: a player can't fill them up.)
+SHOW_MAX_BYTES, SHOWS_PER_DEVICE = 300_000, 20
+DISCARD_MAX_BYTES, DISCARDS_PER_CHARACTER = 1_000_000, 50
+
+
+def prune_shows():
+    shows = state.get("shows")
+    if shows:
+        cutoff = now_ms() - SHOW_TTL_MS
+        state["shows"] = [s for s in shows if s["at"] > cutoff and not show_seen_by_all(s)]
+
+
+def show_seen_by_all(s):
+    return set(s["to"]) | ({"gm"} if s["gm"] else set()) <= set(s["seen"])
+
+
 def snapshot(token, host=False):
     chars = state["characters"]
     mine = {cid for cid, c in chars.items() if c["owner"] == token}
@@ -428,6 +470,13 @@ def snapshot(token, host=False):
     # Treasure being shown: a GM sees every showing, a player the ones their characters are in.
     gm_view = role_of(token, host) == "gm"
     snap["treasure"] = [t for t in state.get("treasure", []) if gm_view or mine & set(t["players"])]
+    # Items shown: to the devices of those they're shown to (the GM's too, when shown to the GM),
+    # and to whoever showed them. Discarded items wait for a GM's device to take them.
+    prune_shows()
+    snap["shows"] = [dict(s, fromMine=s["by"] == token) for s in state.get("shows", [])
+                     if mine & set(s["to"]) or (gm_view and s["gm"]) or s["by"] == token]
+    if gm_view:
+        snap["discards"] = state.get("discards", [])
     if host:
         snap["devices"] = device_list(token)
     return snap
@@ -802,6 +851,12 @@ def carry_values(src, dst, uids, part_uid=None):
             items[f"{dst['id']}/{uid}"] = items.pop(key)
 
 
+def add_history(e, text):
+    """A line in an item's history (where it came from): its last 20 kept."""
+    past = [x for x in (e.get("history") or []) if isinstance(x, dict)][-19:]
+    e["history"] = past + [{"at": now_ms(), "text": str(text)[:160]}]
+
+
 def transfer(src, dst, uid, qty):
     e = find_entry(src, uid)
     # Traded items arrive loose and unequipped, with the game system's toggles (attuned…) off.
@@ -812,6 +867,7 @@ def transfer(src, dst, uid, qty):
         src["items"] = [x for x in src["items"] if x["uid"] not in moving]
         carry_values(src, dst, moving)
         e.update(loose)
+        add_history(e, f"From {src.get('name') or 'someone'}, in a trade")
         for k in kids:
             k["equipped"] = k["attuned"] = False
             k["toggles"] = {}
@@ -826,6 +882,7 @@ def transfer(src, dst, uid, qty):
         e["qty"] -= qty
         part = copy.deepcopy(e)
         part.update(loose, uid=new_id(), qty=qty)
+        add_history(part, f"From {src.get('name') or 'someone'}, in a trade")
         carry_values(src, dst, [uid], part["uid"])
         merge_into(dst, part)
 
@@ -1082,6 +1139,10 @@ class Handler(SimpleHTTPRequestHandler):
             return self.gm_api(method, parts[1:], token)
         if parts[:1] == ["treasure"]:
             return self.treasure_api(method, parts[1:], token)
+        if parts[:1] == ["show"]:
+            return self.show_api(method, parts[1:], token)
+        if parts[:1] == ["discard"]:
+            return self.discard_api(method, parts[1:], token)
         if parts[:1] == ["local"]:
             if not (self.is_app() and LOCAL_DIR):
                 raise ApiError(403, "Only Pack Rat on this PC can do that")
@@ -1526,6 +1587,8 @@ class Handler(SimpleHTTPRequestHandler):
             state["campaign"]["gmOnly"] = [k for k in (body.get("gmOnly") or [])[:50] if isinstance(k, str) and GM_NAME.match(k)]
             # Rules, values and controls (Clockwork): off, shops don't follow values.
             state["campaign"]["clockwork"] = body.get("clockwork") is not False
+            # The campaign's own item states, for players' devices.
+            state["campaign"]["ownStates"] = clean_own_states(body.get("ownStates"))
             changed(persist=False)
         print(f"  * The GM loaded the campaign {name}")
         return {"ok": True}
@@ -1657,6 +1720,103 @@ class Handler(SimpleHTTPRequestHandler):
                     t["picks"], t["status"] = {}, "done"
                 changed()
                 return {"ok": True, "status": t["status"]}
+            raise ApiError(404, "Unknown endpoint")
+
+    def show_api(self, method, parts, token):
+        """Showing an item (see prune_shows).
+
+        POST   /api/show {from, item, contents, to: [charId], gm}  show it: from one of your characters
+                                                                 (or, the GM, from "" too)
+        POST   /api/show/<id>/seen {character}                    seen, by one of your characters (or "gm")
+        DELETE /api/show/<id>                                     whoever showed it: take it back
+        """
+        gm = self.is_gm(token)
+        body = self.body() if method == "POST" else {}
+        with cond:
+            shows = state.setdefault("shows", [])
+            if method == "POST" and not parts:
+                if not party_enabled():
+                    raise ApiError(404, "No party is being hosted")
+                frm = str(body.get("from") or "")
+                c = state["characters"].get(frm)
+                if frm and (not c or c["owner"] != token):
+                    raise ApiError(403, "You can only show your own characters' things")
+                if not frm and not gm:
+                    raise ApiError(403, "Show it from one of your characters")
+                items = clean_treasure_items([body.get("item")])
+                if not items:
+                    raise ApiError(400, "Nothing to show")
+                to = [str(x) for x in (body.get("to") or []) if str(x) in state["characters"] and str(x) != frm][:30]
+                to_gm = bool(body.get("gm"))
+                if not to and not to_gm:
+                    raise ApiError(400, "Choose who to show it to")
+                if len(shows) >= 200 or sum(1 for x in shows if x["by"] == token) >= SHOWS_PER_DEVICE:
+                    raise ApiError(429, "Too much is being shown: try again once it's been seen")
+                s = {"id": new_id("s"), "by": token, "from": frm, "fromName": c["name"] if c else "The GM",
+                     "item": items[0], "contents": clean_treasure_items(body.get("contents"))[:200], "to": to, "gm": to_gm,
+                     "seen": [], "at": now_ms()}
+                if len(json.dumps(s)) > SHOW_MAX_BYTES:
+                    raise ApiError(413, "That's too big to show")
+                shows.append(s)
+                changed()
+                return {"id": s["id"]}
+            s = next((x for x in shows if parts and x["id"] == parts[0]), None)
+            if not s:
+                raise ApiError(404, "That isn't being shown any more")
+            action = parts[1] if len(parts) > 1 else None
+            if method == "DELETE" and action is None:
+                if s["by"] != token and not gm:
+                    raise ApiError(403, "Only whoever showed it can take it back")
+                shows.remove(s)
+                changed()
+                return {"ok": True}
+            if method == "POST" and action == "seen":
+                who = str(body.get("character") or "")
+                if who == "gm":
+                    if not (gm and s["gm"]):
+                        raise ApiError(403, "That wasn't shown to you")
+                else:
+                    c = state["characters"].get(who)
+                    if not c or c["owner"] != token or who not in s["to"]:
+                        raise ApiError(403, "That wasn't shown to you")
+                if who not in s["seen"]:
+                    s["seen"].append(who)
+                prune_shows()
+                changed()
+                return {"ok": True}
+            raise ApiError(404, "Unknown endpoint")
+
+    def discard_api(self, method, parts, token):
+        """Discarded items, for the GM (see prune_shows).
+
+        POST   /api/discard {character, items}   one of your characters discards them (already taken out)
+        DELETE /api/discard/<id>                  a GM's device has taken them
+        """
+        with cond:
+            discards = state.setdefault("discards", [])
+            if method == "POST" and not parts:
+                body = self.body()
+                cid = str(body.get("character") or "")
+                c = state["characters"].get(cid)
+                if not c or c["owner"] != token:
+                    raise ApiError(403, "You can only discard your own characters' things")
+                items = clean_treasure_items(body.get("items"))[:500]
+                if not items:
+                    raise ApiError(400, "Nothing to discard")
+                if len(discards) >= 500 or sum(1 for x in discards if x["character"] == cid) >= DISCARDS_PER_CHARACTER:
+                    raise ApiError(429, "The GM has a lot waiting: try again once they've taken it")
+                d = {"id": new_id("d"), "character": cid, "name": c["name"], "items": items, "at": now_ms()}
+                if len(json.dumps(d)) > DISCARD_MAX_BYTES:
+                    raise ApiError(413, "That's too big to discard in one go")
+                discards.append(d)
+                changed()
+                return {"id": d["id"]}
+            if method == "DELETE" and len(parts) == 1:
+                if not self.is_gm(token):
+                    raise ApiError(403, "Only a GM can do that")
+                state["discards"] = [x for x in discards if x["id"] != parts[0]]
+                changed()
+                return {"ok": True}
             raise ApiError(404, "Unknown endpoint")
 
     def gm_api(self, method, parts, token):
