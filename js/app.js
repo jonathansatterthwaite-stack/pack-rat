@@ -219,7 +219,8 @@ function openModal(title, body, { wide = false, footer = null, head = null, back
     root.append(overlay);
     document.body.classList.add("modal-open");
   }
-  const first = panel.querySelector(".modal-body input:not([type=checkbox]), .modal-body select, .modal-body textarea");
+  // (not in a list shown in it, as a container's contents: its search would open its suggestions over it)
+  const first = [...panel.querySelectorAll(".modal-body input:not([type=checkbox]), .modal-body select, .modal-body textarea")].find(x => !x.closest(".item-manager"));
   if (first && !docked && window.matchMedia("(pointer: fine)").matches) setTimeout(() => first.focus(), 30);
   return close;
 }
@@ -2985,7 +2986,7 @@ function saveEntryItem(entryUid, snap, msg, after = null) {
   if (others <= 0) return apply(true);
   let close;
   close = openModal("Change the other copies too?", h("p", null,
-    `${plural(others, "other copy", "other copies")} of “${mine.name}” (in inventories, hoards or shops) come from the same custom item.`),
+    `${plural(others, "other copy", "other copies")} of “${mine.name}” (in inventories, hoards or shops) ${others === 1 ? "comes" : "come"} from the same custom item.`),
   { footer: [
     h("button", { class: "btn", onclick: () => close() }, "Cancel"),
     h("button", { class: "btn", onclick: () => { close(); apply(false); } }, "A new version for this one"),
