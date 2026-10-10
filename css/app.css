@@ -212,11 +212,14 @@ input:invalid { border-color: var(--bad); }
 .coin b { font-size: 1.05rem; }
 .coin.pp b { color: #8fa9c4; } .coin.gp b { color: #d4a72c; } .coin.ep b { color: #9fb0a0; }
 .coin.sp b { color: #a3a3a3; } .coin.cp b { color: #c07a45; }
-.abilities { display: flex; gap: 10px; margin: 6px 0 2px; }
-.ability { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: .75rem; font-weight: 700; color: var(--muted); }
-.ability input { width: 58px; text-align: center; font-size: 1.1rem; font-weight: 700; padding: 4px; min-height: 36px; }
-.ability small { font-size: .8rem; color: var(--text); }
-.ability select { width: 76px; text-align: center; font-size: 1rem; font-weight: 700; padding: 4px; min-height: 36px; }
+.abilities { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px; margin: 6px 0 2px; }
+.ability { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: .72rem; font-weight: 700; color: var(--muted); }
+.ability input { width: 40px; text-align: center; font-size: 1rem; font-weight: 700; padding: 3px 1px; min-height: 32px; }
+.ability small { font-size: .78rem; color: var(--text); }
+/* The carry multiplier: a secondary setting, smaller than the scores. */
+.ability.carry { font-size: .66rem; }
+.ability.carry select { width: 48px; min-width: 0; font-size: .75rem; font-weight: 600; padding: 2px 12px 2px 3px; min-height: 26px; margin-top: 3px; background-position: right 2px center; background-size: 9px; }
+.ability.carry small { font-size: .7rem; color: var(--muted); font-weight: 600; }
 
 /* Character panel: collapsible; closed, its header shows the coins (opens the purse) and weight carried. */
 .panels { display: flex; flex-direction: column; gap: 12px; margin-bottom: 12px; }
@@ -626,6 +629,17 @@ input.settle-n { width: 70px; flex: none; }
 .coin-away { list-style: none; margin: 0; padding: 0; }
 .coin-away li { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
 .coin-away .grow { flex: 1; }
+/* A container's details: what's in it, in the inventory's own list; the coin purse's tools. */
+.entry-contents { margin: 8px 0 12px; }
+.purse-tools { margin-bottom: 8px; }
+.compartments-edit { display: grid; gap: 8px; }
+.compartment-edit { border: 1px solid var(--border); border-radius: 10px; padding: 8px; display: grid; gap: 8px; }
+.compartment-more summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
+.compartment-more .form { margin-top: 8px; }
+.purse-tools h4 { margin: 12px 0 6px; }
+.coin-total { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.purse-tools .coin-amount { width: 6em; flex: none; }
+.purse-tools select { width: auto; flex: none; }
 .allows-rules { display: grid; gap: 8px; }
 .allows-rule { display: flex; align-items: flex-start; gap: 6px; flex-wrap: wrap; }
 .allows-rule > select { flex: 0 1 auto; width: auto; }
@@ -641,14 +655,11 @@ input.settle-n { width: 70px; flex: none; }
 .slot-box { border: 1.5px dashed var(--border); border-radius: var(--radius); padding: 8px; }
 .slot-box.full { border-style: solid; }
 .slot-head { display: flex; justify-content: space-between; margin-bottom: 4px; }
-.compartment { margin: 6px 0 0 12px; border-left: 2px solid var(--border); padding-left: 8px; }
-.comp-cap { flex: 0 1 200px !important; }
+.action-row > .comp-cap { flex: 0 1 200px !important; }
 .actions-rows { display: grid; gap: 6px; }
 .action-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .action-row > input { flex: 1 1 140px; min-width: 0; }
 .action-row > select { flex: 1 1 150px; width: auto; min-width: 0; }
-.coin-put { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: end; }
-.coin-put .coin-put-n { width: 100%; }
 .state-row > .grow { flex: 1; min-width: 0; }
 .feature-group-head { margin: 10px 0 4px; font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 .entry-history ul, .show-contents { margin: 4px 0 0; padding-left: 18px; font-size: .9rem; }
@@ -824,7 +835,7 @@ section { margin-bottom: 28px; }
 .tpl-tile { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); text-align: left; }
 button.tpl-tile:hover { border-color: var(--accent); }
 .tpl-swatch { width: 26px; height: 6px; border-radius: 99px; }
-.tpl-actions { display: flex; gap: 12px; margin-top: 6px; font-size: .88rem; }
+.tpl-actions { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; font-size: .88rem; }
 .tpl-fields { display: flex; flex-direction: column; gap: 8px; }
 .tpl-field { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .tpl-field > input[type=text]:first-child { flex: 1 1 160px; width: auto; }
@@ -1106,9 +1117,13 @@ a.btn { text-decoration: none; }
 .tpl-swatch.tpl-shades span { flex: 1; }
 .sub-chips { margin-top: -4px; }
 .tpl-types { display: flex; flex-direction: column; gap: 2px; width: 100%; }
-.tpl-type { display: flex; align-items: center; gap: 8px; font-size: .85rem; }
-.tpl-type > span:nth-child(2) { flex: 1; min-width: 0; }
+.tpl-type { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 10px; font-size: .85rem; padding: 4px 0; border-top: 1px solid var(--border); }
+/* The Templates tab: tiles of any height flow down columns (one on a phone). */
+.tpl-grid.tpl-tree { display: block; column-width: 300px; column-gap: 10px; }
+.tpl-tree > .tpl-tile { break-inside: avoid; width: 100%; margin-bottom: 10px; }
+.tpl-type > span:nth-child(2) { flex: 1 1 8em; min-width: 0; }
 .tpl-type .link { font-size: .82rem; }
+.tpl-type-actions { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 2px 12px; padding-left: 18px; }
 .sub-chips .chip-btn { font-size: .8rem; }
 
 /* ------------------------------------------------------------ template shades */
@@ -1133,6 +1148,7 @@ a.btn { text-decoration: none; }
 .strapped-head { display: flex; align-items: center; gap: 6px; padding: 6px 12px; color: var(--muted); }
 .strapped-head h4 { margin: 0; flex: 1; font-size: .85rem; font-family: var(--font); text-transform: uppercase; letter-spacing: .05em; }
 .strapped-head .icon { width: 15px; height: 15px; }
+.strapped-head .collapse { color: inherit; }
 .strapped .row { background: none; }
 .strapped .row:first-of-type { border-top: 1px solid var(--border); }
 .strapped > .tiles:not(.detail-minimal) { padding-top: 0; }
@@ -1332,7 +1348,6 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
 .sell-settings { display: flex; flex-direction: column; gap: 6px; }
 .type-rates { columns: 230px; column-gap: 24px; }
 .type-rate { display: flex; align-items: center; gap: 8px; }
-.type-rate-group { display: flex; flex-direction: column; gap: 4px; break-inside: avoid; margin-bottom: 8px; }
 .type-rate-head { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: .85rem; margin-top: 2px; }
 .type-rate.sub { padding-left: 14px; }
 .type-rate > span:nth-child(2) { flex: 1; }
@@ -1560,3 +1575,6 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
 .rule-help { align-self: stretch; }
 .rule-help summary { cursor: pointer; }
 .tpl-tile.example { border-style: dashed; }
+
+/* A deleted template still used by items (and its filter): faded. */
+.ghost { opacity: .5; }

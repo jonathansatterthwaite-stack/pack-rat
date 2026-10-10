@@ -622,14 +622,29 @@ function coinChips(coins) {
     h("b", { style: c.color ? { color: c.color } : null }, (coins[c.key] || 0).toLocaleString()), " ", c.key));
 }
 
-// Inventory filter: "all", "equipped", or a group (Gear & Tools…), optionally narrowed to one
-// of its subcategories (a type in a combined group, or a category); or "custom" (catalogs).
-function invTypeMatches(e, group, sub = null) {
-  if (group === "all") return true;
-  if (group === "equipped") return e.equipped;
-  if (group === "custom") return (e.srcId || "").startsWith("custom-");
-  if (groupOfItem(e.item)?.id !== group) return false;
-  return !sub || !!subcategories(group).find(s => s.key === sub)?.match(e.item);
+// Inventory filter: "all", "equipped", or a template (Gear & Tools…: its items and those of the
+// templates under it), optionally narrowed to one of its kinds (a template under it, or a
+// category), and that one to one of its own (Gear & Tools · Tools · Artisan's Tools); or
+// "custom" (catalogs).
+function invTypeMatches(e, type, sub = null, sub2 = null) {
+  if (type === "all") return true;
+  if (type === "equipped") return e.equipped;
+  if (type === "custom") return (e.srcId || "").startsWith("custom-");
+  if (!inTemplate(e.item, templateAlias(type))) return false;
+  if (sub && !subcategories(templateAlias(type)).find(s => s.key === sub)?.match(e.item)) return false;
+  return !sub2 || !!subcategories(sub).find(s => s.key === sub2)?.match(e.item);
+}
+// The template a kind is (a sub-filter that's a template under it), if it has kinds of its own.
+const kindTemplate = sub => { const t = sub && templateById(sub); return t && subcategories(t).length > 1 ? t : null; };
+
+// A deleted template still used (a ghost) shows faded.
+const ghostly = (el, tpl) => { if (tpl?.ghost && el) { el.classList.add("ghost"); el.title = `${tpl.name}: deleted, still used by some items`; } return el; };
+
+// The templates as a choice list, in the tree's order (indented under the one they're under).
+function templateOptions(selected, { exclude = null, none = null, ghosts = false } = {}) {
+  const list = treeTemplates({ ghosts }).filter(t => !exclude || !templateLineage(t).some(x => x.id === exclude));
+  return [none && h("option", { value: "", selected: !selected }, none),
+    ...list.map(t => h("option", { value: t.id, selected: t.id === selected }, "\u2003".repeat(templateDepth(t)) + t.name + (t.ghost ? " (deleted)" : "")))];
 }
 
 // A row of chips, keeping the selected one scrolled into view on narrow screens.
@@ -644,19 +659,22 @@ function chipRow(label, chips, cls = "") {
   return row;
 }
 
-// Subcategory chips for a group: each in its shade of the group's hue. count(sub) -> number or null (hide).
-function subChips(groupId, active, count, onPick) {
-  const subs = subcategories(groupId);
+// A template's kinds as chips: each in its shade of the template's colour. count(sub) -> number or null (hide).
+function subChips(tplId, active, count, onPick) {
+  const t = templateById(templateAlias(tplId));
+  const subs = subcategories(t);
+  // In the shades its items show: a kind's own kinds (Tools' categories) within the kind's shade.
+  const src = colourSource(t), outer = src === t ? [] : subcategories(src), at = outer.findIndex(x => x.key === t.id);
+  const dot = i => at >= 0 ? shade(templateHue(src), at, outer.length, i, subs.length) : shade(templateHue(t), i, subs.length);
   const shown = subs.map((s, i) => ({ ...s, i, n: count(s) })).filter(s => s.n !== 0);
   if (shown.length < 2) return null;
   const chip = (key, label, n, dot) => h("button", {
     class: "chip-btn" + (active === key ? " active" : ""), role: "tab", "aria-selected": String(active === key),
     onclick: () => onPick(key),
   }, dot, label, n != null && h("span", { class: "chip-count" }, n));
-  const g = groupById(groupId);
-  return chipRow("Filter within " + g.name, [
-    chip(null, "All " + g.name.toLowerCase(), null),
-    shown.map(s => chip(s.key, s.label, s.n, colorDot(shade(groupHue(groupId), s.i, subs.length), s.label))),
+  return chipRow("Filter within " + templatePlural(t), [
+    chip(null, "All " + templatePlural(t).toLowerCase(), null),
+    shown.map(s => chip(s.key, s.label, s.n, colorDot(dot(s.i), s.label))),
   ], "sub-chips");
 }
 
@@ -666,7 +684,7 @@ const listed = char => char.items.filter(e => !inDeck(char, e));
 function matchesSearch(item, q) {
   if (!q) return true;
   q = q.toLowerCase();
-  return [item.name, item.category, item.description, item.body, item.author, item.damageType, itemTemplate(item).name, groupOfItem(item)?.name, ...(item.properties || [])]
+  return [item.name, item.category, item.description, item.body, item.author, item.damageType, ...templateLineage(itemTemplate(item)).flatMap(t => [t.name, t.plural]), ...(item.properties || [])]
     .some(v => v && String(v).toLowerCase().includes(q));
 }
 
@@ -719,7 +737,7 @@ function sortControl(state, key, sorts, onChange) {
 //     rootLabel    the top section: "On person", "Loose"…
 //     open(e)      the row's main button (its details)
 //     setQty(e, n) − / + and the number (absent: no quantity controls; "×3" shows instead)
-//     move(uid, parent, strapped)   drag and drop between sections (absent: no dragging)
+//     move(uid, parent, compartment) drag and drop between sections (absent: no dragging)
 //     reorder(ids) moving container sections up and down (absent: no arrows)
 //     extras(e)    more controls at the row's end (equip, a pick, states…); on tiles, in the item menu
 //     menu(e)      the item menu's options (js/radial.js), instead of extras' buttons
@@ -729,7 +747,8 @@ function sortControl(state, key, sorts, onChange) {
 //     tags(e)      tags after the name ("custom")
 //     showWorth    a worth column (catalogs);  noCog: no Clockwork cog (catalogs: not an inventory's)
 // itemManager (below) gives a storage its list's search, filters, sort and display options.
-//     search, type, typeSub   filters (the inventory's search box and type chips)
+//     search, type, typeSub, typeSub2   filters (the inventory's search box and type chips: a
+//                  template, one of its kinds, and that one's own kinds)
 //     keep(e)      shown whatever the search (a trade's picked items)
 //     empty()      what shows when it holds nothing }
 
@@ -739,16 +758,16 @@ const foldKey = (st, uid) => st.id ? `${st.id}:${uid}` : uid;
 // The search box takes words, and more (the view menu's Search tips list them):
 //   words, "a phrase"      the item as it is now (name, category, description, properties…), its
 //                          notes and its own name; every word must be found
-//   t:armor  t:"gear & tools"   its type: the group, the template or the item's category
+//   t:armor  t:"gear & tools"   its type: its template (or one it's under) or the item's category
 //   c:backpack             inside a container whose name has it (at any depth)
 //   s:equipped  s:attuned  s:custom  s:container   equipped, in a state, custom, holds things
 //   -word  -t:weapons      not
 // The keys are single letters; the whole words work too (type:, container:, state:).
 // They're a registry: SEARCH_KEYS.<key> = { label, hint, example, test(char, e, value), values(char) }.
 const SEARCH_KEYS = {
-  t: { label: "type", hint: "Of a type: its group, template or category", example: "t:armor",
-    test: (char, e, v) => { const it = currentItem(e, char), g = groupOfItem(it);
-      return [g?.name, g?.id, itemTemplate(it)?.name, it.category].some(x => x && String(x).toLowerCase().includes(v)); } },
+  t: { label: "type", hint: "Of a type: its template (or one it's under) or category", example: "t:armor",
+    test: (char, e, v) => { const it = currentItem(e, char);
+      return [...templateLineage(itemTemplate(it)).flatMap(t => [t.name, t.plural, t.id]), it.category].some(x => x && String(x).toLowerCase().includes(v)); } },
   c: { label: "container", hint: "Inside a container whose name has it", example: "c:backpack",
     test: (char, e, v) => {
       const seen = new Set();
@@ -771,7 +790,7 @@ const SEARCH_KEYS = {
 const SEARCH_ALIASES = { type: "t", container: "c", state: "s" };
 const searchKey = k => { k = (k || "").toLowerCase(); return SEARCH_KEYS[k] ? k : SEARCH_ALIASES[k] || null; };
 // The values each key suggests, for a list's items (lower case; quoted when they have spaces).
-SEARCH_KEYS.t.values = char => [...new Set(listed(char).map(e => groupOfItem(currentItem(e, char))?.name).filter(Boolean))];
+SEARCH_KEYS.t.values = char => [...new Set(listed(char).map(e => templatePlural(topTemplateOf(currentItem(e, char)))).filter(Boolean))];
 SEARCH_KEYS.s.values = () => ["equipped", "custom", "container", ...systemStates().map(s => s.label)];
 SEARCH_KEYS.c.values = char => [...new Set(listed(char).filter(e => holdsItems(char, e)).map(e => entryName(e)))];
 
@@ -872,7 +891,7 @@ const listStates = {};
 function listState(key, o = {}) {
   const old = key === "inventory"; // the inventory's sort was saved before lists had their own
   return listStates[key] ||= {
-    search: "", type: "all", sub: null, limit: o.limit || Infinity,
+    search: "", type: "all", sub: null, sub2: null, limit: o.limit || Infinity,
     sort: readPref(`packrat-sort-${key}`, old ? readPref("packrat-sort", o.sort) : o.sort || "name"),
     reverse: readPref(`packrat-sort-rev-${key}`, old ? readPref("packrat-sort-rev", "") : "") === "1",
   };
@@ -887,29 +906,34 @@ function listPrefs(key) {
   };
 }
 
-// The type chips: All, Equipped (if anything is), each group there is, Custom (catalogs); then
-// the chosen group's subcategories.
+// The type chips: All, Equipped (if anything is), each top template there is, Custom (catalogs);
+// then the chosen one's kinds, and the chosen kind's own (its categories).
 function typeChips(st, state, o, onPick) {
   const items = listed(st.char);
   if (!items.length) return null;
   const counts = {};
-  for (const e of items) { const g = groupOfItem(e.item)?.id; counts[g] = (counts[g] || 0) + 1; }
+  for (const e of items) { const g = topTemplateOf(e.item)?.id; counts[g] = (counts[g] || 0) + 1; }
   const equipped = items.filter(e => e.equipped).length, custom = o.customChip ? items.filter(e => invTypeMatches(e, "custom")).length : 0;
   const chip = (key, label, n, dot) => h("button", {
     class: "chip-btn" + (state.type === key ? " active" : ""), role: "tab", "aria-selected": String(state.type === key),
-    onclick: () => { state.type = key; state.sub = null; onPick(); },
+    onclick: () => { state.type = key; state.sub = state.sub2 = null; onPick(); },
   }, dot, label, h("span", { class: "chip-count" }, n));
   const row = chipRow("Filter by type", [
     chip("all", "All", items.length),
     equipped > 0 && chip("equipped", "Equipped", equipped),
-    systemGroups().filter(g => counts[g.id]).map(g => chip(g.id, g.name, counts[g.id], colorDot(groupColor(g.id), g.name))),
+    topTemplates().filter(t => counts[t.id]).map(t => ghostly(chip(t.id, templatePlural(t), counts[t.id], colorDot(templateColor(t), templatePlural(t))), t)),
     custom > 0 && chip("custom", "Custom", custom),
   ]);
   const inSearch = e => !state.search.trim() || entryMatches(st.char, e, state.search.trim());
-  const sub = groupById(state.type) && subChips(state.type, st.typeSub,
+  const sub = templateById(templateAlias(state.type)) && subChips(state.type, st.typeSub,
     sc => items.filter(e => invTypeMatches(e, state.type, sc.key) && inSearch(e)).length,
-    key => { state.sub = key; onPick(); });
-  return [row, sub];
+    key => { state.sub = key; state.sub2 = null; onPick(); });
+  // The chosen kind's own kinds (its categories): one level more.
+  const kind = kindTemplate(st.typeSub);
+  const sub2 = kind && subChips(kind.id, st.typeSub2,
+    sc => items.filter(e => invTypeMatches(e, state.type, st.typeSub, sc.key) && inSearch(e)).length,
+    key => { state.sub2 = key; onPick(); });
+  return [row, sub, sub2];
 }
 
 // A flat list (a catalog): filtered, sorted, a page at a time. A long one is drawn a screenful first
@@ -917,7 +941,7 @@ function typeChips(st, state, o, onPick) {
 // the catalog doesn't wait for hundreds of rows.
 function flatList(st, state, o, redraw) {
   const q = (st.search || "").trim();
-  const hits = sortEntries(st, listed(st.char).filter(e => invTypeMatches(e, st.type || "all", st.typeSub) && (!q || entryMatches(st.char, e, q) || st.keep?.(e))));
+  const hits = sortEntries(st, listed(st.char).filter(e => invTypeMatches(e, st.type || "all", st.typeSub, st.typeSub2) && (!q || entryMatches(st.char, e, q) || st.keep?.(e))));
   const shown = hits.slice(0, state.limit), first = Math.max(40, Math.ceil((window.scrollY + window.innerHeight * 2) / 36));
   const list = hits.length ? entryList(st, shown.slice(0, first)) : null;
   if (list && shown.length > first) drawRest(st, list, shown.slice(first));
@@ -939,9 +963,10 @@ function itemManager(o) {
     const st = o.storage();
     if (parts.search) st.search = state.search;
     const items = listed(st.char);
-    if (state.type !== "all" && !items.some(e => invTypeMatches(e, state.type))) { state.type = "all"; state.sub = null; }
+    if (state.type !== "all" && !items.some(e => invTypeMatches(e, state.type))) { state.type = "all"; state.sub = state.sub2 = null; }
     st.type = state.type;
     st.typeSub = state.sub && items.some(e => invTypeMatches(e, state.type, state.sub)) ? state.sub : null;
+    st.typeSub2 = st.typeSub && state.sub2 && items.some(e => invTypeMatches(e, state.type, st.typeSub, state.sub2)) ? state.sub2 : null;
     return Object.assign(st, { sort: state.sort, reverse: state.reverse, prefs, flat: st.flat ?? o.flat });
   };
   // The view menu: the filters (type chips), sort and display options, in a panel over the list,
@@ -950,7 +975,7 @@ function itemManager(o) {
   const filtered = () => state.type !== "all";
   let menuOpen = false, menuEl = null, viewBtn = null, searchInput = null;
   const refresh = () => { state.limit = o.limit || Infinity; drawList(); drawMenu(); };
-  const clearFilters = () => { state.type = "all"; state.sub = null; refresh(); };
+  const clearFilters = () => { state.type = "all"; state.sub = state.sub2 = null; refresh(); };
   const onOutside = ev => { if (!menuEl?.contains(ev.target) && !viewBtn?.contains(ev.target)) closeMenu(); };
   const onKey = ev => { if (ev.key === "Escape") { ev.stopPropagation(); closeMenu(); viewBtn?.focus(); } };
   function closeMenu() {
@@ -998,11 +1023,12 @@ function itemManager(o) {
   // The filters in use, under the search (so none is forgotten): each one, to take off.
   const activeFilters = st => {
     if (!filtered()) return null;
-    const label = groupById(state.type)?.name || { equipped: "Equipped", custom: "Custom" }[state.type] || state.type;
-    const sub = st.typeSub && subcategories(state.type).find(s => s.key === st.typeSub)?.label;
+    const tf = templateById(templateAlias(state.type)), label = (tf && templatePlural(tf)) || { equipped: "Equipped", custom: "Custom" }[state.type] || state.type;
+    const sub = st.typeSub && subcategories(templateAlias(state.type)).find(s => s.key === st.typeSub)?.label;
+    const sub2 = st.typeSub2 && subcategories(st.typeSub).find(s => s.key === st.typeSub2)?.label;
     return h("div", { class: "chips active-filters", role: "group", "aria-label": "Filters in use" },
       h("button", { type: "button", class: "chip-btn active", title: "Take this filter off", onclick: clearFilters },
-        sub ? `${label} · ${sub}` : label, icon("x")));
+        [label, sub, sub2].filter(Boolean).join(" · "), icon("x")));
   };
   // The filters and the items (typing in the search redraws only these, keeping the cursor).
   const drawList = () => {
@@ -1110,7 +1136,7 @@ function storageTree(st) {
   if (!listed(char).length) return [st.empty ? st.empty() : h("p", { class: "muted pad" }, "Nothing here.")];
   if (q || type !== "all") {
     // Filtered: one flat list, with each item tagged by the container it's in.
-    const hits = listed(char).filter(e => invTypeMatches(e, type, st.typeSub) && (entryMatches(char, e, q) || st.keep?.(e)));
+    const hits = listed(char).filter(e => invTypeMatches(e, type, st.typeSub, st.typeSub2) && (entryMatches(char, e, q) || st.keep?.(e)));
     if (!hits.length) return [h("p", { class: "muted pad" }, "Nothing matches.")];
     const weight = hits.reduce((sum, e) => sum + entryOwnWeight(e), 0);
     return [h("div", { class: "group" },
@@ -1120,7 +1146,7 @@ function storageTree(st) {
       entryList(st, sortEntries(st, hits), true))];
   }
   const top = childrenOf(char, null).filter(e => !inDeck(char, e));
-  const containers = orderContainers(st, top.filter(e => holdsItems(char, e)));
+  const containers = orderContainers(st, top.filter(e => holdsItems(char, e) && hasSection(e)));
   const key = foldKey(st, "person"), collapsed = ui.collapsed.has(key);
   const toggle = () => { collapsed ? ui.collapsed.delete(key) : ui.collapsed.add(key); render(); };
   return [
@@ -1130,7 +1156,7 @@ function storageTree(st) {
         h("button", { class: "collapse" + (collapsed ? " closed" : ""), onclick: toggle, "aria-expanded": String(!collapsed) }, icon("chevron"),
           h("h3", null, st.rootLabel || "On person")),
         h("span", { class: "muted", title: "Everything here, including what's in containers" },
-          fmtWeight(top.reduce((s, e) => s + entryTotalWeight(char, e), 0)))),
+          st.rootLoad || fmtWeight(top.reduce((s, e) => s + entryTotalWeight(char, e), 0)))),
       !collapsed && (top.length ? entryList(st, sortEntries(st, top)) : h("p", { class: "muted pad" }, "Nothing here.")))),
     ...containers.map((c, i) => containerGroup(st, c, 0, containers, i)),
   ];
@@ -1156,12 +1182,12 @@ function moveContainer(st, siblings, index, dir) {
 function containerGroup(st, c, depth, siblings = [c], index = 0) {
   const char = st.char;
   const all = sortEntries(st, childrenOf(char, c.uid).filter(e => !inDeck(char, e)));
-  // Sealed: what's inside isn't shown (but to the GM).
-  const sealed = !!c.item.sealed && !isGmDevice() && childrenOf(char, c.uid).some(k => !k.strapped);
   const comps = compartmentsOf(c);
-  const inComp = k => !k.strapped && comps.some(x => x.id === k.compartment);
-  const kids = sealed ? [] : all.filter(k => !k.strapped && !inComp(k));
-  const outside = all.filter(k => k.strapped);
+  const inMain = k => !comps.some(x => x.id === entryComp(k));
+  // Sealed: what's inside isn't shown (but to the GM). Only in its details: shown there.
+  const sealed = sealedHere(c) && childrenOf(char, c.uid).some(inMain);
+  const detailsOnly = contentsView(c) === "details";
+  const kids = all.filter(inMain);
   const spec = holderSpec(c);
   const fill = fillLevel(char, c);
   const key = foldKey(st, c.uid), collapsed = ui.collapsed.has(key);
@@ -1181,32 +1207,38 @@ function containerGroup(st, c, depth, siblings = [c], index = 0) {
       iconBtn("more", "Container details", () => st.open(c))), fill),
     !collapsed && [
       entryList(st, kids),
-      orderContainers(st, kids.filter(k => holdsItems(char, k))).map((k, i, list) => containerGroup(st, k, depth + 1, list, i)),
+      orderContainers(st, kids.filter(k => holdsItems(char, k) && hasSection(k))).map((k, i, list) => containerGroup(st, k, depth + 1, list, i)),
       !kids.length && h("p", { class: "muted pad" }, sealed ? "Sealed: what's in it can't be seen."
+        : detailsOnly ? "What's in it shows in its details."
         : spec ? `Empty — holds ${spec.limit} ${spec.unit}s (${spec.label.toLowerCase()}).${how}` : `Empty.${how}`),
-      // Its compartments: each with what's in it, and its load (its own capacity, or the container's).
-      !sealed && comps.map(k => {
-        const here = all.filter(x => !x.strapped && x.compartment === k.id);
-        const w = here.reduce((s, x) => s + entryTotalWeight(char, x), 0);
-        return dropZone(st, c.uid, h("div", { class: "compartment" },
-          h("div", { class: "strapped-head" }, icon("bag"), h("h4", null, k.name),
-            h("span", { class: "muted" + (k.capacityLb && w > k.capacityLb ? " warn-text" : "") }, k.capacityLb ? `${+w.toFixed(2)} / ${k.capacityLb} ${weightUnit()}` : fmtWeight(w))),
-          here.length ? [entryList(st, here), orderContainers(st, here.filter(x => holdsItems(char, x))).map((x, i, list) => containerGroup(st, x, depth + 1, list, i))]
-            : h("p", { class: "muted pad small" }, `Empty.${st.move ? " Drag items here, or choose it as their Location." : ""}`)), false, k.id);
-      }),
-      ((st.move && canStrap(c)) || outside.length > 0) && dropZone(st, c.uid, h("div", { class: "strapped" },
-        h("div", { class: "strapped-head" }, icon("link"), h("h4", null, "Strapped outside"),
-          h("span", { class: "muted" }, outside.length ? fmtWeight(strappedWeight(char, c)) : "")),
-        outside.length
-          ? [entryList(st, outside),
-             orderContainers(st, outside.filter(k => holdsItems(char, k))).map((k, i, list) => containerGroup(st, k, depth + 1, list, i))]
-          : h("p", { class: "muted pad small" }, "Bedrolls, rope, a shield… Drag items here or set Location to “strapped to”.")), true),
+      comps.map(k => compartmentSection(st, c, k, all, depth)),
     ]));
+}
+
+// One of a container's compartments, in its section: what's in it, and its load (its own
+// capacity, its part of the container's, or just the weight). Shown its own way (contentsView).
+function compartmentSection(st, c, k, all, depth) {
+  const char = st.char, view = spaceView(c, k);
+  if (view === "details") return null; // (in the container's details)
+  const raw = char.items.filter(inSpace(char, c, k)), here = all.filter(x => entryComp(x) === k.id);
+  if (!raw.length && !st.move) return null;
+  const outside = k.id === OUTSIDE, sealed = view === "sealed" && !isGmDevice() && raw.length > 0;
+  const hint = st.move ? " Drag items here, or choose it as their Location." : "";
+  const key = foldKey(st, `${c.uid}:${k.id}`), collapsed = ui.collapsed.has(key);
+  const toggle = () => { collapsed ? ui.collapsed.delete(key) : ui.collapsed.add(key); render(); };
+  return dropZone(st, c.uid, h("div", { class: "strapped compartment" },
+    h("div", { class: "strapped-head" },
+      h("button", { class: "collapse" + (collapsed ? " closed" : ""), type: "button", onclick: toggle, "aria-expanded": String(!collapsed) },
+        icon("chevron"), icon(outside ? "link" : "bag"), h("h4", null, k.name)),
+      h("span", { class: "muted" + (spaceOver(char, c, k) ? " warn-text" : "") }, raw.length || spaceCapacity(c, k) || spaceSpec(c, k) ? spaceLoad(char, c, k) : "")),
+    collapsed ? null : sealed ? h("p", { class: "muted pad small" }, "Sealed: what's in it can't be seen.")
+      : here.length ? [entryList(st, here), orderContainers(st, here.filter(x => holdsItems(char, x) && hasSection(x))).map((x, i, list) => containerGroup(st, x, depth + 1, list, i))]
+      : h("p", { class: "muted pad small" }, (outside ? "Bedrolls, rope, a shield…" : "Empty.") + hint)), k.id);
 }
 
 // Desktop drag-and-drop between a storage's sections; touch uses the Move menu. Drags only land
 // in the storage they came from.
-function dropZone(st, parentUid, el, strapped = false, compartment = null) {
+function dropZone(st, parentUid, el, compartment = null) {
   if (!st.move) return el;
   el.addEventListener("dragover", e => {
     if (!e.dataTransfer.types.includes("text/entry")) return;
@@ -1218,49 +1250,46 @@ function dropZone(st, parentUid, el, strapped = false, compartment = null) {
     e.preventDefault(); e.stopPropagation();
     el.classList.remove("drop-target");
     const [from, id] = e.dataTransfer.getData("text/entry").split("|");
-    if (from === (st.id || "inv") && id) st.move(id, parentUid, strapped, compartment);
+    if (from === (st.id || "inv") && id) st.move(id, parentUid, compartment);
   });
   return el;
 }
 const dragFrom = (st, e) => st.move ? { draggable: "true",
   ondragstart: ev => { ev.dataTransfer.setData("text/entry", `${st.id || "inv"}|${e.uid}`); ev.dataTransfer.effectAllowed = "move"; } } : {};
 
-function moveEntry(id, parentUid, strapped = false, compartment = null) {
+function moveEntry(id, parentUid, compartment = null) {
   const char = store.char();
   const entry = char.items.find(x => x.uid === id);
-  strapped = !!(parentUid && strapped);
-  compartment = parentUid && !strapped && compartment || null;
-  if (!entry || entry.uid === parentUid || (entry.parent === parentUid && !!entry.strapped === strapped && (entry.compartment || null) === compartment)) return;
+  if (!entry || entry.uid === parentUid) return;
   if (parentUid && isDescendant(char, parentUid, id)) return toast("Can't put a container inside itself");
   const holder = parentUid && char.items.find(x => x.uid === parentUid);
-  const comp = compartment && compartmentsOf(holder).find(c => c.id === compartment);
-  const name = holder ? entryName(holder) : null;
-  const dest = !name ? "on person" : strapped ? `the outside of ${name}` : comp ? `${name}: ${comp.name}` : name;
-  // Cases and quivers take only their own kind of thing, and only as many as fit.
-  if (holder && !strapped && !containerAllows(holder, entry.item, entry.srcId))
-    return toast(`The ${name} only holds ${rulesLabel(containerRules(holder)).toLowerCase()}`);
-  const spec = holder && !strapped && holderSpec(holder);
+  const comp = holder && compartment && compartmentsOf(holder).find(c => c.id === compartment) || null;
+  if ((entry.parent || null) === (parentUid || null) && (compartmentOf(char, entry)?.id || null) === (comp?.id || null)) return;
+  const name = holder ? entryName(holder) : null, space = comp ? `${name}: ${comp.name}` : name;
+  const dest = !name ? "on person" : space;
+  // Cases and quivers (and compartments with rules) take only their own kind of thing, and only as many as fit.
+  if (holder && !spaceAllows(holder, comp, entry.item, entry.srcId))
+    return toast(`The ${space} only holds ${rulesLabel(containerRules(comp ? compartmentHolder(comp) : holder)).toLowerCase()}`);
+  const spec = holder && spaceSpec(holder, comp);
   if (spec) {
     const size = spec.size(entry.item, entry.srcId);
-    if (!size) return toast(`The ${name} only holds ${spec.label.toLowerCase()}`);
-    const room = Math.floor((spec.limit - holderUsed(char, holder, spec)) / size);
-    if (room <= 0) return toast(`The ${name} is full`);
+    if (!size) return toast(`The ${space} only holds ${spec.label.toLowerCase()}`);
+    const room = Math.floor((spec.limit - spaceUsed(char, holder, comp, spec)) / size);
+    if (room <= 0) return toast(`The ${space} is full`);
     if (room < entry.qty) {
       // Move what fits; the rest stays where it was.
       return commit((s, c) => {
         const x = c.items.find(x => x.uid === id);
         x.qty -= room;
         // A renamed stack keeps its name (and doesn't join an unnamed one).
-        if (x.customName) c.items.push({ ...clone(x), uid: uid(), qty: room, parent: parentUid, strapped: false, equipped: false, attuned: false, toggles: {}, states: {} });
-        else addToInventory(c, { ...clone(x.item), id: x.srcId }, room, parentUid);
+        if (x.customName) { const y = { ...clone(x), uid: uid(), qty: room, equipped: false, attuned: false, toggles: {}, states: {} }; placeEntry(y, parentUid, comp?.id); c.items.push(y); }
+        else addToInventory(c, { ...clone(x.item), id: x.srcId }, room, parentUid, comp?.id);
       }, `Moved ${room} × ${entryName(entry)} to ${dest} (it's full)`, true);
     }
   }
   commit((s, c) => {
     const x = c.items.find(x => x.uid === id);
-    x.parent = parentUid;
-    x.strapped = strapped;
-    if (comp) x.compartment = comp.id; else delete x.compartment;
+    placeEntry(x, parentUid, comp?.id);
   }, `Moved ${entryName(entry)} to ${dest}`, true);
 }
 
@@ -1269,13 +1298,14 @@ function locationLabel(char, e) {
   if (!e.parent) return null;
   const holder = char.items.find(x => x.uid === e.parent);
   const name = holder && entryName(holder);
-  return name && (e.strapped ? "on " : "in ") + name;
+  const comp = name && compartmentOf(char, e);
+  return name && (!comp ? `in ${name}` : comp.id === OUTSIDE ? `on ${name}` : `in ${name}: ${comp.name}`);
 }
 
 // A container listed as an item: what's in it ("12 items · 20 / 30 lb"), or null for anything else.
 function containerLoad(char, e) {
   if (!holdsItems(char, e)) return null;
-  const inside = childrenOf(char, e.uid).filter(k => !k.strapped);
+  const inside = childrenOf(char, e.uid).filter(k => !k.item.card);
   if (!inside.length) return "Empty";
   return `${plural(inside.length, "item")} · ${contentsLoad(char, e)}`;
 }
@@ -1909,7 +1939,7 @@ function itemDetails(item, onIcon = null, srcId = item.id, vars = null, watermar
   if (has("holds")) {
     add("Capacity", item.capacity || (item.capacityLb && item.capacityLb + " " + weightUnitFor(item.capacityLb)));
     add("Weightless", item.weightless && "Contents don't count toward carried weight");
-    add("Straps", item.straps && "Gear can be strapped to the outside");
+    add("Compartments", compartmentsOf({ item, srcId: item.id }).map(k => k.name).join(", "));
     const rules = containerRules({ item, srcId: item.id }), old = HOLDER_RULES[item.holds];
     const limit = item.holdLimit || old?.limit;
     add("Holds", rules.length > 0 && `Only ${rulesLabel(rules).toLowerCase()}${limit ? ` — up to ${limit} ${item.holdUnit || old?.unit || "item"}s` : ""}` +
@@ -1966,7 +1996,7 @@ function fieldDisplay(f, v) {
   return String(v);
 }
 
-// Option values: "" = on person, "<uid>" = inside, "<uid>:out" = strapped to the outside.
+// Option values: "" = on person, "<uid>" = inside, "<uid>:c:<id>" = in one of its compartments (its outside…).
 function containerOptions(char, exclude) {
   const entry = exclude && char.items.find(x => x.uid === exclude);
   return [h("option", { value: "" }, "On person"),
@@ -1976,19 +2006,20 @@ function containerOptions(char, exclude) {
         // Counted containers are only offered for what they take, with how full they are.
         const spec = holderSpec(c);
         const fits = !entry || entry.parent === c.uid || containerAllows(c, entry.item, entry.srcId);
+        const compFits = k => !entry || compartmentOf(char, entry)?.id === k.id && entry.parent === c.uid || spaceAllows(c, k, entry.item, entry.srcId);
         return [fits && h("option", { value: c.uid }, "In " + name + (spec ? ` (${holderUsed(char, c, spec)}/${spec.limit})` : "")),
-          ...(fits ? compartmentsOf(c).map(k => h("option", { value: `${c.uid}:c:${k.id}` }, `In ${name}: ${k.name}`)) : []),
-          canStrap(c) && h("option", { value: c.uid + ":out" }, "Strapped to " + name)];
+          ...compartmentsOf(c).filter(compFits).map(k => { const ks = spaceSpec(c, k);
+            return h("option", { value: `${c.uid}:c:${k.id}` }, `${name}: ${k.name}` + (ks ? ` (${spaceUsed(char, c, k, ks)}/${ks.limit})` : "")); })];
       }).filter(Boolean)];
 }
 
-// A place, as the location menus write it: "" (on person), "uid", "uid:out" (strapped to it) or
-// "uid:c:id" (in one of its compartments).
+// A place, as the location menus write it: "" (on person), "uid" or "uid:c:id" (in one of its
+// compartments; "uid:out", from before: its outside).
 function parseLocation(value) {
-  const [parent, out, comp] = (value || "").split(":");
-  return { parent: parent || null, strapped: out === "out", compartment: out === "c" ? comp || null : null };
+  const [parent, kind, comp] = (value || "").split(":");
+  return { parent: parent || null, compartment: kind === "c" ? comp || null : kind === "out" ? OUTSIDE : null };
 }
-const locationValue = e => e.parent ? e.parent + (e.strapped ? ":out" : e.compartment ? `:c:${e.compartment}` : "") : "";
+const locationValue = (e, char = store.char()) => { const k = compartmentOf(char, e); return e.parent ? e.parent + (k ? `:c:${k.id}` : "") : ""; };
 
 // An inventory item's details, while they're open: redrawn as soon as its states change (the
 // player ticking Attuned, a trigger cursing it, the GM identifying it), so locks and layers
@@ -1998,7 +2029,10 @@ function refreshEntryDetails() {
   const d = entryDetailsOpen;
   if (!d || !document.contains(d.panel)) { entryDetailsOpen = null; return; }
   const c = store.char(), x = c?.items.find(i => i.uid === d.uid);
-  if (x && JSON.stringify(entryStates(c, x)) !== d.states) d.reopen();
+  if (x && JSON.stringify(entryStates(c, x)) !== d.states) return d.reopen();
+  // What's in it, and the coin purse's totals, as they are now.
+  d.panel.querySelector(".entry-contents .item-manager")?.redraw?.();
+  d.panel.querySelector(".purse-tools")?.redraw?.();
 }
 
 function openEntry(entryUid, opts = {}) {
@@ -2014,10 +2048,10 @@ function openEntry(entryUid, opts = {}) {
   let close;
   const moveSel = h("select", { onchange: ev => {
     const loc = parseLocation(ev.target.value);
-    moveEntry(e.uid, loc.parent, loc.strapped, loc.compartment);
+    moveEntry(e.uid, loc.parent, loc.compartment);
     close();
   } }, containerOptions(char, e.uid));
-  moveSel.value = compartmentOf(char, e) ? locationValue(e) : e.parent ? e.parent + (e.strapped ? ":out" : "") : "";
+  moveSel.value = locationValue(e, char);
 
   const controls = h("div", { class: "entry-controls" },
     // A name of the player's own for this copy, shown instead of the item's name.
@@ -2066,34 +2100,34 @@ function openEntry(entryUid, opts = {}) {
     commit((s, c) => {
       const x = c.items.find(x => x.uid === e.uid);
       if (!x) return;
-      const where = { parent: x.parent, strapped: !!x.strapped };
+      const where = { parent: x.parent, compartment: entryComp(x) };
       if (x.qty > 1) x.qty -= 1; else removeEntry(c, x.uid);
       unpackPack(c, plan.rows, { into: plan.into, ...where });
     }, `Unpacked ${entryName(e)}`, true);
   };
   const footer = [
-    h("button", { class: "btn danger", onclick: () => confirmRemoveEntry(e.uid, () => close()) }, icon("trash"), discarding(char) ? "Discard" : "Remove"),
+    !e.purse && h("button", { class: "btn danger", onclick: () => confirmRemoveEntry(e.uid, () => close()) }, icon("trash"), discarding(char) ? "Discard" : "Remove"),
     planner && h("button", { class: "btn primary", onclick: unpack }, icon("package"), "Unpack"),
     ...itemActions(it).map((a, i) => h("button", { class: "btn", onclick: () => { close(); runItemAction(e.uid, i); } }, icon(a.effect === "fill" ? "plus" : a.effect === "random" ? "dice" : "bag"), a.label)),
     party.active && h("button", { class: "btn", onclick: () => { close(); openShowItem(e.uid); } }, icon("eye"), "Show"),
-    h("button", { class: "btn", onclick: () => { close(); openSell(e.uid); } }, icon("coins"), "Sell"),
+    !e.purse && h("button", { class: "btn", onclick: () => { close(); openSell(e.uid); } }, icon("coins"), "Sell"),
     // Player mode: no editing items (a copy can still be renamed with its display name).
     editing() && h("button", { class: "btn", onclick: () => { close(); openItemForm(base, { entryUid: e.uid }); } }, icon("edit"), "Edit"),
     editing() && h("button", { class: "btn", title: "Save a copy of this item as a reusable custom item", onclick: () => {
       commit(s => s.customItems.unshift({ ...clone(base), id: "custom-" + uid(), source: base.source || "Homebrew" }), `Saved “${base.name}” to custom items`);
     } }, icon("copy"), "Save as custom"),
-    party.active && party.others().length > 0 &&
+    !e.purse && party.active && party.others().length > 0 &&
       h("button", { class: "btn", onclick: () => { close(); openTradeBuilder(null, e.uid); } }, icon("move"), "Trade"),
   ];
   const changeIcon = (id, drawing) => {
     close();
-    commit((s, c) => {
-      const x = c.items.find(x => x.uid === e.uid);
-      if (drawing) return setItemDrawing(x.item, drawing);
-      if (id) x.item.icon = id; else delete x.item.icon;
-      setItemDrawing(x.item, null); // a chosen icon replaces a drawing
-    }, "Icon changed");
-    openEntry(e.uid);
+    const snap = clone(store.char().items.find(x => x.uid === e.uid)?.item || base);
+    if (drawing) setItemDrawing(snap, drawing);
+    else {
+      if (id) snap.icon = id; else delete snap.icon;
+      setItemDrawing(snap, null); // a chosen icon replaces a drawing
+    }
+    saveEntryItem(e.uid, snap, "Icon changed", () => openEntry(e.uid));
   };
   // Things that can be written in: read what's there, and write (more).
   const kind = pageKind(it, e.srcId);
@@ -2124,6 +2158,8 @@ function openEntry(entryUid, opts = {}) {
   const artVars = interactive ? () => ({ ...vars(), ...touch }) : vars;
   close = openModal(entryName(e), [e.customName && h("p", { class: "muted small" }, it.name),
     readBtn, liquidCap(e) > 0 && liquidControls(e), isDeckEntry(e) && deckSection(e, reopen, () => close()),
+    !isDeckEntry(e) && holdsItems(char, e) && containerContents(e),
+    e.purse && purseTools(char, () => close()),
     cardBackButton(e, () => close()), controls, planner?.el, itemDetails(shown, changeIcon, e.srcId, vars, true), layerSections(base, key => stateOn(char, e, key))],
   { footer, wide: !!planner, head: [clockworkCog(char, e, () => close()), iconFocusSwitch()], backdrop: iconBackdrop(it, artVars),
     dock: !opts.window && (() => { close(); openEntry(entryUid, { ...opts, window: true }); }) });
@@ -2176,7 +2212,7 @@ function liquidControls(e) {
 // Other stacks of exactly the same item in the same place (e.g. after a split).
 function sameStacks(char, e) {
   const json = JSON.stringify(e.item);
-  return char.items.filter(x => x !== e && x.srcId === e.srcId && x.parent === e.parent && !!x.strapped === !!e.strapped &&
+  return char.items.filter(x => x !== e && x.srcId === e.srcId && x.parent === e.parent && entryComp(x) === entryComp(e) &&
     (x.customName || "") === (e.customName || "") && JSON.stringify(x.item) === json && !char.items.some(k => k.parent === x.uid));
 }
 
@@ -2198,7 +2234,7 @@ function openSplit(entryUid) {
     summary.textContent = `${(e.qty - n).toLocaleString()} stay · ${n.toLocaleString()} in the new stack`;
   };
   const where = h("select", { "aria-label": "Put the new stack" }, containerOptions(char, e.uid));
-  where.value = e.parent ? e.parent + (e.strapped ? ":out" : "") : "";
+  where.value = locationValue(e, char);
   set(n);
   const split = () => {
     close();
@@ -2211,10 +2247,10 @@ function openSplit(entryUid) {
       c.items.splice(c.items.indexOf(x) + 1, 0, { ...clone(x), uid: newUid, qty: n, equipped: false, attuned: false, toggles: {}, states: {} });
     }, `Split ${n} × ${entryName(e)} into a new stack`, true);
     const loc = parseLocation(where.value);
-    if (loc.parent !== (e.parent || null) || loc.strapped !== !!e.strapped) {
-      moveEntry(newUid, loc.parent, loc.strapped, loc.compartment);
+    if (loc.parent !== (e.parent || null) || loc.compartment !== entryComp(e)) {
+      moveEntry(newUid, loc.parent, loc.compartment);
       // A quiver or case that took only part of it: the rest goes back into the original stack.
-      const left = store.char().items.find(x => x.uid === newUid && x.parent === e.parent && !!x.strapped === !!e.strapped);
+      const left = store.char().items.find(x => x.uid === newUid && x.parent === e.parent && entryComp(x) === entryComp(e));
       if (left) commit((s, c) => {
         const x = c.items.find(x => x.uid === entryUid), y = c.items.find(y => y.uid === newUid);
         if (!x || !y) return;
@@ -2287,51 +2323,11 @@ function openSell(entryUid) {
 
 // ------------------------------------------------------------------ coins
 
+// The Coins panel: the coin purse's details (it's made if it isn't there yet).
 function openCoins() {
-  const char = store.char();
-  const coins = { ...char.coins };
-  let close;
-  let amt = 0, denom = currency().show;
-  const body = h("div", { class: "form" },
-    h("div", { class: "coin-grid" }, coinOrder().map(k => h("label", { class: "field coin-field " + k },
-      h("span", null, k.toUpperCase()),
-      h("input", { type: "number", min: 0, inputmode: "numeric", value: coins[k] || 0,
-        oninput: ev => { coins[k] = Math.max(0, Math.floor(+ev.target.value || 0)); } })))),
-    h("h4", null, "Quick transaction"),
-    h("div", { class: "inline" },
-      h("input", { type: "number", min: 0, inputmode: "decimal", placeholder: "Amount", oninput: ev => { amt = +ev.target.value || 0; } }),
-      h("select", { onchange: ev => { denom = ev.target.value; } }, coinOrder().map(k => h("option", { value: k, selected: k === denom }, k))),
-      h("button", { class: "btn", onclick: () => txn(1) }, icon("plus"), "Gain"),
-      h("button", { class: "btn", onclick: () => txn(-1) }, icon("minus"), "Spend")),
-    h("p", { class: "muted small" }, "Spending makes change automatically: paying with a bigger coin gives smaller ones back."),
-    coinPlaces(char, () => close()),
-    h("button", { class: "btn", onclick: () => {
-      close();
-      commit((s, c) => {
-        c.coins = receiveCoins(Object.fromEntries(coinOrder().map(k => [k, 0])), coinTotalCp(c.coins));
-      }, `Converted coins to ${changeCoins().join("/")}`, true);
-    } }, `Consolidate into ${changeCoins().join(" / ")}`));
-
-  function txn(sign) {
-    const cp = Math.round(amt * coinValue(denom));
-    if (!cp) return;
-    if (sign > 0) {
-      close();
-      // Whole coins as given; a fraction (1.5 gp) as its worth in smaller coins.
-      commit((s, c) => {
-        c.coins = Number.isInteger(amt) ? { ...c.coins, [denom]: (c.coins[denom] || 0) + amt } : receiveCoins(c.coins, cp);
-      }, `Gained ${amt} ${denom}`, true);
-    } else {
-      const paid = payCoins(char.coins, cp);
-      if (!paid) return toast("Not enough coin");
-      close();
-      commit((s, c) => { c.coins = paid; }, `Spent ${amt} ${denom}`, true);
-    }
-  }
-  close = openModal("Coin purse", body, { footer: [
-    h("button", { class: "btn", onclick: () => close() }, "Cancel"),
-    h("button", { class: "btn primary", onclick: () => { close(); commit((s, c) => { c.coins = coins; }, "Coins updated", true); } }, "Save"),
-  ] });
+  if (!purseEntry(store.char())) commit(() => {});
+  const p = purseEntry(store.char());
+  if (p) openEntry(p.uid);
 }
 
 // A container's allowed contents (item.allows, see containerRules in js/store.js): anything, or
@@ -2346,17 +2342,19 @@ function allowsField(f, draft) {
     delete draft.holds; // (now its rules)
     if (old && !draft.holdLimit) { draft.holdLimit = old.limit; draft.holdUnit = old.unit; }
   };
-  const KINDS = [["item", "Certain items"], ["group", "A group"], ["template", "A template"], ["name", "Names with the words"]];
-  const kindOf = r => r.item ? "item" : r.group ? "group" : r.template ? "template" : "name";
+  const KINDS = [["item", "Certain items"], ["template", "A template (and those under it)"], ["name", "Names with the words"]];
+  const kindOf = r => r.item ? "item" : r.group || r.template ? "template" : "name";
   // Items to choose from: the catalog's, and the coins.
   const choices = () => [...coinOrder().map(k => ({ id: COIN_ID + k, name: coinItem(k).name })), ...store.catalog().map(i => ({ id: i.id, name: i.name }))];
   const listId = "allows-items-" + uid();
   const valueInput = (r, i) => {
     const k = kindOf(r);
-    if (k === "group") return h("select", { "aria-label": `Rule ${i + 1}: group`, onchange: e => { r.group = e.target.value; save(); } },
-      systemGroups().map(g => h("option", { value: g.id, selected: r.group === g.id }, g.name)));
-    if (k === "template") return h("select", { "aria-label": `Rule ${i + 1}: template`, onchange: e => { r.template = e.target.value; save(); } },
-      store.templates().map(t => h("option", { value: t.id, selected: r.template === t.id }, t.name)));
+    if (k === "template") {
+      // (a group from before: the template it is now)
+      const cur = templateAlias(r.template || r.group);
+      return h("select", { "aria-label": `Rule ${i + 1}: template`, onchange: e => { r.template = e.target.value; delete r.group; save(); } },
+        templateOptions(cur));
+    }
     if (k === "item") {
       const all = choices();
       return h("div", { class: "grow" },
@@ -2377,7 +2375,7 @@ function allowsField(f, draft) {
     rules.map((r, i) => h("div", { class: "allows-rule" },
       h("select", { "aria-label": `Rule ${i + 1}: kind`, onchange: e => {
         const k = e.target.value;
-        rules[i] = { ...(r.size ? { size: r.size } : {}), ...(k === "item" ? { item: [] } : k === "group" ? { group: systemGroups()[0]?.id } : k === "template" ? { template: store.templates()[0]?.id } : { name: "" }) };
+        rules[i] = { ...(r.size ? { size: r.size } : {}), ...(k === "item" ? { item: [] } : k === "template" ? { template: topTemplates({ ghosts: false })[0]?.id } : { name: "" }) };
         save(); draw();
       } }, KINDS.map(([v, l]) => h("option", { value: v, selected: kindOf(r) === v }, l))),
       // (a rule from before can say more than one thing: shown as its words)
@@ -2392,20 +2390,43 @@ function allowsField(f, draft) {
 }
 
 // A container's compartments (item.compartments, see compartmentsOf in js/store.js): a name each,
-// and a capacity of its own (else it shares the container's).
+// how it takes up room (in the container's capacity, its own, or a part of the container's), and a
+// container's own options (COMPARTMENT_FIELDS: what it holds, weightless, how it shows…). Its
+// outside, for gear strapped to it, is one of them.
 function compartmentsField(f, draft) {
-  const list = clone(compartmentsOf({ item: draft }));
-  const box = h("div", { class: "actions-rows" });
-  const save = () => { draft.compartments = list.length ? list : undefined; };
+  const list = clone(compartmentsOf({ item: draft, srcId: draft.id }));
+  const box = h("div", { class: "compartments-edit" });
+  // (the old straps setting: an outside it had from before stays gone once removed)
+  const hadOutside = list.some(k => k.id === OUTSIDE);
+  const save = () => {
+    draft.compartments = list.length ? list : undefined;
+    if (list.some(k => k.id === OUTSIDE) || !hadOutside) delete draft.straps; else draft.straps = false;
+  };
+  box.addEventListener("input", save);
+  box.addEventListener("change", save);
+  box.addEventListener("click", () => setTimeout(save));
+  const CAP = [["shared", "In the container's capacity"], ["separate", "A capacity of its own"]];
+  const card = (k, i) => {
+    const capField = h("label", { class: "field" },
+      h("span", null, k.capacity === "separate" ? `Its capacity (${weightUnit()}; none: no limit)` : `Its limit (${weightUnit()}; none: just the container's)`),
+      h("input", { type: "number", min: 0, step: "any", value: k.capacityLb ?? "", class: "comp-cap", "aria-label": `Compartment ${i + 1}: capacity`,
+        onchange: e => { const n = +e.target.value; if (n > 0) k.capacityLb = n; else delete k.capacityLb; } }));
+    return h("div", { class: "compartment-edit" },
+      h("div", { class: "action-row" },
+        h("input", { type: "text", maxlength: 30, value: k.name, placeholder: "Side pocket", "aria-label": `Compartment ${i + 1}: name`, oninput: e => { k.name = e.target.value; } }),
+        iconBtn("trash", "Remove this compartment (what's in it goes to the main space)", () => { list.splice(i, 1); save(); draw(); }, "danger-hover")),
+      h("label", { class: "field" }, h("span", null, "Room"),
+        h("select", { "aria-label": `Compartment ${i + 1}: room`, onchange: e => { k.capacity = e.target.value; save(); draw(); } },
+          CAP.map(([v, l]) => h("option", { value: v, selected: k.capacity === v }, l)))),
+      capField,
+      h("details", { class: "compartment-more" }, h("summary", null, "What it holds, weight, how it shows"),
+        h("div", { class: "form grid" }, COMPARTMENT_FIELDS.map(cf => fieldInput(cf, k)))));
+  };
   const draw = () => setChildren(box,
     h("span", null, f.label),
-    list.map((k, i) => h("div", { class: "action-row" },
-      h("input", { type: "text", maxlength: 30, value: k.name, placeholder: "Side pocket", "aria-label": `Compartment ${i + 1}: name`, oninput: e => { k.name = e.target.value; save(); } }),
-      h("input", { type: "number", min: 0, step: "any", value: k.capacityLb ?? "", placeholder: `Shares the container's (${weightUnit()})`, class: "comp-cap", "aria-label": `Compartment ${i + 1}: capacity`,
-        onchange: e => { const n = +e.target.value; if (n > 0) k.capacityLb = n; else delete k.capacityLb; save(); } }),
-      iconBtn("trash", "Remove this compartment (what's in it goes to the main space)", () => { list.splice(i, 1); save(); draw(); }, "danger-hover"))),
-    h("button", { type: "button", class: "btn", onclick: () => { list.push({ id: "k" + uid(), name: "" }); save(); draw(); } }, icon("plus"), "Add a compartment"),
-    h("small", { class: "muted" }, "Spaces of its own: a side pocket, a lid, a hidden pouch. Gear strapped outside has its own place already (Gear can be strapped to the outside)."));
+    list.map(card),
+    h("button", { type: "button", class: "btn", onclick: () => { list.push({ id: "k" + uid(), name: "", capacity: "shared" }); save(); draw(); } }, icon("plus"), "Add a compartment"),
+    h("small", { class: "muted" }, "Spaces of its own: a side pocket, a lid, a hidden pouch. In the container's capacity, with a limit of its own if you like; or a capacity of its own: gear strapped outside is one with no limit."));
   draw();
   return h("div", { class: "field full" }, box);
 }
@@ -2458,7 +2479,7 @@ function runItemAction(entryUid, index) {
     let close;
     close = openModal(a.label, h("div", { class: "group move-to" }, inside.map(x => h("button", { type: "button", class: "row row-main switch",
       onclick: () => { close(); commit((s, c) => { const holder = c.items.find(i => i.uid === e.uid), y = c.items.find(i => i.uid === x.uid); if (holder && y) takeOutOf(c, holder, y, 1); then(c); }, `${a.label}: ${entryName(x)}`); } },
-      e.item.sealed && !isGmDevice() ? h("div", { class: "row-title" }, "Something") : [itemIcon(currentItem(x, char), "row-icon"), h("div", { class: "row-title" }, named(x))]))));
+      sealedHere(e) ? h("div", { class: "row-title" }, "Something") : [itemIcon(currentItem(x, char), "row-icon"), h("div", { class: "row-title" }, named(x))]))));
     return;
   }
   let got = [];
@@ -2470,50 +2491,6 @@ function runItemAction(entryUid, index) {
     then(c);
   }, null, true);
   toast(`${a.label}: ${got.join(", ") || "nothing"}`, null);
-}
-
-// The purse's coins are items (see syncCoins in js/store.js): where the rest are (in containers:
-// counted, or kept apart), taking them out, and putting some of the purse's in a container.
-function coinPlaces(char, close) {
-  const away = char.items.filter(e => isCoinEntry(e) && e.parent && !inSealed(char, e)); // (a sealed container's: not shown)
-  const containers = char.items.filter(e => holdsItems(char, e));
-  const purseOf = k => char.items.find(e => inPurse(e) && e.item.coin === k)?.qty || 0;
-  let n = 0, key = coinOrder().find(k => purseOf(k) > 0) || coinOrder()[0], into = containers[0]?.uid;
-  const moveTo = (uid, parent) => commit((s, c) => {
-    const e = c.items.find(x => x.uid === uid);
-    if (!e) return;
-    e.qty && addToInventory(c, coinItem(e.item.coin, s.settings), e.qty, parent);
-    c.items = c.items.filter(x => x !== e);
-  });
-  const put = () => {
-    const have = purseOf(key), holder = char.items.find(e => e.uid === into);
-    if (!(n > 0)) return toast("How many?");
-    if (n > have) return toast(`The purse has ${have} ${key}`);
-    if (holder && !containerAllows(holder, coinItem(key), COIN_ID + key)) return toast(`The ${entryName(holder)} only holds ${rulesLabel(containerRules(holder)).toLowerCase()}`);
-    close();
-    commit((s, c) => {
-      const p = c.items.find(e => inPurse(e) && e.item.coin === key);
-      p.qty -= n;
-      if (!p.qty) c.items = c.items.filter(x => x !== p);
-      addToInventory(c, coinItem(key, s.settings), n, into);
-    }, `Put ${n} ${key} in ${entryName(char.items.find(e => e.uid === into))}`, true);
-  };
-  return h("div", { class: "coin-places" },
-    h("h4", null, "In containers"),
-    away.length ? h("ul", { class: "coin-away" }, away.map(e => {
-      const where = char.items.find(x => x.uid === e.parent);
-      return h("li", null, h("span", { class: "grow" }, `${e.qty.toLocaleString()} ${e.item.coin} in ${where ? entryName(where) : "?"}`,
-        !coinCounts(char, e) && h("span", { class: "muted small" }, " · kept apart")),
-        h("button", { class: "btn small", onclick: () => { close(); moveTo(e.uid, null); } }, "Take out"));
-    })) : h("p", { class: "muted small" }, "None: they're all in the purse."),
-    containers.length > 0 && h("div", { class: "coin-put" },
-      h("label", { class: "field" }, h("span", null, "Put"),
-        h("input", { type: "number", min: 1, inputmode: "numeric", placeholder: "How many", class: "coin-put-n", oninput: ev => { n = Math.floor(+ev.target.value || 0); } })),
-      h("label", { class: "field" }, h("span", null, "Coin (in the purse)"),
-        h("select", { onchange: ev => { key = ev.target.value; } }, coinOrder().map(k => h("option", { value: k, selected: k === key }, `${k} (${purseOf(k)})`)))),
-      h("label", { class: "field" }, h("span", null, "In"),
-        h("select", { onchange: ev => { into = ev.target.value; } }, containers.map(e => h("option", { value: e.uid }, entryName(e))))),
-      h("button", { class: "btn", onclick: put }, "Put in")));
 }
 
 // ------------------------------------------------------------------ catalog view
@@ -2528,22 +2505,23 @@ function renderCatalog() {
       : h("div", { class: "view-custom" }, tab === "mine" ? myItemsSection() : tab === "drawings" ? drawingsSection() : templatesSection()));
 }
 
-// Wide screens: the catalog's groups and tabs down the side, with the chosen group's kinds.
+// Wide screens: the catalog's top templates and tabs down the side, with the chosen one's kinds.
 function catalogSide() {
   const tab = CATALOG_TABS.some(([k]) => k === ui.catTab) ? ui.catTab : "items";
   const st = listState("catalog"), items = store.catalog();
   const counts = {};
-  for (const it of items) { const g = groupOfItem(it)?.id; counts[g] = (counts[g] || 0) + 1; }
-  const pick = (k, type) => { ui.catTab = k; if (type) { st.type = type; st.sub = null; } render(); window.scrollTo(0, 0); };
+  for (const it of items) { const g = topTemplateOf(it)?.id; counts[g] = (counts[g] || 0) + 1; }
+  const pick = (k, type) => { ui.catTab = k; if (type) { st.type = type; st.sub = st.sub2 = null; } render(); window.scrollTo(0, 0); };
   const row = (label, n, active, onclick, dot) => h("button", { type: "button", class: "side-row" + (active ? " active" : ""), "aria-current": active ? "true" : null, onclick },
     dot, h("span", null, label), n != null && h("small", null, n));
   const type = st.type || "all";
-  const g = tab === "items" && groupById(type);
+  const g = tab === "items" && templateById(templateAlias(type));
   return h("nav", { class: "group side-list", "aria-label": "Catalog" },
     h("div", { class: "group-head" }, h("h3", null, "Catalog")),
     row("All items", items.length, tab === "items" && type === "all", () => pick("items", "all")),
-    systemGroups().filter(x => counts[x.id]).map(x => row(x.name, counts[x.id], tab === "items" && type === x.id, () => pick("items", x.id), colorDot(groupColor(x.id), x.name))),
-    g && subChips(g.id, st.sub ?? null, s => items.filter(i => groupOfItem(i)?.id === g.id && s.match(i)).length, key => { st.sub = key; render(); }),
+    topTemplates().filter(x => counts[x.id]).map(x => ghostly(row(templatePlural(x), counts[x.id], tab === "items" && type === x.id, () => pick("items", x.id), colorDot(templateColor(x), templatePlural(x))), x)),
+    g && subChips(g.id, st.sub ?? null, s => items.filter(i => inTemplate(i, g.id) && s.match(i)).length, key => { st.sub = key; st.sub2 = null; render(); }),
+    g && kindTemplate(st.sub) && subChips(st.sub, st.sub2 ?? null, s => items.filter(i => invTypeMatches({ item: i }, g.id, st.sub, s.key)).length, key => { st.sub2 = key; render(); }),
     h("div", { class: "side-sep" }),
     CATALOG_TABS.filter(([k]) => k !== "items").map(([k, label]) => row(label, null, tab === k, () => pick(k))));
 }
@@ -2573,7 +2551,7 @@ function openCatalogItem(item, opts = {}) {
   const char = store.char();
   const isCustom = item.id.startsWith("custom-");
   const isPack = hasFeature(item, "pack", item.id);
-  let qty = item.bundle || 1, parent = null, strapped = false, payForPack = false, close;
+  let qty = item.bundle || 1, parent = null, compartment = null, payForPack = false, close;
   const unit = (item.cost || 0) / (item.bundle || 1);
   const priceEl = h("span", { class: "muted" });
   const updPrice = () => { priceEl.textContent = item.cost ? `Total ${fmtCost(Math.round(unit * qty))}` : ""; };
@@ -2582,7 +2560,7 @@ function openCatalogItem(item, opts = {}) {
     !isPack && h("label", { class: "field" }, h("span", null, item.bundle > 1 ? `Quantity (bundle of ${item.bundle})` : "Quantity"),
       h("input", { type: "number", min: 1, value: qty, inputmode: "numeric", oninput: e => { qty = Math.max(1, Math.floor(+e.target.value || 1)); updPrice(); } })),
     h("label", { class: "field" }, h("span", null, "Put in"),
-      h("select", { onchange: e => { ({ parent, strapped } = parseLocation(e.target.value)); } }, containerOptions(char))),
+      h("select", { onchange: e => { ({ parent, compartment } = parseLocation(e.target.value)); } }, containerOptions(char))),
     h("div", { class: "field" }, h("span", null, `Purse: ${fmtCost(coinTotalCp(char.coins))}`), priceEl),
     isPack && item.cost && h("label", { class: "check" },
       h("input", { type: "checkbox", onchange: e => { payForPack = e.target.checked; } }), ` Pay ${fmtCost(item.cost)} from purse`));
@@ -2605,7 +2583,7 @@ function openCatalogItem(item, opts = {}) {
     close();
     commit((s, c) => {
       if (purse) c.coins = purse;
-      addToInventory(c, item, qty, parent, strapped);
+      addToInventory(c, item, qty, parent, compartment);
     }, `${buy ? "Bought" : "Added"} ${qty > 1 ? qty + " × " : ""}${item.name}`, true);
   };
 
@@ -2617,13 +2595,13 @@ function openCatalogItem(item, opts = {}) {
       h("button", { class: "btn", onclick: () => {
         const purse = packPurse(); if (!purse) return;
         close();
-        commit((s, c) => { c.coins = purse; addToInventory(c, item, 1, parent, strapped); }, `Added ${item.name}`, true);
+        commit((s, c) => { c.coins = purse; addToInventory(c, item, 1, parent, compartment); }, `Added ${item.name}`, true);
       } }, "Add as one item"),
       h("button", { class: "btn primary", onclick: () => {
         const purse = packPurse(); if (!purse) return;
         close();
         const plan = planner.plan();
-        commit((s, c) => { c.coins = purse; unpackPack(c, plan.rows, { into: plan.into, parent, strapped }); }, `Unpacked ${item.name}`, true);
+        commit((s, c) => { c.coins = purse; unpackPack(c, plan.rows, { into: plan.into, parent, compartment }); }, `Unpacked ${item.name}`, true);
       } }, icon("package"), "Unpack"),
     ] : [
       item.cost ? h("button", { class: "btn", onclick: () => add(true) }, icon("cart"), "Buy") : null,
@@ -2657,15 +2635,106 @@ function takeCards(deckUid, cardUids, msg) {
   commit((s, c) => {
     const deck = c.items.find(x => x.uid === deckUid);
     if (!deck) return;
-    for (const x of c.items) if (cardUids.includes(x.uid) && x.parent === deckUid) { x.parent = deck.parent; x.strapped = !!deck.strapped; }
+    for (const x of c.items) if (cardUids.includes(x.uid) && x.parent === deckUid) placeEntry(x, deck.parent, entryComp(deck));
   }, msg, true);
 }
 
 function putCardsBack(deckUid, cardUids, msg) {
   commit((s, c) => {
     if (!c.items.some(x => x.uid === deckUid)) return;
-    for (const x of c.items) if (cardUids.includes(x.uid)) { x.parent = deckUid; x.strapped = false; x.equipped = false; }
+    for (const x of c.items) if (cardUids.includes(x.uid)) { placeEntry(x, deckUid); x.equipped = false; }
   }, msg, true);
+}
+
+// What's in a container, in its details: the inventory's own list (search, view, sort, rows or
+// tiles, each thing's menu), of just what's inside. Sealed (to all but the GM): just that.
+function containerContents(holder) {
+  const char = store.char();
+  const hidden = char.items.filter(x => x.parent === holder.uid && spaceView(holder, compartmentOf(char, x)) === "sealed" && !isGmDevice());
+  const name = entryName(holder), spec = holderSpec(holder);
+  if (entryDetailsOpen?.uid !== holder.uid) resetList("contents"); // (a new container: no search carried over)
+  const storage = () => {
+    const c = store.char(), hd = c?.items.find(x => x.uid === holder.uid);
+    const st = charStorage(contentsChar(c, hd || holder));
+    return Object.assign(st, {
+      id: "in-" + holder.uid, rootLabel: `In the ${name.toLowerCase()}`, rootLoad: contentsLoad(c, hd || holder),
+      // On its own, what's directly in it is at the top: moving something "there" puts it in it.
+      move: (id, parent, comp) => moveEntry(id, parent || holder.uid, parent ? comp : null),
+      tags: e => { const at = e.inside; return at && h("span", { class: "tag" }, at); },
+      empty: () => h("p", { class: "muted pad" }, spec ? `Empty: holds ${spec.limit} ${spec.unit}s (${spec.label.toLowerCase()}).` : "Empty."),
+    });
+  };
+  return h("section", { class: "entry-contents" },
+    hidden.length > 0 && h("p", { class: "muted small" }, "Sealed: some of what's in it can't be seen."),
+    itemManager({ key: "contents", prefsKey: "inventory", sorts: INVENTORY_SORTS, sort: "smart", placeholder: `Search the ${name.toLowerCase()}`, storage }),
+    contentsView(holder) === "details" && !holder.purse && h("p", { class: "muted small" }, "What's in it shows here, not in your inventory."));
+}
+
+// A character as just what's in a container: what's directly in it is at the top (where it is in
+// it, a compartment or strapped outside, as a tag), the rest as it is.
+function contentsChar(char, holder) {
+  // (what's in a sealed space isn't shown, but to the GM)
+  const sealed = new Set(char.items.filter(x => x.parent === holder.uid && spaceView(holder, compartmentOf(char, x)) === "sealed" && !isGmDevice()).map(x => x.uid));
+  const items = char.items.filter(x => isDescendant(char, x.uid, holder.uid) && !sealed.has(x.uid) && ![...sealed].some(u => isDescendant(char, x.uid, u))).map(x => {
+    if (x.parent !== holder.uid) return x;
+    const inside = compartmentOf(char, x)?.name.toLowerCase() || null;
+    return { ...x, parent: null, compartment: undefined, inside };
+  });
+  return { ...char, items, within: holder.uid };
+}
+
+// The coin purse's tools: a quick gain or spend, swapping into the shops' coins, and where the
+// rest of the coins are (in containers: counted, or kept apart). The totals and the rest redraw as
+// the coins change (el.redraw, see refreshEntryDetails); what's typed stays.
+function purseTools(char, close) {
+  let amt = 1, denom = currency().show;
+  function txn(sign) {
+    const cp = Math.round(amt * coinValue(denom));
+    if (!cp) return;
+    if (sign > 0) {
+      // Whole coins as given; a fraction (1.5 gp) as its worth in smaller coins.
+      commit((s, c) => {
+        c.coins = Number.isInteger(amt) ? { ...c.coins, [denom]: (c.coins[denom] || 0) + amt } : receiveCoins(c.coins, cp);
+      }, `Gained ${amt} ${denom}`, true);
+    } else {
+      const paid = payCoins(store.char().coins, cp);
+      if (!paid) return toast("Not enough coin");
+      commit((s, c) => { c.coins = paid; }, `Spent ${amt} ${denom}`, true);
+    }
+  }
+  const totals = h("div", { class: "coin-total" }), places = h("div", { class: "coin-places" });
+  const draw = () => {
+    const c = store.char();
+    setChildren(totals, coinChips(c.coins), h("span", { class: "muted small" }, `= ${fmtCost(coinTotalCp(c.coins))}`));
+    const byPlace = new Map();
+    for (const e of c.items.filter(x => isCoinEntry(x) && !inPurse(c, x) && !inSealed(c, x))) { // (a sealed container's: not shown)
+      const where = e.parent ? c.items.find(x => x.uid === e.parent) : null, k = where?.uid || "";
+      if (!byPlace.has(k)) byPlace.set(k, { where, coins: [] });
+      byPlace.get(k).coins.push(e);
+    }
+    setChildren(places, byPlace.size > 0 && [h("h4", null, "Elsewhere"),
+      h("ul", { class: "coin-away" }, [...byPlace.values()].map(({ where, coins }) => h("li", null,
+        h("span", { class: "grow" }, coins.map(e => `${e.qty.toLocaleString()} ${e.item.coin}`).join(", "), " ", where ? `in ${entryName(where)}` : "on your person",
+          coins.some(e => !coinCounts(c, e)) && h("span", { class: "muted small" }, " · kept apart")),
+        where && h("button", { class: "btn small", onclick: () => { close(); openEntry(where.uid); } }, "Open"))))]);
+  };
+  const el = h("section", { class: "purse-tools" },
+    totals,
+    h("h4", null, "Quick transaction"),
+    h("div", { class: "inline wrap" },
+      h("input", { type: "number", min: 0, inputmode: "decimal", value: 1, placeholder: "Amount", "aria-label": "Amount", class: "coin-amount", oninput: ev => { amt = +ev.target.value || 0; } }),
+      h("select", { "aria-label": "Coin", onchange: ev => { denom = ev.target.value; } }, coinOrder().map(k => h("option", { value: k, selected: k === denom }, k))),
+      h("button", { class: "btn", onclick: () => txn(1) }, icon("plus"), "Gain"),
+      h("button", { class: "btn", onclick: () => txn(-1) }, icon("minus"), "Spend"),
+      h("button", { class: "btn", title: "Swap everything for the coins shops pay in", onclick: () => commit((s, c) => {
+        c.coins = receiveCoins(Object.fromEntries(coinOrder().map(k => [k, 0])), coinTotalCp(c.coins));
+      }, `Converted coins to ${changeCoins().join("/")}`, true) }, `Consolidate (${changeCoins().join(" / ")})`)),
+    h("p", { class: "muted small" }, "Spending takes from the purse first, and makes change: paying with a bigger coin gives smaller ones back. Gains go in the purse."),
+    places,
+    h("p", { class: "muted small" }, "Move coins with their menu (Move to…), or drag them; split a stack to move some."));
+  el.redraw = draw;
+  draw();
+  return el;
 }
 
 // A set's details (a deck of cards, a chess set…): its pieces, to take out (one, all, or at random) and put back.
@@ -2870,17 +2939,58 @@ function packPlanner(pack, char) {
       h("h4", null, "Unpacking"),
       h("label", { class: "field" }, h("span", null, "Pack into"), intoSel),
       note, list,
-      h("p", { class: "muted small" }, "Untick anything you don't want. “Strapped outside” needs a container with straps, like a backpack; otherwise it goes inside.")),
+      h("p", { class: "muted small" }, "Untick anything you don't want. “Strapped outside” needs a container with that compartment, like a backpack; otherwise it goes inside.")),
     plan: () => ({ rows, into: into || null }),
   };
 }
 
 function deleteCustom(item) {
-  confirmDialog(`Delete the custom item “${item.name}”? Copies already in inventories are kept.`, "Delete",
+  const n = itemCopies(store.data, item.id);
+  confirmDialog(`Delete the custom item “${item.name}”?` + (n ? ` ${plural(n, "copy", "copies")} in inventories, hoards or shops keep it (it's no longer in the catalog) until they're gone.` : ""), "Delete",
     () => commit(() => {
       const pkg = store.packageOf(item.id);
-      if (pkg) pkg.customItems = pkg.customItems.filter(i => i.id !== item.id);
+      if (!pkg) return;
+      if (itemCopies(store.data, item.id)) pkg.customItems.find(i => i.id === item.id).ghost = true;
+      else pkg.customItems = pkg.customItems.filter(i => i.id !== item.id);
     }, `Deleted ${item.name}`, true));
+}
+
+// An inventory copy edited: the change goes to its catalog item (the catalog comes first, and
+// every copy follows it). A copy of the system's item (or a coin) gets a custom item of its own.
+// One of your custom items is changed, but if other copies have it too, you choose: change them
+// all, or a new version for this one. What's written in it stays the copy's own (COPY_KEYS).
+function saveEntryItem(entryUid, snap, msg, after = null) {
+  const e = store.char()?.items.find(x => x.uid === entryUid);
+  if (!e) return;
+  const mine = e.srcId && store.findCustom(e.srcId);
+  const forCatalog = () => { const { id, noStack, ghost, ...rest } = clone(snap); for (const k of COPY_KEYS) delete rest[k]; return rest; };
+  const apply = all => {
+    commit((s, c) => {
+      const x = c.items.find(i => i.uid === entryUid);
+      if (!x) return;
+      if (all) {
+        const pkg = store.packageOf(mine.id);
+        pkg.customItems = pkg.customItems.map(i => i.id === mine.id ? { ...forCatalog(), id: mine.id, source: mine.source || "Homebrew", ...(mine.showcase ? { showcase: true } : {}) } : i);
+      } else {
+        const it = { ...forCatalog(), id: "custom-" + uid(), source: snap.source || "Homebrew" };
+        store.homePackage().customItems.unshift(it);
+        x.srcId = it.id;
+      }
+      x.item = clone(snap); // (in step with it on the next sync; what's written in it kept)
+    }, msg, true);
+    after?.();
+  };
+  if (!mine) return apply(false);
+  const others = itemCopies(store.data, mine.id) - 1;
+  if (others <= 0) return apply(true);
+  let close;
+  close = openModal("Change the other copies too?", h("p", null,
+    `${plural(others, "other copy", "other copies")} of “${mine.name}” (in inventories, hoards or shops) come from the same custom item.`),
+  { footer: [
+    h("button", { class: "btn", onclick: () => close() }, "Cancel"),
+    h("button", { class: "btn", onclick: () => { close(); apply(false); } }, "A new version for this one"),
+    h("button", { class: "btn primary", onclick: () => { close(); apply(true); } }, icon("check"), `Change all ${others + 1}`),
+  ] });
 }
 
 // ------------------------------------------------------------------ trinket roller
@@ -2918,6 +3028,7 @@ function openTrinketRoller() {
 function openItemForm(item, opts = {}) {
   if (!item) return chooseTemplate(tpl => openItemForm(newItemFrom(tpl), opts));
   const draft = clone(item);
+  if (draft.sealed && !draft.contentsView) { draft.contentsView = "sealed"; delete draft.sealed; } // (sealed, from before)
   const tpl = itemTemplate(draft);
   const fields = templateFields(tpl);
   // The catalog item this is (or is a copy of): older copies take missing feature fields from it.
@@ -2991,8 +3102,8 @@ function openItemForm(item, opts = {}) {
     delete draft.noStack;
     if (opts.entryUid) {
       const { id, ...snap } = draft;
-      if (!stacks(snap, srcId)) snap.noStack = true; // see addToInventory
-      commit((s, c) => { c.items.find(x => x.uid === opts.entryUid).item = snap; }, `Updated ${draft.name}`, true);
+      close();
+      return saveEntryItem(opts.entryUid, snap, `Updated ${draft.name}`);
     } else {
       // Saved back into the rule package it's in; a new one goes into the chosen package, else
       // the campaign's home package.
@@ -3011,7 +3122,7 @@ function openItemForm(item, opts = {}) {
     draft.id ? `Edit ${item.name}` : `New ${tpl.name.toLowerCase()}`;
   close = openModal(title, [
     h("p", { class: "muted small" }, templateBadge(tpl), ` Template: ${tpl.name}`,
-      opts.entryUid ? " — changes apply only to this copy in the inventory." : ""),
+      opts.entryUid ? " — saved as a custom item in the catalog: copies of it change too." : ""),
     tabsBox, form, layerBox,
   ], { wide: true, footer: [
     h("button", { class: "btn", onclick: () => close() }, "Cancel"),
@@ -3814,29 +3925,26 @@ const newItemFrom = tpl => ({ type: rootTemplate(tpl).id, template: isSystemTemp
 
 // A new template that starts as a copy of another (the system's or yours).
 function copyTemplate(tpl) {
-  const { id, builtin, hidden, plural, ...rest } = clone(tpl);
-  openTemplateEditor({ ...rest, name: tpl.name + " (copy)", from: tpl.id, hue: tpl.hue ?? templateHue(tpl) }, true);
+  const { id, builtin, hidden, plural, ghost, abstract, split, ...rest } = clone(tpl);
+  // (under the same template as the one copied; its colour, if it has one of its own)
+  openTemplateEditor({ ...rest, parent: templateParent(tpl)?.id, name: tpl.name + " (copy)", from: tpl.id, hue: ownHue(tpl) }, true);
 }
 
-// What a template is, under its name: its group, or the template it was copied from.
+// What a template is, under its name: built-in or yours, and the template it's a copy of.
 function templateNote(t) {
-  if (isSystemTemplate(t)) return groupOfTemplate(t)?.name || "";
-  const from = templateById(t.from);
-  return from ? `From ${from.name}` : groupOfTemplate(t)?.name || "";
+  const from = !isSystemTemplate(t) && templateById(t.from);
+  return [isSystemTemplate(t) ? "Built-in" : "Yours", from && from !== templateParent(t) && `from ${from.name}`].filter(Boolean).join(" · ");
 }
 
-// The system's templates in group order (so Gear sits next to Tools), then the packages'.
-function orderedTemplates() {
-  const sys = systemGroups().flatMap(g => groupTemplates(g));
-  return [...sys, ...store.templates().filter(t => !isSystemTemplate(t))];
-}
+// The templates items can be made with, in the tree's order (so Gear sits next to Tools).
+const orderedTemplates = () => treeTemplates({ ghosts: false }).filter(t => !t.abstract);
 
 function chooseTemplate(onPick, title = "Choose a template", extra = null) {
   let close;
   const tile = t => h("button", { class: "tpl-tile", onclick: () => { close(); onPick(t); } },
     h("span", { class: "tpl-swatch", style: { background: templateColor(t) } }),
     h("b", null, t.name),
-    h("small", { class: "muted" }, templateNote(t)));
+    h("small", { class: "muted" }, templateParent(t) ? `In ${templatePlural(templateParent(t))}` : templateNote(t)));
   close = openModal(title, [
     h("div", { class: "tpl-grid" }, orderedTemplates().map(tile)),
     extra ? extra(() => close()) : h("p", { class: "muted small" }, "Need different fields? ",
@@ -3877,7 +3985,7 @@ function templateUsageLink(t) {
   const n = templateUsage(t);
   return h("button", { class: "link small", title: `Show them in the catalog`, onclick: () => {
     const st = listState("catalog");
-    st.search = `t:"${t.name.toLowerCase()}"`; st.type = "all"; st.sub = null;
+    st.search = `t:"${t.name.toLowerCase()}"`; st.type = "all"; st.sub = st.sub2 = null;
     ui.catTab = "items";
     go("catalog");
     window.scrollTo(0, 0);
@@ -3887,55 +3995,51 @@ function templateUsageLink(t) {
 function templatesSection() {
   const several = store.enabledPackages().length > 1;
   const sys = activeSystem();
+  const actions = t => t.ghost
+    ? [h("button", { class: "link", title: "Make it a template again", onclick: () => restoreTemplate(t) }, "Restore")]
+    : [!t.abstract && h("button", { class: "link", onclick: () => openItemForm(newItemFrom(t)) }, "New item"),
+       isSystemTemplate(t) ? h("button", { class: "link", onclick: () => openTemplateColour(t) }, "Colour")
+         : h("button", { class: "link", onclick: () => openTemplateEditor(t) }, "Edit"),
+       h("button", { class: "link", onclick: () => copyTemplate(t) }, "Copy")];
+  const info = t => t.ghost ? `Deleted · still used by ${plural(templateUses(store.data, t.id), "item")}`
+    : [templateNote(t), t.abstract ? "gathers others" : plural(templateFields(t).length, "field"),
+       several && !isSystemTemplate(t) && store.templatePackage(t.id)?.name].filter(Boolean).join(" · ");
+  const tile = t => {
+    const subs = subcategories(t), below = treeTemplates().filter(x => x !== t && templateLineage(x).includes(t));
+    return ghostly(h("div", { class: "tpl-tile static" },
+      h("span", { class: "tpl-swatch tpl-shades" }, subs.length > 1
+        ? subs.map((sc, i) => h("span", { style: { background: shade(templateHue(t), i, subs.length) }, title: sc.label }))
+        : h("span", { style: { background: templateColor(t) } })),
+      h("b", null, t.name),
+      h("small", { class: "muted" }, info(t)),
+      !t.abstract && !t.ghost && templateUsageLink(t),
+      // The templates under it, each in its shade, with its own New / Copy / Edit.
+      below.length > 0 && h("div", { class: "tpl-types" }, below.map(x => ghostly(h("div", { class: "tpl-type", style: { paddingLeft: `${(templateDepth(x) - templateDepth(t) - 1) * 14}px` } },
+        colorDot(templateColor(x), x.name), h("span", { title: info(x) }, x.name, !isSystemTemplate(x) && h("small", { class: "muted" }, x.ghost ? " · deleted" : " · yours")),
+        !x.ghost && !x.abstract && templateUsageLink(x), h("span", { class: "tpl-type-actions" }, actions(x))), x))),
+      h("div", { class: "tpl-actions" }, actions(t))), t);
+  };
   return h("section", null,
       h("div", { class: "section-head" }, h("h2", null, "Templates"),
         h("button", { class: "btn", onclick: newTemplate }, icon("plus"), "New template")),
       h("p", { class: "muted small" }, "Templates decide which fields an item has and what it can do (its features: a container holds things, a weapon shows in the Combat panel…). "
+        + "One can sit under another, as a kind of it: the top ones are the filters and colours, the ones under them shades of them. "
         + (sys.none ? "With no game system there's one plain template, Item; make your own from a copy of it, or from a blank one."
           : `The game system's come with ${sys.name}; make your own from a copy of any of them.`)),
-      h("div", { class: "tpl-grid" },
-        // The system's templates, by group: each group has a hue, its subcategories are shades of it.
-        systemGroups().map(g => {
-          const tpls = groupTemplates(g);
-          if (!tpls.length) return null;
-          const subs = subcategories(g.id);
-          const multi = tpls.length > 1;
-          return h("div", { class: "tpl-tile static" },
-            h("span", { class: "tpl-swatch tpl-shades" }, subs.length > 1
-              ? subs.map((sc, i) => h("span", { style: { background: shade(groupHue(g.id), i, subs.length) }, title: sc.label }))
-              : h("span", { style: { background: groupColor(g.id) } })),
-            h("b", null, g.name),
-            h("small", { class: "muted" }, multi ? "Built-in" : `Built-in · ${templateFields(tpls[0]).length} fields`),
-            !multi && templateUsageLink(tpls[0]),
-            // A combined group lists its templates, each in its shade, with its own New / Copy.
-            multi && h("div", { class: "tpl-types" }, tpls.map(t => h("div", { class: "tpl-type" },
-              colorDot(templateColor(t), t.name), h("span", null, t.name), templateUsageLink(t),
-              h("button", { class: "link", onclick: () => openItemForm(newItemFrom(t)) }, "New"),
-              h("button", { class: "link", onclick: () => copyTemplate(t) }, "Copy")))),
-            h("div", { class: "tpl-actions" },
-              h("button", { class: "link", onclick: () => openGroupColour(g.id) }, "Colour"),
-              !multi && [
-                h("button", { class: "link", onclick: () => openItemForm(newItemFrom(tpls[0])) }, "New item"),
-                h("button", { class: "link", onclick: () => copyTemplate(tpls[0]) }, "Copy"),
-              ]));
-        }),
+      h("div", { class: "tpl-grid tpl-tree" },
+        topTemplates().map(tile),
         // The game system's example templates you haven't got (D&D 5e: Spell Scroll, Gemstone, Cursed Item).
         (sys.starterTemplates || []).filter(t => !store.template(t.id)).map(t => h("div", { class: "tpl-tile static example" },
           h("span", { class: "tpl-swatch", style: { background: templateColor(t) } }),
           h("b", null, t.name),
-          h("small", { class: "muted" }, `Example · ${templateNote(t)}`),
+          h("small", { class: "muted" }, `Example${templateParent(t) ? ` · in ${templatePlural(templateParent(t))}` : ""}`),
           h("div", { class: "tpl-actions" },
-            h("button", { class: "link", onclick: () => commit(() => store.homePackage().templates.push(clone(t)), `Added the template ${t.name}`, true) }, "Add to my templates")))),
-        store.templates().filter(t => !isSystemTemplate(t)).map(t => h("div", { class: "tpl-tile static" },
-          h("span", { class: "tpl-swatch", style: { background: templateColor(t) } }),
-          h("b", null, t.name),
-          h("small", { class: "muted" }, `${templateNote(t)} · ${plural(templateFields(t).length, "field")}`
-            + (several ? ` · ${store.templatePackage(t.id)?.name || ""}` : "")),
-          templateUsageLink(t),
-          h("div", { class: "tpl-actions" },
-            h("button", { class: "link", onclick: () => openItemForm(newItemFrom(t)) }, "New item"),
-            h("button", { class: "link", onclick: () => openTemplateEditor(t) }, "Edit"),
-            h("button", { class: "link", onclick: () => copyTemplate(t) }, "Copy"))))));
+            h("button", { class: "link", onclick: () => commit(() => store.homePackage().templates.push(clone(t)), `Added the template ${t.name}`, true) }, "Add to my templates"))))));
+}
+
+// A deleted template still used by items, made a template again.
+function restoreTemplate(t) {
+  commit(() => { const x = store.templatePackage(t.id)?.templates.find(y => y.id === t.id); if (x) delete x.ghost; }, `Restored the template ${t.name}`, true);
 }
 
 // Pick a hue: a rainbow slider and quick swatches, with a live preview of the shades
@@ -3971,24 +4075,26 @@ function huePicker(label, hue, subs, onChange, note) {
   return box;
 }
 
-// Colour of a built-in group (Armor, Gear & Tools…), kept in this device's settings.
-function openGroupColour(groupId) {
-  const g = groupById(groupId), tpls = groupTemplates(g);
-  let hue = groupHue(groupId), close;
-  const subs = subcategories(groupId);
-  close = openModal(`${g.name} colour`, h("div", { class: "form" },
+// Colour of a built-in template (Armor, Gear & Tools…), kept in this device's settings. (Reset:
+// as the game system has it; one under another, a shade of that one's.)
+function openTemplateColour(t) {
+  let hue = templateHue(t), close;
+  const subs = subcategories(t), kids = childTemplates(t);
+  const clear = s => {
+    if (s.settings.templateHues) delete s.settings.templateHues[t.id];
+    const aliases = systemIndex().aliases, old = s.settings.groupHues;
+    if (old) for (const k of Object.keys(old)) if ((aliases[k] || k) === t.id) delete old[k];
+  };
+  close = openModal(`${templatePlural(t)} colour`, h("div", { class: "form" },
     huePicker("Hue", hue, subs, v => { hue = v; },
-      tpls.length > 1 ? `${g.name} combines ${tpls.map(t => t.name).join(", ")}; each gets its own shade.`
+      kids.length ? `The templates under it (${kids.map(k => k.name).join(", ")}) each get a shade of it.`
         : "Each category gets its own shade so items are easy to tell apart.")),
   { footer: [
-    h("button", { class: "btn", onclick: () => {
-      close();
-      commit(s => { if (s.settings.groupHues) delete s.settings.groupHues[groupId]; }, `${g.name} colour reset`);
-    } }, "Reset"),
+    h("button", { class: "btn", onclick: () => { close(); commit(clear, `${templatePlural(t)} colour reset`); } }, "Reset"),
     h("button", { class: "btn", onclick: () => close() }, "Cancel"),
     h("button", { class: "btn primary", onclick: () => {
       close();
-      commit(s => { s.settings.groupHues = { ...(s.settings.groupHues || {}), [groupId]: hue }; }, `${g.name} colour changed`);
+      commit(s => { clear(s); s.settings.templateHues = { ...(s.settings.templateHues || {}), [t.id]: hue }; }, `${templatePlural(t)} colour changed`);
     } }, icon("check"), "Save"),
   ] });
 }
@@ -4003,11 +4109,13 @@ const FEATURE_MODES = [["", "No"], ["on", "Yes"], ["main", "Always"]];
 // A template's editor. copy: a new template, from a copy of another (copyTemplate).
 function openTemplateEditor(tpl, copy = false) {
   const isNew = !tpl || !tpl.id || copy;
-  const draft = tpl ? clone(tpl) : { name: "", group: systemGroups()[0]?.id, fields: [], features: {} };
-  delete draft.color; delete draft.shade; delete draft.type; // older templates: replaced by a hue and group
+  const draft = tpl ? clone(tpl) : { name: "", fields: [], features: {} };
+  delete draft.color; delete draft.shade; delete draft.type; // older templates: replaced by a hue and a parent
+  if (draft.group) { if (!draft.parent) draft.parent = templateAlias(draft.group); delete draft.group; } // (a group of before: the template it is now)
   draft.fields = draft.fields || [];
   draft.features = { ...(draft.features || {}) };
-  if (draft.hue == null) draft.hue = templateHue(draft);
+  const hadHue = tpl?.hue != null; // (a colour it was given; else one made up for a top template, dropped when it goes under another)
+  if (draft.hue == null && !draft.parent) draft.hue = templateHue(draft);
   let close;
   const tplTriggers = triggersEditor(draft);
   const fieldsBox = h("div", { class: "tpl-fields" });
@@ -4018,9 +4126,17 @@ function openTemplateEditor(tpl, copy = false) {
     coreInfo.textContent = "Every item also has: " + [...CORE_HEAD, WEIGHT_FIELD, ...(activeSystem().commonFields || []), ...CORE_TAIL]
       .filter(f => !(draft.hide || []).includes(f.key)).map(fieldLabel).join(", ") + ".";
   };
-  // Colour: the template's own hue; its categories show as shades of it.
-  const drawShade = () => setChildren(shadeBox, huePicker("Colour", draft.hue, templateSubcategories(draft), hue => { draft.hue = hue; },
-    "Items made with this template use this hue. Their categories get different shades of it so they're easy to tell apart."));
+  // Colour: the template's own hue (its categories show as shades of it); under another, it can
+  // take a shade of that one's instead.
+  const drawShade = () => {
+    const parent = draft.parent && templateById(draft.parent);
+    if (!parent && draft.hue == null) draft.hue = 30;
+    setChildren(shadeBox,
+      parent && h("label", { class: "check" }, h("input", { type: "checkbox", checked: draft.hue != null, onchange: e => {
+        draft.hue = e.target.checked ? templateHue(parent) : undefined; drawShade(); } }), ` A colour of its own (else a shade of ${templatePlural(parent)}' colour)`),
+      draft.hue != null && huePicker("Colour", draft.hue, templateSubcategories(draft), hue => { draft.hue = hue; },
+        "Items made with this template use this hue. Their categories get different shades of it so they're easy to tell apart."));
+  };
   const drawFields = () => setChildren(fieldsBox, draft.fields.map((f, i) => h("div", { class: "tpl-field" },
     h("input", { type: "text", placeholder: "Field label", value: f.label, "aria-label": "Field label",
       oninput: e => { f.label = e.target.value; } }),
@@ -4060,6 +4176,9 @@ function openTemplateEditor(tpl, copy = false) {
     draft.triggers = cleanTriggers(draft.triggers);
     if (!draft.triggers.length) delete draft.triggers;
     if (!draft.categories?.length) { delete draft.categories; delete draft.categoryLabel; }
+    if (!draft.parent) delete draft.parent;
+    if (draft.hue == null) delete draft.hue;
+    if (!draft.abstract) delete draft.abstract;
     delete draft.builtin;
     if (isNew) draft.id = "tpl-" + uid();
     close();
@@ -4076,9 +4195,11 @@ function openTemplateEditor(tpl, copy = false) {
     h("div", { class: "grid" },
       h("label", { class: "field" }, h("span", null, "Template name *"),
         h("input", { type: "text", value: draft.name, placeholder: "e.g. Spell Scroll, Firearm, Vehicle", oninput: e => { draft.name = e.target.value; } })),
-      h("label", { class: "field" }, h("span", null, "Group"),
-        h("select", { onchange: e => { draft.group = e.target.value; } },
-          systemGroups().map(g => h("option", { value: g.id, selected: draft.group === g.id }, g.name)))),
+      h("label", { class: "field" }, h("span", null, "Under"),
+        h("select", { onchange: e => { draft.parent = e.target.value || undefined; if (draft.parent && !hadHue) draft.hue = undefined; drawShade(); } },
+          templateOptions(draft.parent, { exclude: draft.id, none: "Nothing: a top template (a filter of its own)" }))),
+      h("label", { class: "check field" }, h("input", { type: "checkbox", checked: !!draft.abstract, onchange: e => { draft.abstract = e.target.checked; } }),
+        " Only gathers others (no items of its own)"),
       h("label", { class: "field" }, h("span", null, "Categories"),
         h("input", { type: "text", value: (draft.categories || []).join(", "), placeholder: "Comma separated, e.g. Pistol, Rifle",
           oninput: e => { draft.categories = e.target.value.split(",").map(s => s.trim()).filter(Boolean); drawShade(); } })),
@@ -4102,11 +4223,16 @@ function openTemplateEditor(tpl, copy = false) {
     h("p", { class: "muted small" }, "What its items can do to begin with. “Yes” can be changed for each item; “Always” can't, and puts the feature's fields with the template's own."),
     featureRows), { wide: true, footer: [
     !isNew && h("button", { class: "btn danger", onclick: () => {
-      confirmDialog(`Delete template “${tpl.name}”? Items using it keep their data but lose the extra fields in the editor.`, "Delete", () => {
+      const uses = templateUses(store.data, tpl.id);
+      confirmDialog(`Delete template “${tpl.name}”?` + (uses ? ` ${plural(uses, "item")} still use it: it stays, faded, until none do (change their template, or remove them).` : "")
+        + " Templates under it move up a level.", "Delete", () => {
         close();
         commit(() => {
           const pkg = store.templatePackage(tpl.id);
-          if (pkg) pkg.templates = pkg.templates.filter(t => t.id !== tpl.id);
+          if (!pkg) return;
+          for (const q of store.data.packages) for (const t of q.templates) if (t.parent === tpl.id) { if (tpl.parent) t.parent = tpl.parent; else delete t.parent; }
+          if (templateUses(store.data, tpl.id)) pkg.templates.find(t => t.id === tpl.id).ghost = true;
+          else pkg.templates = pkg.templates.filter(t => t.id !== tpl.id);
         }, `Deleted template ${tpl.name}`, true);
       });
     } }, icon("trash"), "Delete"),
@@ -4513,7 +4639,7 @@ function openCharSwitcher() {
 
 // Nothing saved yet in this copy: only blank starter characters, no custom items.
 function isFreshData() {
-  return store.campaigns().every(c => c.characters.every(isBlankCharacter)) && !store.allCustomItems().length;
+  return store.campaigns().every(c => c.characters.every(isBlankCharacter)) && !store.allCustomItems().some(i => !i.showcase);
 }
 
 // A copy with nothing saved (e.g. the web app opened from a file, or a different address) looks

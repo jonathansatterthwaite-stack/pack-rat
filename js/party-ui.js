@@ -234,7 +234,7 @@ function memberCard(c) {
   const where = e => {
     if (!e.parent) return "";
     const p = c.items.find(x => x.uid === e.parent);
-    return p ? ` (${e.strapped ? "on" : "in"} ${entryName(p)})` : "";
+    return p ? ` (${entryComp(e) === OUTSIDE ? "on" : "in"} ${entryName(p)})` : "";
   };
   return h("div", { class: "group member" },
     h("div", { class: "row" },

@@ -481,16 +481,14 @@ function sellSettings(d) {
       h("p", { class: "muted small" }, "What the shop pays when nothing more specific is set below. 0% means it won't buy.")),
     h("h4", null, "By item type"),
     h("p", { class: "muted small" }, "Leave empty to use the default. 0 = won't buy that kind of item."),
-    // By group, like the rest of the app; each type in a combined group keeps its own rate.
+    // By template, in the tree's order (one gathering others is a heading over them); each keeps its own rate.
     // Packs aren't listed: they unpack into their contents, so players never sell one.
-    // (Rates are by the system's templates: items made with a copy go by the one it was copied from.)
-    h("div", { class: "type-rates" }, systemGroups().map(g => [g, groupTemplates(g).filter(t => !templateFeatureDefaults(t).pack)])
-      .filter(([, tpls]) => tpls.length).map(([g, tpls]) => h("div", { class: "type-rate-group" },
-      tpls.length > 1 && h("div", { class: "type-rate-head" }, colorDot(groupColor(g.id), g.name), g.name),
-      tpls.map(t => h("label", { class: "type-rate" + (tpls.length > 1 ? " sub" : "") },
+    h("div", { class: "type-rates" }, treeTemplates({ ghosts: false }).filter(t => !templateFeatureDefaults(t).pack).map(t => t.abstract
+      ? h("div", { class: "type-rate-head" }, colorDot(templateColor(t), templatePlural(t)), templatePlural(t))
+      : h("label", { class: "type-rate" + (templateDepth(t) ? " sub" : "") },
         templateBadge(t), h("span", null, templatePlural(t)),
         pctInput(d.typeRates[t.id], String(d.sellRate ?? 50), v => { if (v == null) delete d.typeRates[t.id]; else d.typeRates[t.id] = v; }),
-        h("span", { class: "muted small" }, "%")))))),
+        h("span", { class: "muted small" }, "%")))),
     h("div", { class: "section-head shop-items-head" }, h("h4", null, `Specific items (${d.sellItems.length})`),
       h("button", { class: "btn", type: "button", onclick: () => openStockPicker({
         title: "Items with their own offer",

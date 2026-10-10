@@ -238,7 +238,8 @@ PACKS = {
 PACK_EXTRAS = ["String (10 ft)", "Soap", "Alms Box", "Incense (block)", "Censer", "Vestments",
                "Little Bag of Sand", "Small Knife"]
 
-GEAR_CATS = {"Common Items": "Common", "Usable Items": "Usable", "Clothes": "Clothes",
+# ("Common Items" is "Standard": "Common" read as a rarity.)
+GEAR_CATS = {"Common Items": "Standard", "Usable Items": "Usable", "Clothes": "Clothes",
              "Arcane Focus": "Arcane Focus", "Druidic Focus": "Druidic Focus",
              "Holy Symbols": "Holy Symbol"}  # the Dragonlance table (setting-specific) is left out
 
@@ -270,7 +271,7 @@ for t in tables("adventuring-gear"):
             if name.startswith("Rope"):
                 _, desc = split_desc(name.split("\n-")[0])
                 for label, c, w in (("Rope, Hemp (50 ft)", "1 gp", "10"), ("Rope, Silk (50 ft)", "10 gp", "5")):
-                    add({"id": slug("gear", label), "type": "gear", "category": "Common", "name": label,
+                    add({"id": slug("gear", label), "type": "gear", "category": "Standard", "name": label,
                          "cost": cost_cp(c), "weight": float(w), "description": desc})
                 continue
             name, desc = split_desc(name)
@@ -280,7 +281,7 @@ for t in tables("adventuring-gear"):
                  "source": "PHB"})
 
 for name in PACK_EXTRAS:
-    add({"id": slug("gear", name), "type": "gear", "category": "Common", "name": name,
+    add({"id": slug("gear", name), "type": "gear", "category": "Standard", "name": name,
          "description": "Included in an equipment pack; not sold separately in the PHB."})
 
 # ---------------------------------------------------------------- tools

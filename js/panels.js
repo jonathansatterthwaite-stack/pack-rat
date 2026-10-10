@@ -141,7 +141,7 @@ function panelState(char, withIcons = true) {
     return {
       uid: e.uid, srcId: e.srcId || null, name: entryName(e), qty: e.qty, equipped: !!e.equipped, states: entryStates(char, e),
       values: ownValues(valueSet().items?.[`${char.id}/${e.uid}`]), // its own Local values (js/clockwork.js)
-      parent: e.parent || null, strapped: !!e.strapped, location: locationLabel(char, e) || "", inHolder: !!(holder && holderSpec(holder)),
+      parent: e.parent || null, strapped: entryComp(e) === OUTSIDE, compartment: entryComp(e), location: locationLabel(char, e) || "", inHolder: !!(holder && holderSpec(holder)),
       template: tpl.id, root: rootTemplate(tpl)?.id || tpl.id, main: mainFeatures(tpl), features, item: it,
       // Icons for what panels show: equippable things, and anything with a feature of the system's own.
       icon: withIcons && features.some(k => k === "equippable" || sysFeatures.has(k)) ? iconMarkup(it) : undefined,

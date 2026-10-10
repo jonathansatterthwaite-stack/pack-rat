@@ -3,7 +3,7 @@
 //
 // A hoard is kept like a character's inventory, so containers, stacks and sets work the same:
 //   store.state.hoards: [{ id, name, notes, coins: { gp: 3, … }, items: [entry] }]
-// with entries as in an inventory (parent = the container it's in, strapped = hung outside it).
+// with entries as in an inventory (parent = the container it's in, compartment = which of its spaces).
 // Kept with the campaign, on the GM's device.
 //
 // Giving a hoard to a character moves everything across, containers and all: items arrive as
@@ -35,7 +35,8 @@ function giveHoard(hd, char) {
       const to = e.parent ? newUid.get(e.parent) ?? null : null;
       if (!kids && !isDeckEntry(e) && !e.customName && !e.item.card && !e.fromDeck) {
         // A plain item: joins a matching stack where it lands.
-        const got = addToInventory(char, { ...clone(e.item), id: e.srcId }, e.qty, to, !!e.strapped);
+        // (coins: into the purse, or a pile of them where they go)
+        const got = isCoinEntry(e) && !entryComp(e) ? addCoins(char, e.item.coin, e.qty, to) : addToInventory(char, { ...clone(e.item), id: e.srcId }, e.qty, to, to && entryComp(e));
         newUid.set(e.uid, got.uid);
         if (e.liquid) got.liquid = clone(e.liquid);
         if (e.charges != null) got.charges = e.charges;
@@ -112,9 +113,9 @@ function hoardStorage(hd) {
       updateHoard(hd.id, x => { const it = x.items.find(i => i.uid === e.uid); if (!it) return; if (n) it.qty = n; else removeEntry(x, it.uid); },
         n ? null : `Took ${entryName(e)} out`, !n);
     },
-    move: (uid, parent, strapped) => {
+    move: (uid, parent, compartment) => {
       if (uid === parent || (parent && isDescendant(hd, parent, uid))) return toast("Can't put a container inside itself");
-      change(x => { const it = x.items.find(i => i.uid === uid); if (it) { it.parent = parent; it.strapped = !!(parent && strapped); } });
+      change(x => { const it = x.items.find(i => i.uid === uid); if (it) placeEntry(it, parent, compartment); });
     },
     reorder: ids => change(x => { x.containerOrder = [...ids, ...(x.containerOrder || []).filter(id => !ids.includes(id))]; }),
     empty: () => h("p", { class: "muted pad" }, "Empty. Add items from the catalog, then put them in containers."),
@@ -126,8 +127,8 @@ function hoardItem(hd, e) {
   let close;
   const where = h("select", { "aria-label": "Location" }, containerOptions(hd, e.uid));
   where.options[0].textContent = "Loose";
-  where.value = e.parent ? e.parent + (e.strapped ? ":out" : "") : "";
-  where.onchange = () => { const loc = parseLocation(where.value); hoardStorage(hd).move(e.uid, loc.parent, loc.strapped); close(); };
+  where.value = locationValue(e, hd);
+  where.onchange = () => { const loc = parseLocation(where.value); hoardStorage(hd).move(e.uid, loc.parent, loc.compartment); close(); };
   const controls = h("div", { class: "entry-controls" },
     h("label", { class: "field" }, h("span", null, "Location"), where),
     h("label", { class: "field" }, h("span", null, "Quantity"),
@@ -411,7 +412,7 @@ function showHoard(hd) {
     if (!chosen.size) return toast("Choose who to show it to");
     close();
     // The purse's coins go as coins (each picked by how many); the rest as items.
-    const r = await treasureCall("POST", "api/treasure", { name: hd.name, hoard: hd.id, items: hd.items.filter(e => !inPurse(e)), coins: purseTotals(hd), players: [...chosen] });
+    const r = await treasureCall("POST", "api/treasure", { name: hd.name, hoard: hd.id, items: hd.items.filter(e => !inPurse(hd, e)), coins: purseTotals(hd), players: [...chosen] });
     if (r?.id) { updateHoard(hd.id, x => { x.showing = r.id; }, `Showing ${hd.name}`); }
   };
   close = openModal(`Show ${hd.name}`, h("div", { class: "form" },

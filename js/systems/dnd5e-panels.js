@@ -127,7 +127,7 @@ function dnd5eCharacterPanel() {
   const CARRY = [[0.5, "×½", "Tiny"], [1, "×1", "Medium"], [2, "×2", "Large"], [4, "×4", "Huge"], [8, "×8", "Gargantuan"]];
   const carry = state => {
     const v = state.character.stats.carryMultiplier || 1, size = (CARRY.find(c => c[0] === v) || CARRY[1])[2];
-    return h("label", { class: "ability", title: "Carry multiplier: ×½ Tiny, ×1 Small or Medium, ×2 Large or Powerful Build, ×4 Huge, ×8 Gargantuan" },
+    return h("label", { class: "ability carry", title: "Carry multiplier: ×½ Tiny, ×1 Small or Medium, ×2 Large or Powerful Build, ×4 Huge, ×8 Gargantuan" },
       h("span", null, "CARRY"),
       h("select", { "aria-label": "Carry multiplier", onchange: e => request("setStat", { key: "carryMultiplier", value: +e.target.value }) },
         CARRY.map(([m, label, name]) => h("option", { value: m, selected: m === v, title: name }, label))),

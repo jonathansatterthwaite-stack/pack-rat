@@ -255,10 +255,10 @@ function inventoryMenu(e) {
     ...itemActions(currentItem(e, char)).map((a, i) => ({ icon: a.effect === "fill" ? "plus" : a.effect === "random" ? "dice" : "bag", label: a.label, run: () => runItemAction(e.uid, i) })),
     editing() && { icon: "edit", label: "Edit", run: () => openItemForm(e.item, { entryUid: e.uid }) },
     { icon: "move", label: "Move to…", run: () => openMoveTo(e.uid) },
-    { icon: "coins", label: "Sell", run: () => openSell(e.uid) },
-    party.active && party.others().length > 0 && { icon: "users", label: "Trade", run: () => openTradeBuilder(null, e.uid) },
+    !e.purse && { icon: "coins", label: "Sell", run: () => openSell(e.uid) },
+    !e.purse && party.active && party.others().length > 0 && { icon: "users", label: "Trade", run: () => openTradeBuilder(null, e.uid) },
     party.active && { icon: "eye", label: "Show…", run: () => openShowItem(e.uid) },
-    { icon: "trash", label: discarding(char) ? "Discard" : "Remove", danger: true, run: () => confirmRemoveEntry(e.uid) },
+    !e.purse && { icon: "trash", label: discarding(char) ? "Discard" : "Remove", danger: true, run: () => confirmRemoveEntry(e.uid) },
   ].filter(Boolean);
 }
 
@@ -271,8 +271,8 @@ function openMoveTo(entryUid) {
   const rows = containerOptions(char, e.uid).map(opt => {
     const value = opt.value, current = value === here;
     return h("button", { type: "button", class: "row row-main switch" + (current ? " equipped" : ""), disabled: current,
-      onclick: () => { close(); const loc = parseLocation(value); moveEntry(e.uid, loc.parent, loc.strapped, loc.compartment); } },
-      icon(value ? (value.endsWith(":out") ? "link" : "bag") : "user"),
+      onclick: () => { close(); const loc = parseLocation(value); moveEntry(e.uid, loc.parent, loc.compartment); } },
+      icon(value ? (value.endsWith(":c:" + OUTSIDE) ? "link" : "bag") : "user"),
       h("div", null, h("div", { class: "row-title" }, opt.textContent), current && h("div", { class: "row-sub" }, "Where it is now")));
   });
   close = openModal(`Move ${entryName(e)}`, h("div", { class: "group move-to" }, rows));
@@ -285,6 +285,7 @@ const discarding = char => party.active && !!char && party.isLinked(char.id);
 function confirmRemoveEntry(entryUid, after) {
   const char = store.char(), e = char?.items.find(x => x.uid === entryUid);
   if (!e) return;
+  if (e.purse) return toast("The coin purse stays (move its coins elsewhere instead)");
   if (discarding(char)) return discardEntry(entryUid, after);
   const name = entryName(e) + (e.qty > 1 ? ` (×${e.qty.toLocaleString()})` : "");
   const inside = holdsItems(char, e) && char.items.some(x => x.parent === e.uid);

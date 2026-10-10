@@ -4,13 +4,18 @@
 // store.data.systems: ones imported from files, and ones that come with Pack Rat (D&D 5e, in
 // js/systems/dnd5e.js), listed as { id, bundled: true } rather than copied. Either kind can be
 // removed (and a bundled one added again from Files). The system supplies the item templates,
-// their groups, the features only it has, fields all its templates share, its catalog and its
-// roll tables. Rule packages (custom items and templates) add to it, per campaign.
+// the features only it has, fields all its templates share, its catalog and its roll tables. Rule
+// packages (custom items and templates) add to it, per campaign.
 //
-// Templates have one shape, built-in or yours:
-//   { id, name, plural?, group, hue?, icon?, categories?, categoryLabel?, categorySegmented?,
-//     fields?: [field], features?: { key: true | "main" | false }, defaults?: {...}, hide?: [fieldKey],
-//     from?: templateId (the template it started as a copy of) }
+// Templates have one shape, built-in or yours (yours can be changed and deleted; that's all):
+//   { id, name, plural?, parent?: templateId, hue?, icon?, abstract?, categories?,
+//     categoryLabel?, categorySegmented?, fields?: [field], features?: { key: true | "main" | false },
+//     defaults?: {...}, hide?: [fieldKey], from?: templateId (the template it started as a copy of),
+//     ghost? (deleted while items still use it) }
+// They nest: one under another (parent) is a kind of it. The top ones are what the filters and
+// catalog list, each with a colour (hue); the ones under them are sub-filters in shades of it, and
+// their categories one level more.
+// (Systems of before had groups of templates: they read as templates, see templatesFromGroups.)
 // An item made from one has `type` = the template's id (older items: `template`, with `type` the
 // built-in it extended).
 
@@ -26,8 +31,7 @@ const LEGACY_SYSTEM = DND5E_SYSTEM.id;
 // Playing without a game system: one plain template, no catalog, no panels.
 const NO_SYSTEM = {
   packrat: "system", id: "", name: "No game system", none: true,
-  groups: [{ id: "items", name: "Items", hue: 30, templates: ["item"] }],
-  templates: [{ id: "item", name: "Item", plural: "Items", group: "items", icon: "sack" }],
+  templates: [{ id: "item", name: "Item", plural: "Items", hue: 30, icon: "sack" }],
   features: [], commonFields: [], starterTemplates: [], catalog: [], tables: [], glossary: {}, panels: [], stats: {}, states: [],
   currency: null, weight: null, // the basic ones (see below)
 };
@@ -54,10 +58,11 @@ const systemIndexes = new WeakMap();
 function systemIndex(sys = activeSystem()) {
   let ix = systemIndexes.get(sys);
   if (!ix) {
-    const templates = sys.templates || [];
+    const { templates, aliases } = templatesFromGroups(sys);
     ix = {
+      list: templates,
       templates: new Map(templates.map(t => [t.id, t])),
-      groups: new Map((sys.groups || []).map(g => [g.id, g])),
+      aliases: { ...aliases, ...(sys.legacyGroups && typeof sys.legacyGroups === "object" ? sys.legacyGroups : {}) },
       catalog: new Map((sys.catalog || []).map(i => [i.id, i])),
       byName: new Map((sys.catalog || []).map(i => [i.name, i])),
       features: new Map((sys.features || []).map(f => [f.key, f])),
@@ -69,7 +74,40 @@ function systemIndex(sys = activeSystem()) {
 
 // ------------------------------------------------------------------ templates
 
-const systemTemplates = () => activeSystem().templates || [];
+const systemTemplates = () => systemIndex().list;
+
+// A system of before had groups of templates (groups: [{ id, name, hue, templates: [ids] }]):
+// a group of one template is that template (with the group's colour); a group of several, a
+// template above them (abstract). aliases: each group's id -> the template it is now.
+function templatesFromGroups(sys) {
+  const list = (sys.templates || []).map(t => ({ ...t }));
+  const groups = Array.isArray(sys.groups) ? sys.groups.filter(g => g && g.id) : [];
+  if (!groups.length) return { templates: list, aliases: {} };
+  const byId = new Map(list.map(t => [t.id, t])), aliases = {}, out = [], placed = new Set();
+  for (const g of groups) {
+    const kids = (g.templates || []).map(id => byId.get(id)).filter(Boolean);
+    if (kids.length === 1) {
+      const t = kids[0];
+      if (t.hue == null) t.hue = g.hue;
+      delete t.parent;
+      aliases[g.id] = t.id;
+      out.push(t); placed.add(t.id);
+    } else if (kids.length > 1) {
+      const id = byId.has(g.id) ? `${g.id}-all` : g.id;
+      out.push({ id, name: g.name, plural: g.name, hue: g.hue, icon: kids[0].icon, abstract: true }); // (a group's split: its template's categories do that now)
+      aliases[g.id] = id;
+      for (const t of kids) { t.parent = id; out.push(t); placed.add(t.id); }
+    }
+  }
+  for (const t of list) if (!placed.has(t.id)) { if (t.group && aliases[t.group] && aliases[t.group] !== t.id) t.parent = aliases[t.group]; out.push(t); }
+  for (const t of out) delete t.group;
+  return { templates: out, aliases };
+}
+// A group's id from before, as the template it is now (else the id as it is).
+function templateAlias(id) {
+  const a = systemIndex().aliases;
+  return id && Object.hasOwn(a, id) && typeof a[id] === "string" ? a[id] : id;
+}
 
 // A template by id: one of the rule packages' (any package, so an item keeps its fields if the
 // package is switched off), else the system's.
@@ -84,7 +122,7 @@ const isSystemTemplate = tpl => !!tpl && systemIndex().templates.get(tpl.id) ===
 // `template`; others' `type` is their template.
 function itemTemplate(item) {
   return templateById(item?.template) || templateById(item?.type)
-    || systemIndex().templates.get("gear") || systemTemplates()[0] || { id: "item", name: "Item", group: "", features: {} };
+    || systemIndex().templates.get("gear") || systemTemplates().find(t => !t.abstract) || { id: "item", name: "Item", features: {} };
 }
 
 // The built-in template a template descends from (copies remember theirs in `from`).
@@ -98,14 +136,49 @@ function rootTemplate(tpl) {
 
 const templatePlural = tpl => tpl.plural || tpl.name;
 
-// ------------------------------------------------------------------ groups
+// ------------------------------------------------------------------ the template tree
 
-const systemGroups = () => activeSystem().groups || [];
-const groupById = id => systemIndex().groups.get(id);
-const groupOfTemplate = tpl => groupById(tpl?.group) || groupById(rootTemplate(tpl)?.group) || systemGroups()[0];
-const groupOfItem = item => groupOfTemplate(itemTemplate(item));
-// The system templates a group lists, in order.
-const groupTemplates = g => (g.templates || []).map(id => systemIndex().templates.get(id)).filter(t => t && !t.hidden);
+// The template a template is under (yours from before named a group: the template it is now).
+function templateParent(tpl) {
+  if (!tpl) return null;
+  const id = tpl.parent || (tpl.group ? templateAlias(tpl.group) : null);
+  const p = id && id !== tpl.id ? templateById(id) : null;
+  return p || null;
+}
+// A template and those it's under, up to the top one.
+function templateLineage(tpl) {
+  const out = [];
+  for (let t = tpl; t && out.length < 12 && !out.includes(t); t = templateParent(t)) out.push(t);
+  return out;
+}
+const topTemplate = tpl => templateLineage(tpl).at(-1) || tpl;
+const topTemplateOf = item => topTemplate(itemTemplate(item));
+// Every template there is to show: the system's, then the packages' in use (and deleted ones
+// still used: ghosts), in the tree's order.
+let treeCache = null;
+function treeTemplates({ ghosts = true } = {}) {
+  // (worked out once per change: sorting asks for it often)
+  const key = `${store.rev || 0}|${store.data ? store.campaign()?.id : ""}|${activeSystem().id}|${ghosts}`;
+  if (treeCache?.key === key && treeCache.data === store.data) return treeCache.list;
+  const all = [...systemTemplates().filter(t => !t.hidden), ...store.templates(), ...(ghosts ? store.ghostTemplates() : [])];
+  const seen = new Set(), out = [];
+  const visit = (t, depth) => {
+    if (seen.has(t.id)) return;
+    seen.add(t.id);
+    out.push(t);
+    for (const k of all) if (templateParent(k) === t) visit(k, depth + 1);
+  };
+  for (const t of all) if (!templateParent(t) || !all.includes(templateParent(t))) visit(t, 0);
+  treeCache = { key, data: store.data, list: out };
+  return out;
+}
+// The top ones (the filters and the catalog's list), and the ones directly under a template.
+const topTemplates = (o) => treeTemplates(o).filter(t => !templateParent(t));
+const childTemplates = (tpl, o) => treeTemplates(o).filter(t => templateParent(t) === tpl);
+// Is an item made with this template, or one under it?
+const inTemplate = (item, id) => templateLineage(itemTemplate(item)).some(t => t.id === id);
+// How deep a template sits (0: a top one).
+const templateDepth = tpl => templateLineage(tpl).length - 1;
 
 // ------------------------------------------------------------------ features and catalog
 
@@ -320,12 +393,12 @@ const termCap = key => { const w = term(key); return w[0].toUpperCase() + w.slic
 // Templates made before standardising extended a built-in "base type" and added fields. They become
 // complete templates: a copy of that built-in with the extra fields (nothing about their items changes).
 function standardiseTemplate(tpl, sys = DND5E_SYSTEM) {
-  if (!tpl || !tpl.type || tpl.group) return tpl;
+  if (!tpl || !tpl.type || tpl.group || tpl.parent) return tpl;
   const base = systemIndex(sys).templates.get(tpl.type) || systemIndex(sys).templates.get("gear");
   const { type, color, shade, builtin, ...rest } = tpl;
   return {
     ...rest,
-    group: base.group,
+    parent: base.parent || base.id,
     from: base.id,
     icon: base.icon,
     categories: base.categories, categoryLabel: base.categoryLabel, categorySegmented: base.categorySegmented,
@@ -367,12 +440,15 @@ function cleanSystem(raw) {
   if (!raw || raw.packrat !== "system" || typeof raw.id !== "string" || !raw.id) throw new Error("Not a Pack Rat system file");
   const templates = (Array.isArray(raw.templates) ? raw.templates : []).filter(t => t && typeof t.id === "string" && t.name);
   if (!templates.length) throw new Error("A system needs at least one template");
-  let groups = (Array.isArray(raw.groups) ? raw.groups : []).filter(g => g && typeof g.id === "string" && g.name);
-  if (!groups.length) groups = [{ id: "items", name: "Items", hue: 210, templates: templates.map(t => t.id) }];
-  for (const t of templates) if (!groups.some(g => g.id === t.group)) t.group = groups[0].id;
+  // (a file of before, with groups: they become templates, see templatesFromGroups)
+  const groups = (Array.isArray(raw.groups) ? raw.groups : []).filter(g => g && typeof g.id === "string" && g.name);
+  const conv = templatesFromGroups({ templates, groups });
+  const ids = new Set(conv.templates.map(t => t.id));
+  for (const t of conv.templates) if (t.parent && (!ids.has(t.parent) || t.parent === t.id)) delete t.parent;
+  if (!conv.templates.some(t => t.hue != null)) conv.templates.forEach((t, i) => { if (!t.parent) t.hue = (210 + i * 47) % 360; });
   return {
     packrat: "system", id: raw.id, name: String(raw.name || raw.id), version: raw.version || 1, description: raw.description || "",
-    groups, templates,
+    templates: conv.templates, legacyGroups: { ...conv.aliases, ...(raw.legacyGroups && typeof raw.legacyGroups === "object" ? raw.legacyGroups : {}) },
     commonFields: Array.isArray(raw.commonFields) ? raw.commonFields : [],
     features: (Array.isArray(raw.features) ? raw.features : []).filter(f => f && f.key && !CORE_FEATURES.some(c => c.key === f.key))
       .map(f => ({ ...f, fields: Array.isArray(f.fields) ? f.fields : [] })),

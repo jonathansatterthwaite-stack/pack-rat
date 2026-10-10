@@ -103,22 +103,19 @@ const SLOT_DELVE_SYSTEM = {
   optional: true, // comes with Pack Rat, but isn't added unless you add it
   description: "An example system unlike D&D 5e: inventory slots instead of pounds, the silver standard, armor points instead of Armor Class.",
 
-  groups: [
-    { id: "arms", name: "Arms & Armor", hue: 5, templates: ["sd-weapon", "sd-armor"] },
-    { id: "kit", name: "Kit", hue: 95, templates: ["sd-gear", "sd-light", "sd-container"] },
-    { id: "food", name: "Provisions", hue: 268, templates: ["sd-provision"] },
-    { id: "loot", name: "Loot", hue: 48, templates: ["sd-loot"] },
-  ],
   templates: [
-    { id: "sd-weapon", name: "Weapon", plural: "Weapons", group: "arms", icon: "swords", features: { attack: "main", equippable: true, stacks: false } },
-    { id: "sd-armor", name: "Armor", plural: "Armor", group: "arms", icon: "armor-breastplate", features: { protection: "main", equippable: true, stacks: false } },
-    { id: "sd-gear", name: "Gear", plural: "Gear", group: "kit", icon: "sack" },
-    { id: "sd-light", name: "Light", plural: "Lights", group: "kit", icon: "torch",
+    { id: "arms", name: "Arms & Armor", plural: "Arms & Armor", hue: 5, icon: "swords", abstract: true },
+    { id: "sd-weapon", name: "Weapon", plural: "Weapons", parent: "arms", icon: "swords", features: { attack: "main", equippable: true, stacks: false } },
+    { id: "sd-armor", name: "Armor", plural: "Armor", parent: "arms", icon: "armor-breastplate", features: { protection: "main", equippable: true, stacks: false } },
+    { id: "kit", name: "Kit", plural: "Kit", hue: 95, icon: "sack", abstract: true },
+    { id: "sd-gear", name: "Gear", plural: "Gear", parent: "kit", icon: "sack" },
+    { id: "sd-light", name: "Light", plural: "Lights", parent: "kit", icon: "torch",
       fields: [{ key: "burns", label: "Burns for", kind: "text", placeholder: "1 hour" }], defaults: { countInPlay: true } },
-    { id: "sd-container", name: "Container", plural: "Containers", group: "kit", icon: "backpack", features: { holds: true, stacks: false } },
-    { id: "sd-provision", name: "Provision", plural: "Provisions", group: "food", icon: "potion", categories: ["Food", "Drink", "Medicine"], defaults: { countInPlay: true } },
-    { id: "sd-loot", name: "Loot", plural: "Loot", group: "loot", icon: "gem", categories: ["Curio", "Gem", "Art"] },
+    { id: "sd-container", name: "Container", plural: "Containers", parent: "kit", icon: "backpack", features: { holds: true, stacks: false } },
+    { id: "sd-provision", name: "Provision", plural: "Provisions", hue: 268, icon: "potion", categories: ["Food", "Drink", "Medicine"], defaults: { countInPlay: true } },
+    { id: "sd-loot", name: "Loot", plural: "Loot", hue: 48, icon: "gem", categories: ["Curio", "Gem", "Art"] },
   ],
+  legacyGroups: { food: "sd-provision", loot: "sd-loot" },
   features: [
     { key: "attack", label: "Weapon", equip: "wielded", hint: "Used to fight: shows in the Weapons panel.", fields: [
       { key: "damage", label: "Damage", kind: "dice", placeholder: "d6" },

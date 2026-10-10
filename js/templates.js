@@ -28,17 +28,28 @@ const CORE_FIELD_KEYS = new Set([...CORE_HEAD, WEIGHT_FIELD, ...CORE_TAIL].map(f
 // See featureDefault in store.js. A feature with a `flag` is that yes/no field of the item itself
 // (imageOnly; 5e's attunement). Two features that `exclude` each other can't both be ticked. Systems
 // add features of their own (D&D 5e: Weapon, Armor, Ammunition, Attunement).
+// A compartment's own options (as a container's: see compartmentsField in js/app.js).
+const COMPARTMENT_FIELDS = [
+  { key: "allows", label: "Holds", kind: "allows" },
+  { key: "holdLimit", label: "How many it holds (counted)", kind: "number", placeholder: "20" },
+  { key: "holdUnit", label: "Counted in (one)", kind: "text", placeholder: "arrow, sheet, coin…" },
+  { key: "weightless", label: "Contents don't add weight", kind: "checkbox" },
+  { key: "coinsApart", label: "Coins in it don't count in the Coins panel", kind: "checkbox" },
+  { key: "contentsView", label: "Shows what's in it", kind: "select", options: ["inherit", "list", "details", "sealed"],
+    labels: { inherit: "As the container does", list: "In the inventory (a section of the container's)", details: "Only in the container's details", sealed: "Sealed: hidden (only the GM sees)" } },
+];
+
 const CORE_FEATURES = [
-  { key: "holds", label: "Container", hint: "Other items go inside it. Set how much it holds, whether gear can be strapped outside, or that it only holds certain things.", fields: [
+  { key: "holds", label: "Container", hint: "Other items go inside it. Set how much it holds, that it only holds certain things, and its compartments (pockets, its outside for strapped gear).", fields: [
     { key: "capacity", label: "Capacity (text)", kind: "text", placeholder: "1 cubic foot/30 pounds of gear" },
     { key: "capacityLb", label: "Capacity (lb)", kind: "number" },
     { key: "weightless", label: "Contents don't add weight (e.g. Bag of Holding)", kind: "checkbox" },
-    { key: "straps", label: "Gear can be strapped to the outside", kind: "checkbox" },
     { key: "allows", label: "Holds", kind: "allows" },
     { key: "holdLimit", label: "How many it holds (counted)", kind: "number", placeholder: "20" },
     { key: "holdUnit", label: "Counted in (one)", kind: "text", placeholder: "arrow, sheet, coin…" },
     { key: "coinsApart", label: "Coins in it don't count in the Coins panel (a piggy bank)", kind: "checkbox" },
-    { key: "sealed", label: "Sealed: what's in it is hidden (only the GM sees)", kind: "checkbox" },
+    { key: "contentsView", label: "Shows what's in it", kind: "select", options: ["list", "details", "sealed"],
+      labels: { list: "In the inventory (a section of its own)", details: "Only in its details (like a deck of cards)", sealed: "Sealed: hidden (only the GM sees)" } },
     { key: "compartments", label: "Compartments", kind: "compartments" },
     { key: "actions", label: "Actions", kind: "actions" },
   ] },
@@ -104,35 +115,46 @@ function fieldLabel(f) {
   return f.label.replace("(lb)", `(${weightUnit()})`);
 }
 
-// ------------------------------------------------------------------ groups & colours
-// Groups are what the filters, tabs and colours show. A group can hold several templates (Gear &
-// Tools). Every group, and every custom template, has a hue; its subcategories are shades of it:
-// the templates of a combined group, or the categories of a single template (Light / Medium /
-// Heavy armor).
+// ------------------------------------------------------------------ the tree's colours
+// Each top template has a hue (any template can have one of its own); the templates under it, and
+// its categories, are shades of it (Light / Medium / Heavy armor; Gear & Tools' gear, tools, packs).
 
-// A hue chosen in the app (Catalog → Templates → Colour), else the group's default.
-function groupHue(groupId) {
-  const chosen = typeof store !== "undefined" ? store.state?.settings?.groupHues?.[groupId] : undefined;
-  return chosen ?? groupById(groupId)?.hue ?? 0;
+// A hue chosen in the app (Catalog → Templates → Colour). Colours chosen for the groups of before
+// count for the templates they are now.
+function chosenHue(id) {
+  const s = typeof store !== "undefined" ? store.state?.settings : null;
+  if (!s) return undefined;
+  if (s.templateHues && Object.hasOwn(s.templateHues, id)) return s.templateHues[id];
+  const old = s.groupHues || {}, aliases = systemIndex().aliases;
+  const was = Object.keys(aliases).find(k => aliases[k] === id && k !== id);
+  if (was && old[was] != null) return old[was];
+  return Object.hasOwn(aliases, id) && aliases[id] !== id ? undefined : Object.hasOwn(old, id) ? old[id] : undefined;
 }
+const ownHue = tpl => chosenHue(tpl.id) ?? tpl.hue;
+// The template whose colour a template shows: the nearest of it and those above it with a hue of
+// its own (else the top one).
+const colourSource = tpl => templateLineage(tpl).find(t => ownHue(t) != null) || topTemplate(tpl);
+const templateHue = tpl => ownHue(colourSource(tpl)) ?? 0;
 
 // The built-in template an item comes from (copies count as their original).
 const itemRootId = it => rootTemplate(itemTemplate(it))?.id;
 
-// The subcategories of a group: its templates if it combines several, else the template's categories.
-function subcategories(groupId) {
-  const g = groupById(groupId);
-  if (!g) return [];
-  const tpls = groupTemplates(g);
-  if (tpls.length > 1) return tpls.flatMap(t => {
-    const split = g.split?.[t.id];
-    if (!split) return [{ key: t.id, label: templatePlural(t), match: it => itemRootId(it) === t.id }];
-    // Some categories of this template get their own subcategory; the rest share one.
-    const cats = Object.keys(split).filter(c => c !== "rest");
-    return [...cats.map(c => ({ key: `${t.id}:${c}`, label: split[c], match: it => itemRootId(it) === t.id && it.category === c })),
-      { key: t.id, label: split.rest, match: it => itemRootId(it) === t.id && !cats.includes(it.category) }];
-  });
-  return templateSubcategories(tpls[0] || {});
+// A template's kinds, as sub-filters (each a shade of its colour): the templates under it (each
+// with its own kinds, a level down), and its own items (not abstract ones); else its categories.
+function subcategories(tpl) {
+  if (typeof tpl === "string") tpl = templateById(tpl);
+  if (!tpl) return [];
+  const kids = childTemplates(tpl);
+  if (!kids.length) return templateSubcategories(tpl);
+  const subs = kids.map(t => ({ key: t.id, label: templatePlural(t), match: it => inTemplate(it, t.id) }));
+  // Its own items: by its categories (Simple, Martial…), else all together.
+  if (!tpl.abstract) {
+    const own = it => inTemplate(it, tpl.id) && !kids.some(k => inTemplate(it, k.id));
+    const cats = templateSubcategories(tpl);
+    subs.push(...(cats.length ? cats.map(c => ({ ...c, match: it => own(it) && c.match(it) }))
+      : [{ key: `${tpl.id}:self`, label: `Other ${templatePlural(tpl).toLowerCase()}`, match: own }]));
+  }
+  return subs;
 }
 
 // A template's categories as subcategories (shades of its colour).
@@ -153,45 +175,39 @@ function shadeLevels(n) {
   return order;
 }
 
-function shade(hue, i = -1, n = 1) {
-  if (i < 0 || n < 2) return `hsl(${hue} 62% 50%)`;
+function shade(hue, i = -1, n = 1, j = -1, m = 1) {
+  if (i < 0 || n < 2) return j < 0 ? `hsl(${hue} 62% 50%)` : shade(hue, j, m);
   const level = shadeLevels(n)[i];
-  const l = 66 - level * (32 / (n - 1));
+  let l = 66 - level * (32 / (n - 1));
   const s = i % 2 ? 46 : 76;
   const h = (hue + (i % 2 ? 7 : -7) + 360) % 360;
+  // A kind's own kinds (Tools' Artisan's Tools, Gaming Set…): a little lighter or darker within its shade.
+  if (j >= 0 && m > 1) l = Math.min(70, Math.max(30, l + (j - (m - 1) / 2) * Math.min(5, 14 / (m - 1))));
   return `hsl(${h} ${s}% ${Math.round(l)}%)`;
 }
 
-const groupColor = groupId => shade(groupHue(groupId));
-
-// Sort position of an item: by group, then its template's place in the group.
+// Sort position of an item: its template's place in the tree.
 function templateOrder(item) {
-  const root = rootTemplate(itemTemplate(item)), g = groupOfTemplate(root);
-  return systemGroups().indexOf(g) * 100 + Math.max(0, (g?.templates || []).indexOf(root?.id));
+  const list = treeTemplates(), i = list.indexOf(itemTemplate(item));
+  return i < 0 ? list.length : i;
 }
 
-// A template's own hue: its own (custom templates), else its group's.
-const templateHue = tpl => tpl.hue ?? groupHue(groupOfTemplate(tpl)?.id);
-
-// A template's colour: a built-in one's shade within its group (if the group combines several),
-// else the group colour; a custom template's own hue.
+// A template's colour: its own hue, or its shade of the colour of the template above it that it
+// shows (by which of that one's kinds it is).
 function templateColor(tpl) {
-  if (!isSystemTemplate(tpl)) return shade(templateHue(tpl));
-  const g = groupOfTemplate(tpl);
-  if (!g || groupTemplates(g).length < 2) return groupColor(g?.id);
-  const subs = subcategories(g.id);
-  return shade(groupHue(g.id), subs.findIndex(s => s.key === tpl.id), subs.length);
+  const src = colourSource(tpl);
+  if (src === tpl) return shade(templateHue(tpl));
+  const line = templateLineage(tpl), under = line[line.indexOf(src) - 1] || tpl;
+  const subs = subcategories(src);
+  return shade(templateHue(src), subs.findIndex(s => s.key === under.id), subs.length);
 }
 
-// The colour an item shows (icon, tile edge): its template's hue (custom templates) or its
-// group's, in the shade of its subcategory.
+// The colour an item shows (icon, tile edge): the colour its template shows, in the shade of its
+// kind (and of its kind's own kind: a tool's category).
 function itemColor(item) {
-  const tpl = itemTemplate(item);
-  if (!isSystemTemplate(tpl)) {
-    const subs = templateSubcategories(tpl);
-    return shade(templateHue(tpl), subs.findIndex(s => s.match(item)), subs.length);
-  }
-  const g = groupOfTemplate(tpl);
-  const subs = subcategories(g?.id);
-  return shade(groupHue(g?.id), subs.findIndex(s => s.match(item)), subs.length);
+  const src = colourSource(itemTemplate(item));
+  const subs = subcategories(src), i = subs.findIndex(s => s.match(item));
+  const kind = i >= 0 && templateById(subs[i].key) !== src && colourSource(templateById(subs[i].key) || src) === src ? templateById(subs[i].key) : null;
+  const inner = kind ? subcategories(kind) : [];
+  return shade(templateHue(src), i, subs.length, inner.findIndex(s => s.match(item)), inner.length);
 }

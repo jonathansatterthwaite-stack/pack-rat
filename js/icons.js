@@ -62,7 +62,7 @@ const GEAR_ICON_RULES = [
   [/mistletoe/, "mistletoe"], [/totem/, "totem"], [/amulet|necklace|pendant/, "amulet"], [/emblem|holy symbol/, "holy-symbol"],
   [/reliquary/, "reliquary"], [/soap/, "soap"], [/alms box/, "alms-box"], [/incense|censer/, "incense"],
   [/small knife|knife/, "dagger"], [/key/, "key"], [/mirror/, "mirror"], [/scroll/, "scroll"], [/map/, "map"],
-  [/letter|envelope/, "letter"], [/crown|tiara/, "crown"], [/coin|gold piece/, "coins"],
+  [/letter|envelope/, "letter"], [/crown|tiara/, "crown"], [/coin|(gold|silver|copper|electrum|platinum) piece/, "coins"],
   [/diamond|ruby|emerald|sapphire|gem|jewel/, "gem"], [/ingot|bar of/, "gold-bar"], [/goblet|chalice/, "goblet"],
   [/statue|figurine|painting|tapestry/, "art"], [/wine/, "wine"],
   [/\bale\b|beer|mead/, "drink"], [/bread/, "bread"], [/cheese/, "cheese"], [/meat/, "meat"], [/apple|fruit/, "apple"],

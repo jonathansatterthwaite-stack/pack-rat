@@ -127,9 +127,9 @@ const kv = {
 };
 
 // A character nobody has played (the "Adventurer" every new install starts with): nothing but its
-// showcase items (js/showcase.js), no coins or notes, its first name.
+// showcase items (js/showcase.js) and its coin purse, no coins or notes, its first name.
 function isBlankCharacter(c) {
-  return (c.items || []).every(e => e.showcase) && !coinTotalCp(c.coins || {}) && !c.notes && ["Adventurer", "New Character"].includes(c.name);
+  return (c.items || []).every(e => e.showcase || e.purse) && !coinTotalCp(c.coins || {}) && !c.notes && ["Adventurer", "New Character"].includes(c.name);
 }
 
 // One-time move of this browser's saved data into the PC's shared file. Merges
@@ -378,6 +378,7 @@ const store = {
     // The characters are always this device's own. In a party, the linked ones are also kept
     // in step with the host (party.link / party.sync).
     if (reclassifyAll({ characters: this.data.campaigns.flatMap(c => c.characters), shops: this.data.campaigns.flatMap(c => c.shops) })) this.save();
+    if (renameCategories(this.data) + syncCatalog(this.campaign(), this.state.settings)) this.save();
   },
 
   save() {
@@ -388,8 +389,12 @@ const store = {
   // Apply a mutation, persist, and re-render.
   update(fn) {
     fn(this.state);
+    this.rev = (this.rev || 0) + 1;
+    clearGhostTemplates(this.data);
+    clearGhostItems(this.data);
+    syncCatalog(this.campaign(), this.state.settings); // (inventory copies follow their catalog items)
     // Coins and coin items kept in step (see syncCoins).
-    for (const c of this.state.characters || []) syncCoins(c, this.state.settings);
+    for (const c of this.state.characters || []) syncCoins(c, this.state.settings, { purse: true });
     for (const hd of this.state.hoards || []) syncCoins(hd, this.state.settings); // (kept like an inventory)
     this.save();
     this.listeners.forEach(l => l());
@@ -417,7 +422,8 @@ const store = {
     return pkg;
   },
   // Custom items: the ones this campaign uses, or every package's (to find one an item came from).
-  customItems() { return this.enabledPackages().flatMap(p => p.customItems); },
+  // (deleted ones still in an inventory, ghosts, aren't listed: see clearGhostItems)
+  customItems() { return this.enabledPackages().flatMap(p => p.customItems.filter(i => !i.ghost)); },
   allCustomItems() { return this.data.packages.flatMap(p => p.customItems); },
   findCustom(id) { return this.allCustomItems().find(i => i.id === id); },
   packageOf(itemId) { return this.data.packages.find(p => p.customItems.some(i => i.id === itemId)); },
@@ -426,14 +432,17 @@ const store = {
   // The active character; if it's gone (deleted, e.g. in another window), the first one.
   char() { return this.state.characters.find(c => c.id === this.state.activeId) || this.state.characters[0]; },
 
-  catalog() { return [...this.customItems(), ...(activeSystem().catalog || [])]; },
+  // (the coins are treasure items of the catalog too)
+  catalog() { return [...this.customItems(), ...(activeSystem().catalog || []), ...coinOrder().map(k => coinItem(k))]; },
 
-  findItem(id) { return this.findCustom(id) || catalogItem(id); },
+  findItem(id) { return this.findCustom(id) || catalogItem(id) || coinCatalogItem(id); },
 
   // Templates for new items: the system's and those of the packages in use. Any package's
   // template is still found by id, so items made with one keep their fields.
-  templates() { return [...systemTemplates().filter(t => !t.hidden), ...this.enabledPackages().flatMap(p => p.templates)]; },
+  templates() { return [...systemTemplates().filter(t => !t.hidden), ...this.enabledPackages().flatMap(p => p.templates.filter(t => !t.ghost))]; },
   allTemplates() { return this.data.packages.flatMap(p => p.templates); },
+  // Deleted templates still used by items (they show faded until nothing uses them).
+  ghostTemplates() { return this.enabledPackages().flatMap(p => p.templates.filter(t => t.ghost)); },
 
   template(id) { return templateById(id); },
 
@@ -441,6 +450,121 @@ const store = {
   reset() { this.data = defaultData(); },
 };
 
+
+// Items anywhere (custom items, every campaign's characters, shops and hoards) made with a template.
+function templateUses(data, id) {
+  const uses = it => it && (it.template === id || it.type === id);
+  let n = 0;
+  for (const p of data.packages || []) n += (p.customItems || []).filter(uses).length;
+  for (const c of data.campaigns || []) {
+    for (const ch of c.characters || []) n += (ch.items || []).filter(e => uses(e.item)).length;
+    for (const hd of c.hoards || []) n += (hd.items || []).filter(e => uses(e.item)).length;
+    for (const sh of c.shops || []) n += (sh.items || []).filter(li => uses(li.item)).length;
+  }
+  return n;
+}
+// Inventory copies (characters', hoards', shops') of a catalog item, anywhere.
+function itemCopies(data, id) {
+  let n = 0;
+  for (const c of data.campaigns || []) {
+    for (const ch of c.characters || []) n += (ch.items || []).filter(e => e.srcId === id).length;
+    for (const hd of c.hoards || []) n += (hd.items || []).filter(e => e.srcId === id).length;
+    for (const sh of c.shops || []) n += [...(sh.items || []), ...(sh.backroom || [])].filter(li => li.srcId === id).length;
+  }
+  return n;
+}
+// Deleted custom items nothing has a copy of any more go.
+function clearGhostItems(data) {
+  for (const p of data.packages || []) if (p.customItems?.some(i => i.ghost)) p.customItems = p.customItems.filter(i => !i.ghost || itemCopies(data, i.id));
+}
+
+// ------------------------------------------------------------------ the catalog and inventories
+// An inventory copy (a character's, a hoard's, a shop's listing) is its catalog item (srcId):
+// when the catalog item changes, so does every copy (the catalog comes first). Editing a copy
+// makes, or changes, a custom item in the catalog (see saveEntryItem in js/app.js). What's
+// written or drawn in it (COPY_KEYS) is the copy's own, as are its name, notes, count, charges,
+// states and liquid (the entry's, not the item's).
+const COPY_KEYS = ["body", "author"];
+
+// A coin's catalog item (coin-gp…), as the campaign's settings weigh it.
+const coinCatalogItem = (id, settings) => id?.startsWith?.(COIN_ID) && coinOrder().includes(id.slice(COIN_ID.length)) ? coinItem(id.slice(COIN_ID.length), settings) : null;
+
+// What a copy of a catalog item is: the item (not its id), saying whether copies stack (as
+// addToInventory has it), with what's written in this copy its own.
+function syncedItem(src, srcId, own = null) {
+  const { id, ghost, showcase, ...s } = clone(src);
+  if (stacks(s, srcId)) delete s.noStack; else s.noStack = true;
+  for (const k of COPY_KEYS) if (own?.[k]) s[k] = own[k];
+  return s;
+}
+// Has a copy been changed from its catalog item? (Fields it hasn't got, from before the catalog
+// had them, don't count.)
+const editedCopy = (own, want) => Object.keys(own).some(k => k !== "noStack" && !COPY_KEYS.includes(k) && JSON.stringify(own[k]) !== JSON.stringify(want[k]));
+
+// Keep a campaign's copies in step with the catalog. A copy whose catalog item isn't here (one
+// that came from another device, the showcase's) gets one: a custom item, by its id. The first
+// time (camp.catalogSynced), copies changed from their catalog item keep their changes as custom
+// items of their own. Returns how many copies changed.
+function syncCatalog(camp, settings = {}) {
+  if (!camp || !store.data) return 0;
+  const custom = new Map(store.allCustomItems().map(i => [i.id, i]));
+  const find = id => id ? custom.get(id) || catalogItem(id) || coinCatalogItem(id, settings) : null;
+  const migrate = !camp.catalogSynced, made = new Map();
+  const add = (item, e) => {
+    const { noStack, ...rest } = clone(item);
+    for (const k of COPY_KEYS) delete rest[k];
+    const it = { ...rest, source: rest.source || "Homebrew", ...(e.showcase ? { showcase: true } : {}) };
+    store.homePackage().customItems.unshift(it);
+    custom.set(it.id, it);
+    return it;
+  };
+  // A copy with changes of its own (or none to go by): a custom item of its own, shared by copies alike.
+  const adopt = e => {
+    const key = (e.srcId || "") + "|" + JSON.stringify({ ...e.item, body: undefined, author: undefined });
+    const it = made.get(key) || add({ ...e.item, id: "custom-" + uid() }, e);
+    made.set(key, it);
+    e.srcId = it.id;
+    return it;
+  };
+  let changed = 0;
+  const visit = (e, own) => {
+    if (!e?.item || e.item.card || e.purse) return;
+    let src = find(e.srcId);
+    if (!src && own) src = e.srcId ? add({ ...e.item, id: e.srcId }, e) : adopt(e);
+    if (!src) return;
+    let want = syncedItem(src, e.srcId, e.item);
+    if (migrate && own && editedCopy(e.item, want)) want = syncedItem(adopt(e), e.srcId, e.item);
+    if (JSON.stringify(e.item) !== JSON.stringify(want)) { e.item = want; changed++; }
+  };
+  for (const c of camp.characters || []) for (const e of c.items || []) visit(e, true);
+  for (const hd of camp.hoards || []) for (const e of hd.items || []) visit(e, true);
+  for (const sh of camp.shops || []) for (const li of [...(sh.items || []), ...(sh.backroom || [])]) visit(li, false);
+  if (migrate) { camp.catalogSynced = true; changed++; }
+  return changed;
+}
+
+// A system's categories renamed since (renamedCategories: { templateId: { old: new } }): custom
+// items with the old name get the new one (copies follow their catalog items).
+function renameCategories(data) {
+  const ren = activeSystem().renamedCategories || {};
+  let n = 0;
+  for (const p of data.packages || []) for (const it of p.customItems || []) {
+    const to = ren[itemTemplate(it)?.id]?.[it.category];
+    if (to) { it.category = to; n++; }
+  }
+  return n;
+}
+
+// Ghosts nothing uses any more go (what was under one goes under its parent).
+function clearGhostTemplates(data) {
+  for (const p of data.packages || []) {
+    if (!p.templates?.some(t => t.ghost)) continue;
+    for (const g of p.templates.filter(t => t.ghost && !templateUses(data, t.id))) {
+      for (const q of data.packages) for (const t of q.templates) if (t.parent === g.id) { if (g.parent) t.parent = g.parent; else delete t.parent; }
+      p.templates = p.templates.filter(t => t !== g);
+    }
+  }
+}
 
 // Catalog items that moved type (see RECLASSIFY in tools/build_srd.py): older inventory
 // copies are brought in line when loaded. Returns true if the item changed.
@@ -512,27 +636,28 @@ const stacks = (item, srcId) => hasFeature(item, "stacks", srcId) && !deckList(i
 
 // Inventory entries keep a snapshot of the item so each copy can be edited
 // (renamed, enchanted...) without touching the catalog.
-// `strapped` = hanging off the outside of `parent` rather than inside it.
-function addToInventory(char, item, qty = null, parent = null, strapped = false) {
+// compartment: the id of one of the parent's compartments (its outside, a pocket…), else its main space.
+function addToInventory(char, item, qty = null, parent = null, compartment = null) {
   qty = qty || item.bundle || 1;
-  strapped = !!(parent && strapped);
+  compartment = parent && compartment || null;
   const { id, ...snapshot } = item;
   // Decks don't stack: each has its own cards.
   if (deckList(item, id) && qty > 1) {
     let last;
-    for (let i = 0; i < qty; i++) last = addToInventory(char, item, 1, parent, strapped);
+    for (let i = 0; i < qty; i++) last = addToInventory(char, item, 1, parent, compartment);
     return last;
   }
   const stackable = stacks(item, id);
   if (stackable) delete snapshot.noStack; else snapshot.noStack = true;
   const existing = stackable && char.items.find(e => e.srcId === id && e.parent === parent && !e.customName &&
-    !!e.strapped === strapped && JSON.stringify(e.item) === JSON.stringify(snapshot));
+    entryComp(e) === compartment && JSON.stringify(e.item) === JSON.stringify(snapshot));
   if (existing) {
     existing.qty += qty;
     return existing;
   }
   const entry = { uid: uid(), srcId: id, item: clone(snapshot), qty, equipped: false,
-    states: {}, parent, strapped, notes: "" };
+    states: {}, parent, notes: "" };
+  if (compartment) entry.compartment = compartment;
   if (item.maxCharges) entry.charges = item.maxCharges;
   char.items.push(entry);
   if (deckList(item, id)) fillDeck(char, entry);
@@ -596,16 +721,22 @@ function itemActions(it) {
   return [{ label: noun === "card" ? "Draw a card" : "Take one at random", effect: "random" }, { label: "Take all out", effect: "empty" }];
 }
 
-// What's in a container that can come out (not what's strapped to it).
-const takeable = (char, holder) => char.items.filter(e => e.parent === holder.uid && !e.strapped);
+// What's in a container that can come out (its main space: not its compartments, nor its outside).
+const takeable = (char, holder) => char.items.filter(e => e.parent === holder.uid && !compartmentOf(char, e));
 
 // Take n of an entry out of its container, to where the container is: a stack's split off (and
 // joins one there), a single thing just moves. Returns the entry where it landed.
 function takeOutOf(char, holder, e, n = e.qty) {
-  const parent = holder.parent || null, strapped = !!(parent && holder.strapped);
+  const parent = holder.parent || null, comp = entryComp(holder);
   n = Math.min(n, e.qty);
+  if (isCoinEntry(e) && !comp && !holder.purse) { // (into the purse; out of it, onto where it is)
+    const got = addCoins(char, e.item.coin, n, parent);
+    e.qty -= n;
+    if (e.qty <= 0) char.items = char.items.filter(x => x !== e);
+    return got;
+  }
   if (stacks(e.item, e.srcId)) {
-    const got = addToInventory(char, { ...clone(e.item), id: e.srcId }, n, parent, strapped);
+    const got = addToInventory(char, { ...clone(e.item), id: e.srcId }, n, parent, comp);
     if (e.liquid && !got.liquid) got.liquid = clone(e.liquid);
     e.qty -= n;
     if (e.qty <= 0) char.items = char.items.filter(x => x !== e);
@@ -613,12 +744,12 @@ function takeOutOf(char, holder, e, n = e.qty) {
   }
   if (n < e.qty) {
     e.qty -= n;
-    const part = { ...clone(e), uid: uid(), qty: n, parent, strapped };
+    const part = { ...clone(e), uid: uid(), qty: n };
+    placeEntry(part, parent, comp);
     char.items.push(part);
     return part;
   }
-  e.parent = parent;
-  e.strapped = strapped;
+  placeEntry(e, parent, comp);
   return e;
 }
 
@@ -642,26 +773,36 @@ function drawFromSet(char, setUid, count = 1, random = Math.random) {
     const left = cardsIn(char, set);
     if (!left.length) break;
     const piece = left[Math.floor(random() * left.length)];
-    piece.parent = set.parent;
-    piece.strapped = !!set.strapped;
+    placeEntry(piece, set.parent, entryComp(set));
     drawn.push(piece.uid);
   }
   return drawn;
 }
 
+// How a container shows what's in it (item.contentsView): "list" (its own section in the
+// inventory), "details" (only in its details, as a deck's pieces) or "sealed" (hidden: only the GM
+// sees). (item.sealed from before: sealed.)
+const contentsView = e => ["list", "details", "sealed"].includes(e?.item?.contentsView) ? e.item.contentsView : e?.item?.sealed ? "sealed" : "list";
+// Is what's in it kept from this device? (Sealed, and not the GM.)
+const sealedHere = e => contentsView(e) === "sealed" && !(typeof isGmDevice === "function" && isGmDevice());
+// Has it a section of its own in the inventory? (Not when its contents show only in its details.)
+const hasSection = e => contentsView(e) !== "details" || compartmentsOf(e).some(k => spaceView(e, k) !== "details");
+
 // Kept out of the inventory lists: a deck's pieces, the coins in the purse (the Coins panel
-// shows those; see syncCoins), and, but to the GM, what's in a sealed container.
+// shows those; see syncCoins), and what's in a container that shows it only in its details (or,
+// but to the GM, a sealed one).
 function inSealed(char, e) {
-  if (typeof isGmDevice === "function" && isGmDevice()) return false;
   const seen = new Set();
-  for (let p = e.parent && char.items.find(x => x.uid === e.parent); p && !seen.has(p.uid); p = p.parent && char.items.find(x => x.uid === p.parent)) {
+  for (let x = e, p = x.parent && char.items.find(i => i.uid === x.parent); p && !seen.has(p.uid); x = p, p = x.parent && char.items.find(i => i.uid === x.parent)) {
     seen.add(p.uid);
-    if (p.item?.sealed && !e.strapped) return true;
+    const view = spaceView(p, compartmentOf(char, x));
+    if (view === "details" || (view === "sealed" && !gmHere())) return true;
   }
   return false;
 }
+const gmHere = () => typeof isGmDevice === "function" && isGmDevice();
 function inDeck(char, e) {
-  if (inPurse(e) || inSealed(char, e)) return true;
+  if ((inPurse(char, e) && !purseEntry(char)) || inSealed(char, e)) return true; // (a hoard's loose coins; a character's purse shows its own)
   if (!e.item.card || !e.parent) return false;
   const p = char.items.find(x => x.uid === e.parent);
   return !!p && isDeckEntry(p);
@@ -693,7 +834,7 @@ function packPlan(pack) {
     holder = rows.find(r => !r.place && hasFeature(r.item, "holds", r.item?.id) && (r.item.capacityLb > 0 || r.item.weightless));
     if (holder) holder.place = "holder";
   }
-  const straps = !!holder && (holder.item?.straps || /backpack/i.test(holder.name));
+  const straps = !!holder && (!!strapSpace({ item: holder.item, srcId: holder.item?.id }) || /backpack/i.test(holder.name));
   for (const r of rows) {
     if (r.place === "holder" && r !== holder) r.place = "in"; // only one container holds the rest
     if (!r.place) r.place = !holder ? "loose" : straps && STRAPPABLE.test(r.name) ? "strap" : "in";
@@ -702,22 +843,22 @@ function packPlan(pack) {
 }
 
 // Unpack as planned. into: an existing container (uid) to pack into instead of the pack's own;
-// parent/strapped: where the pack's container, and anything loose, goes.
-function unpackPack(char, rows, { into = null, parent = null, strapped = false } = {}) {
+// parent/compartment: where the pack's container, and anything loose, goes.
+function unpackPack(char, rows, { into = null, parent = null, compartment = null } = {}) {
   const holderRow = rows.find(r => r.place === "holder" && r.include && r.item);
   let holderUid = into;
   if (holderRow) {
     // Packing into another container: the pack's own one still comes along, where the pack goes.
-    const entry = addToInventory(char, holderRow.item, holderRow.qty, parent, strapped);
+    const entry = addToInventory(char, holderRow.item, holderRow.qty, parent, compartment);
     if (!into) holderUid = entry.uid;
   }
   const holder = holderUid && char.items.find(e => e.uid === holderUid);
   for (const r of rows) {
     if (!r.include || !r.item || r === holderRow) continue;
     if (holder && (r.place === "in" || r.place === "strap")) {
-      addToInventory(char, r.item, r.qty, holderUid, r.place === "strap" && canStrap(holder));
+      addToInventory(char, r.item, r.qty, holderUid, r.place === "strap" ? strapSpace(holder)?.id || null : null);
     } else {
-      addToInventory(char, r.item, r.qty, parent, strapped);
+      addToInventory(char, r.item, r.qty, parent, compartment);
     }
   }
 }
@@ -733,7 +874,7 @@ function removeEntry(char, entryUid) {
   const entry = char.items.find(e => e.uid === entryUid);
   if (!entry) return;
   if (isDeckEntry(entry)) char.items = char.items.filter(e => !(e.parent === entryUid && e.item.card));
-  char.items.forEach(e => { if (e.parent === entryUid) { e.parent = entry.parent; e.strapped = entry.strapped; } });
+  char.items.forEach(e => { if (e.parent === entryUid) placeEntry(e, entry.parent, entryComp(entry)); });
   char.items = char.items.filter(e => e.uid !== entryUid);
 }
 
@@ -779,8 +920,8 @@ const nameWords = words => {
 };
 function ruleMatches(r, it, srcId) {
   if (r.item?.length && !r.item.includes(srcId) && !r.item.includes(it.id)) return false;
-  if (r.group && groupOfItem(it)?.id !== r.group) return false;
-  if (r.template && itemRootId(it) !== r.template && itemTemplate(it)?.id !== r.template) return false;
+  if (r.group && !inTemplate(it, templateAlias(r.group))) return false;
+  if (r.template && !inTemplate(it, templateAlias(r.template)) && itemRootId(it) !== r.template) return false; // (a copy counts as its original)
   if (r.category?.length && !r.category.includes(it.category)) return false;
   if (r.feature && !hasFeature(it, r.feature, srcId)) return false;
   if (r.property && !itemHasProperty(it, r.property)) return false;
@@ -798,7 +939,7 @@ function ruleSize(rules, it, srcId) {
 // "Arrows", "Gold piece, Silver piece": what the rules allow, in words.
 function rulesLabel(rules) {
   return [...new Set(rules.map(r => r.label || r.name || (r.item?.length ? r.item.map(id => store.findItem(id)?.name || coinName(id) || id).join(", ") : "")
-    || r.category?.join(", ") || groupById(r.group)?.name || (r.template && (store.template(r.template)?.name || r.template)) || featureByKey(r.feature)?.label || "?"))].join(", ");
+    || r.category?.join(", ") || ((r.template || r.group) && (templatePlural(store.template(templateAlias(r.template || r.group)) || {}) || r.template || r.group)) || featureByKey(r.feature)?.label || "?"))].join(", ");
 }
 const coinName = id => id?.startsWith(COIN_ID) ? coinItem(id.slice(COIN_ID.length)).name : null;
 
@@ -819,7 +960,7 @@ function holderSpec(e) {
 
 // Places used inside a counted container.
 function holderUsed(char, e, spec = holderSpec(e)) {
-  return childrenOf(char, e.uid).filter(c => !c.strapped).reduce((s, c) => s + (spec.size(c.item, c.srcId) || 1) * c.qty, 0);
+  return childrenOf(char, e.uid).filter(c => !compartmentOf(char, c)).reduce((s, c) => s + (spec.size(c.item, c.srcId) || 1) * c.qty, 0);
 }
 
 // Liquid capacity in pints (0 = not a liquid container).
@@ -859,20 +1000,79 @@ function fillLevel(char, e) {
   return null;
 }
 
-// Compartments: a container's own named spaces (item.compartments: [{ id, name, capacityLb? }]),
-// besides its main space and, with straps, its outside. An entry in one says so (e.compartment);
-// one with no capacity of its own shares the container's. (One that's gone: the main space.)
-const compartmentsOf = e => Array.isArray(e?.item?.compartments) ? e.item.compartments.filter(c => c && c.id && c.name) : [];
+// Compartments: a container's own spaces besides its main one: a side pocket, a lid, a hidden
+// pouch, its outside (gear strapped to it). item.compartments: [{ id, name, capacity, capacityLb?,
+// and a container's own options: allows, holdLimit, holdUnit, weightless, coinsApart, contentsView }].
+// capacity: "shared" (in the container's capacity; with capacityLb, at most that much of it) or
+// "separate" (its own: capacityLb, if any; not in the container's: its outside, for strapped gear).
+// contentsView "inherit" (or none): as the container shows its own. An entry in one says so
+// (e.compartment; from before, e.strapped: its outside). One that's gone: the main space.
+const OUTSIDE = "out";
+const outsideCompartment = () => ({ id: OUTSIDE, name: "Strapped outside", capacity: "separate", contentsView: "list" });
+function compartmentsOf(e) {
+  const it = e?.item;
+  if (!it) return [];
+  const list = (Array.isArray(it.compartments) ? it.compartments : []).filter(c => c && c.id && c.name)
+    .map(c => c.capacity === "separate" || c.capacity === "shared" ? c : { ...c, capacity: "shared" }); // (from before: "portion", or none)
+  // Straps, from before (and older copies of the backpack): its outside.
+  if (!list.some(c => c.id === OUTSIDE) && (it.straps === true || (e.srcId === "container-backpack" && it.straps === undefined))) list.push(outsideCompartment());
+  return list;
+}
+// Which compartment an entry is in (its id), or null: the main space.
+const entryComp = e => e?.parent ? e.compartment || (e.strapped ? OUTSIDE : null) : null;
 const compartmentOf = (char, e) => {
-  const p = e.parent && !e.strapped && char.items.find(x => x.uid === e.parent);
-  return p && compartmentsOf(p).find(c => c.id === e.compartment) || null;
+  const id = entryComp(e), p = id && char.items.find(x => x.uid === e.parent);
+  return p && compartmentsOf(p).find(c => c.id === id) || null;
+};
+// Put an entry somewhere: in a container (one of its compartments), or on person.
+function placeEntry(e, parent, comp = null) {
+  e.parent = parent || null;
+  delete e.strapped;
+  if (e.parent && comp) e.compartment = comp; else delete e.compartment;
+}
+// A compartment as a container of its own (for its rules and count): { item: compartment }.
+const compartmentHolder = comp => ({ item: comp, srcId: null });
+// What's in a container's space (comp: a compartment, or null: the main space).
+const inSpace = (char, holder, comp) => x => x.parent === holder.uid && (compartmentOf(char, x)?.id || null) === (comp?.id || null);
+// May an item go in this space? Its rules (a compartment's own, else the container's).
+function spaceAllows(holder, comp, it, srcId) {
+  return comp ? ruleSize(containerRules(compartmentHolder(comp)), it, srcId) > 0 : containerAllows(holder, it, srcId);
+}
+// A counted space: as holderSpec.
+function spaceSpec(holder, comp) {
+  if (!comp) return holderSpec(holder);
+  const rules = containerRules(compartmentHolder(comp));
+  if (!rules.length || !(comp.holdLimit > 0)) return null;
+  return { label: rulesLabel(rules), limit: comp.holdLimit, unit: comp.holdUnit || "item", size: (it, srcId) => ruleSize(rules, it, srcId) };
+}
+function spaceUsed(char, holder, comp, spec = spaceSpec(holder, comp)) {
+  if (!comp) return holderUsed(char, holder, spec);
+  return char.items.filter(inSpace(char, holder, comp)).reduce((s, c) => s + (spec.size(c.item, c.srcId) || 1) * c.qty, 0);
+}
+// How a space shows what's in it: a compartment's own way, or the container's.
+const spaceView = (holder, comp) => comp && comp.contentsView && comp.contentsView !== "inherit" ? comp.contentsView : contentsView(holder);
+// Its contents' weight, and its capacity (its capacityLb, if any).
+const spaceWeight = (char, holder, comp) => char.items.filter(inSpace(char, holder, comp)).reduce((s, c) => s + entryTotalWeight(char, c), 0);
+const spaceCapacity = (holder, comp) => comp ? comp.capacityLb > 0 ? comp.capacityLb : 0 : holder.item.capacityLb || 0;
+// "3 / 5 lb", "12 / 20 arrows", or just the weight.
+function spaceLoad(char, holder, comp) {
+  if (!comp) return contentsLoad(char, holder);
+  const spec = spaceSpec(holder, comp);
+  if (spec) return `${spaceUsed(char, holder, comp, spec)} / ${spec.limit} ${spec.unit}s`;
+  const w = spaceWeight(char, holder, comp), cap = spaceCapacity(holder, comp);
+  return cap ? `${+w.toFixed(2)} / ${cap} ${weightUnit()}` : fmtWeight(w);
+}
+const spaceOver = (char, holder, comp) => {
+  const spec = spaceSpec(holder, comp);
+  if (spec) return spaceUsed(char, holder, comp, spec) > spec.limit;
+  const cap = spaceCapacity(holder, comp);
+  return cap > 0 && (comp ? spaceWeight(char, holder, comp) : contentsWeight(char, holder)) > cap;
 };
 
-// Backpacks (and custom containers with the option) can have gear strapped to the outside.
-// Older inventory copies of the backpack predate the `straps` flag, hence the srcId check.
-function canStrap(e) {
-  return hasFeature(currentItem(e), "holds", e.srcId) && !!(e.item.straps || e.srcId === "container-backpack");
-}
+// Where gear strapped to it goes (a pack's bedroll and rope): its outside (backpacks), else a
+// compartment with a capacity of its own; none: inside.
+const strapSpace = e => { const ks = compartmentsOf(e); return ks.find(c => c.id === OUTSIDE) || ks.find(c => c.capacity === "separate") || null; };
+const canStrap = e => !!strapSpace(e);
 
 function childrenOf(char, parentUid) { return char.items.filter(e => e.parent === parentUid); }
 
@@ -902,23 +1102,21 @@ function entryTotalValue(char, e) {
   return entryValue(e) + childrenOf(char, e.uid).reduce((s, c) => s + entryTotalValue(char, c), 0);
 }
 
-// Weight including contents (unless the container is weightless).
-// Weightless containers only exempt what's inside; strapped-on gear always counts.
+// Weight including contents: a weightless space's (Bag of Holding) don't add any. (The main space
+// is weightless when the container is; a compartment when it says so.)
 function entryTotalWeight(char, e) {
   let w = entryOwnWeight(e);
   for (const c of childrenOf(char, e.uid)) {
-    if (c.strapped || !e.item.weightless) w += entryTotalWeight(char, c);
+    const comp = compartmentOf(char, c);
+    if (!(comp ? comp.weightless : e.item.weightless)) w += entryTotalWeight(char, c);
   }
   return w;
 }
 
-// Weight inside the container (what counts against its capacity).
+// Weight in the container's capacity: its main space, and the compartments that share it (or part of it).
 function contentsWeight(char, e) {
-  return childrenOf(char, e.uid).filter(c => !c.strapped).reduce((s, c) => s + entryTotalWeight(char, c), 0);
-}
-
-function strappedWeight(char, e) {
-  return childrenOf(char, e.uid).filter(c => c.strapped).reduce((s, c) => s + entryTotalWeight(char, c), 0);
+  return childrenOf(char, e.uid).filter(c => { const k = compartmentOf(char, c); return !k || k.capacity !== "separate"; })
+    .reduce((s, c) => s + entryTotalWeight(char, c), 0);
 }
 
 // Coins' worth in the smallest coin (the names say cp: D&D 5e's copper).
@@ -931,14 +1129,50 @@ function carriedWeight(char, settings) {
 
 // ------------------------------------------------------------------ coins as items
 // Each of the system's coins is a stackable item (coin: its key). A character's coins are those
-// items: loose ones are in the purse (the Coins panel; not listed in the inventory), others in
-// containers. char.coins is their total, which shops, trades, the purse and both party servers
-// keep working with: when it changes, the change becomes items (into the purse, or out of it
-// first), and when the items change, it follows. char.coinsAt is the total when they last matched.
+// items: in their coin purse (a container of theirs, entry.purse: its details list them), or
+// anywhere else they put them. (A hoard has no purse: its loose coins are its coins.) char.coins
+// is their total, which shops, trades, the purse and both party servers keep working with: when
+// it changes, the change becomes items (into the purse, or out of it first), and when the items
+// change, it follows. char.coinsAt is the total when they last matched.
 
 const COIN_ID = "coin-";
 const isCoinEntry = e => !!e?.item?.coin;
-const inPurse = e => isCoinEntry(e) && !e.parent;
+// A character's coin purse (an entry marked purse), if it has one.
+const purseEntry = char => char?.items?.find(e => e.purse) || null;
+// In the purse: its coins (no purse, as a hoard: the loose ones). (char.within: a container's
+// contents shown on their own, see containerContents: nothing there is the purse's.)
+function inPurse(char, e) {
+  if (!isCoinEntry(e) || char?.within) return false;
+  const p = purseEntry(char);
+  return p ? e.parent === p.uid && !entryComp(e) : !e.parent;
+}
+
+// The coin purse: a container that takes the coins, showing them in its details.
+function purseItem() {
+  return { name: "Coin purse", ...(systemIndex().templates.has("container") ? { type: "container" } : {}), weight: 0, cost: 0,
+    features: { holds: true }, allows: [{ item: coinOrder().map(k => COIN_ID + k) }], contentsView: "details",
+    description: "Where your coins go. Open it to count them, spend or gain some, or move some elsewhere." };
+}
+// A character gets a coin purse; the first time, the loose coins go in it.
+function ensurePurse(char) {
+  if (purseEntry(char)) return;
+  const p = { uid: uid(), purse: true, item: purseItem(), qty: 1, equipped: false, states: {}, parent: null, notes: "" };
+  char.items.unshift(p);
+  if (!char.pursed) for (const e of char.items) if (isCoinEntry(e) && !e.parent) e.parent = p.uid;
+  char.pursed = true; // (made once: if it's ever gone, a new one doesn't take the loose coins)
+}
+
+// Add coins to the purse, or (parent) into a container: to a pile there of the same coin.
+function addCoins(char, key, n, parent = null, settings = store.state?.settings || {}) {
+  if (!(n > 0)) return null;
+  const at = parent || purseEntry(char)?.uid || null;
+  const pile = char.items.find(e => isCoinEntry(e) && e.item.coin === key && (e.parent || null) === at && !entryComp(e));
+  if (pile) { pile.qty += n; return pile; }
+  const { id, ...snapshot } = coinItem(key, settings);
+  const entry = { uid: uid(), srcId: id, item: clone(snapshot), qty: n, equipped: false, states: {}, parent: at, notes: "" };
+  char.items.push(entry);
+  return entry;
+}
 
 // The item for one of the system's coins: "Gold piece", worth its value, weighing what the
 // currency says (when coins have weight).
@@ -946,7 +1180,7 @@ function coinItem(key, settings = store.state?.settings || {}) {
   const cur = currency(), c = cur.coins.find(x => x.key === key);
   const name = c ? (c.itemName || `${c.name.charAt(0).toUpperCase()}${c.name.slice(1)} piece`) : key;
   const tpl = systemIndex().templates.has("treasure") ? { type: "treasure" } : {};
-  return { id: COIN_ID + key, name, ...tpl, coin: key, cost: c?.value || 0,
+  return { id: COIN_ID + key, name, ...tpl, ...(tpl.type ? { category: "Coin" } : {}), coin: key, cost: c?.value || 0,
     weight: settings.coinWeight !== false && cur.perWeight ? Math.round(1e6 / cur.perWeight) / 1e6 : 0,
     features: { stacks: true }, countInPlay: true, description: `One ${c?.name || key} coin (${key}).` };
 }
@@ -954,7 +1188,7 @@ function coinItem(key, settings = store.state?.settings || {}) {
 // The purse's coins (loose ones), by key.
 function purseTotals(char) {
   const out = {};
-  for (const e of char.items || []) if (inPurse(e)) out[e.item.coin] = (out[e.item.coin] || 0) + e.qty;
+  for (const e of char.items || []) if (inPurse(char, e)) out[e.item.coin] = (out[e.item.coin] || 0) + e.qty;
   return out;
 }
 
@@ -967,16 +1201,18 @@ function coinItemTotals(char) {
 // Does a coin count in the character's coins? (Not when it's in a container keeping its coins apart.)
 function coinCounts(char, e) {
   const seen = new Set();
-  for (let p = e.parent && char.items.find(x => x.uid === e.parent); p && !seen.has(p.uid); p = p.parent && char.items.find(x => x.uid === p.parent)) {
+  for (let x = e, p = x.parent && char.items.find(i => i.uid === x.parent); p && !seen.has(p.uid); x = p, p = x.parent && char.items.find(i => i.uid === x.parent)) {
     seen.add(p.uid);
-    if (p.item?.coinsApart) return false;
+    const comp = compartmentOf(char, x); // (a compartment keeps them apart or not by itself)
+    if (comp ? comp.coinsApart : p.item?.coinsApart) return false;
   }
   return true;
 }
 
-function syncCoins(char, settings = {}) {
+function syncCoins(char, settings = {}, o = {}) {
   const keys = coinOrder();
   if (!keys.length || !Array.isArray(char.items)) return;
+  if (o.purse) ensurePurse(char);
   // (No coins recorded, e.g. treasure just taken back: the items are the coins.)
   if (!char.coins) { char.coins = coinItemTotals(char); char.coinsAt = { ...char.coins }; }
   const coins = char.coins;
@@ -990,7 +1226,7 @@ function syncCoins(char, settings = {}) {
   const was = char.coinsAt || have;
   for (const k of keys) {
     const d = Math.floor((coins[k] || 0) - (was[k] || 0));
-    if (d > 0) addToInventory(char, coinItem(k, settings), d, null);
+    if (d > 0) addCoins(char, k, d, null, settings);
     else if (d < 0) takeCoins(char, k, -d);
   }
   const now = coinItemTotals(char);
@@ -1003,7 +1239,7 @@ function syncCoins(char, settings = {}) {
 // Take n coins of a kind: from the purse first, then wherever they are (the biggest piles first).
 function takeCoins(char, key, n) {
   const piles = char.items.filter(e => isCoinEntry(e) && e.item.coin === key && coinCounts(char, e))
-    .sort((a, b) => (a.parent ? 1 : 0) - (b.parent ? 1 : 0) || b.qty - a.qty);
+    .sort((a, b) => (inPurse(char, a) ? 0 : 1) - (inPurse(char, b) ? 0 : 1) || b.qty - a.qty);
   for (const e of piles) {
     if (n <= 0) break;
     const t = Math.min(n, e.qty);
