@@ -1,5 +1,7 @@
 # Pack Rat
 
+> **Pack Rat is now [Is This A Mimic?](https://github.com/jonathansatterthwaite-stack/is-this-a-mimic)**, a fresh start under a new name. This repository is archived: get the app, the guide and new versions there.
+
 **An inventory manager for tabletop RPGs.** Every character's gear, coins and containers, on PC, phone or in the browser: on your own, or shared at the table over your own Wi-Fi, with no account and no internet needed.
 
 **[Windows app](https://github.com/jonathansatterthwaite-stack/pack-rat/releases/latest/download/PackRat.exe)** · **[Android app](https://github.com/jonathansatterthwaite-stack/pack-rat/releases/latest/download/PackRat.apk)** · **[Use it in your browser](https://jonathansatterthwaite-stack.github.io/pack-rat/app/)** · [User guide](https://github.com/jonathansatterthwaite-stack/pack-rat/wiki) · [All releases](https://github.com/jonathansatterthwaite-stack/pack-rat/releases)
